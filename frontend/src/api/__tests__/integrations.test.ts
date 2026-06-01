@@ -42,7 +42,12 @@ describe("integrations API", () => {
     it("syncFirewall POST 到正確路徑", async () => {
       postSpy.mockResolvedValueOnce({ data: { ok: true } });
       await syncFirewall("fw1");
-      expect(postSpy).toHaveBeenCalledWith("/api/v1/firewalls/opnsense/fw1/sync");
+      // sync 是長時間作業 → 帶長 timeout（無 body）
+      expect(postSpy).toHaveBeenCalledWith(
+        "/api/v1/firewalls/opnsense/fw1/sync",
+        undefined,
+        expect.objectContaining({ timeout: expect.any(Number) }),
+      );
     });
   });
 
