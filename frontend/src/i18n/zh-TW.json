@@ -536,7 +536,7 @@
     "arp_title": "ARP / MAC 來源順序",
     "arp_subtitle": "多個來源 (掃描 / OPNsense / LibreNMS / AdGuard / Proxmox VE) 替同一 IP 回報 MAC 時，排越前面者可覆寫排後面者；右側開關可停用某來源。拖拉調整。",
     "dev_title": "裝置名稱來源順序",
-    "dev_subtitle": "多個來源 (LibreNMS / DNS / Proxmox VE 名稱 / OPNsense / SNMP sysName) 提供同一台裝置名稱時，排越前面者優先採用；手動最高且不可停用。拖拉調整。",
+    "dev_subtitle": "多個來源 (LibreNMS / DNS / Proxmox VE 名稱 / OPNsense / LibreNMS sysName) 提供同一台裝置名稱時，排越前面者優先採用；手動最高且不可停用。拖拉調整。",
     "save": "儲存順序",
     "saved": "順序已更新",
     "src": {

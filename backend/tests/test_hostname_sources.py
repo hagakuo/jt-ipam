@@ -17,6 +17,14 @@ def test_dns_adguard_wazuh_are_distinct_sources():
     assert "dns" != "adguard"
 
 
+async def test_precedence_order_covers_all_sources(db_session):
+    """順序清單必須涵蓋所有來源（曾有 wazuh/adguard 被漏掉、不出現在設定頁的 bug）。"""
+    from app.services.hostname import get_precedence
+    order = await get_precedence(db_session)
+    for s in HOSTNAME_SOURCES:
+        assert s in order, f"{s} 不在 hostname 來源順序中"
+
+
 async def _mk_ip(session) -> IPAddress:
     sec = Section(name="hsrc-sec")
     session.add(sec)

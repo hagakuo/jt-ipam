@@ -536,7 +536,7 @@
     "arp_title": "ARP / MAC source priority",
     "arp_subtitle": "When multiple sources (scan / OPNsense / LibreNMS / AdGuard / Proxmox VE) report a MAC for the same IP, higher-ranked sources override lower ones; the switch on the right disables a source. Drag to reorder.",
     "dev_title": "Device name source priority",
-    "dev_subtitle": "When multiple sources (LibreNMS / DNS / Proxmox VE name / OPNsense / SNMP sysName) provide a name for the same device, higher-ranked sources win; Manual is highest and cannot be disabled. Drag to reorder.",
+    "dev_subtitle": "When multiple sources (LibreNMS / DNS / Proxmox VE name / OPNsense / LibreNMS sysName) provide a name for the same device, higher-ranked sources win; Manual is highest and cannot be disabled. Drag to reorder.",
     "save": "Save priority",
     "saved": "Priority updated",
     "src": {
