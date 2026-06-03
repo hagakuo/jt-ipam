@@ -99,6 +99,28 @@ const trendTotals = computed(() => ({
   audit: trend.value.reduce((a, p) => a + p.audit, 0),
   ip: trend.value.reduce((a, p) => a + p.ip_changes, 0),
 }));
+// 座標換算（SVG user units）
+function trendX(i: number): number {
+  const n = trend.value.length;
+  return n < 2 ? TREND_PAD : TREND_PAD + (i / (n - 1)) * (TREND_W - TREND_PAD * 2);
+}
+function trendY(v: number): number {
+  const innerH = TREND_H - TREND_PAD * 2;
+  return TREND_PAD + innerH - (v / trendMax.value) * innerH;
+}
+// hover：游標對應到最近的資料點
+const trendHover = ref<number | null>(null);
+const trendTip = ref<{ x: number; y: number }>({ x: 0, y: 0 });
+function onTrendMove(e: MouseEvent) {
+  const n = trend.value.length;
+  if (n < 1) return;
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  trendHover.value = Math.round(ratio * (n - 1));
+  trendTip.value = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+function onTrendLeave() { trendHover.value = null; }
+const trendHoverPt = computed(() => trendHover.value != null ? trend.value[trendHover.value] : null);
 
 // ── 上下關係鏈：機房 → 機櫃 → 裝置 → IP 位址 → 子網路 → 區段 ──
 // 每層放本系統該層物件總數；即使是 0 也照列，讓人看出完整層級與關聯。
@@ -318,10 +340,24 @@ onMounted(() => { void load(); void loadPins(); });
             <span><i style="background:#f59e0b"></i>{{ t("dashboard.chart_audit_events") }} · {{ trendTotals.audit }}</span>
             <span><i style="background:#0ea5e9"></i>{{ t("nav.ip_changes") }} · {{ trendTotals.ip }}</span>
           </div>
-          <svg class="trend-svg" :viewBox="`0 0 ${TREND_W} ${TREND_H}`" preserveAspectRatio="none">
-            <polyline :points="trendPoints('audit')" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linejoin="round" />
-            <polyline :points="trendPoints('ip_changes')" fill="none" stroke="#0ea5e9" stroke-width="2" stroke-linejoin="round" />
-          </svg>
+          <div class="trend-wrap" @mousemove="onTrendMove" @mouseleave="onTrendLeave">
+            <svg class="trend-svg" :viewBox="`0 0 ${TREND_W} ${TREND_H}`" preserveAspectRatio="none">
+              <polyline :points="trendPoints('audit')" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linejoin="round" />
+              <polyline :points="trendPoints('ip_changes')" fill="none" stroke="#0ea5e9" stroke-width="2" stroke-linejoin="round" />
+              <template v-if="trendHover != null && trendHoverPt">
+                <line :x1="trendX(trendHover)" :x2="trendX(trendHover)" :y1="TREND_PAD" :y2="TREND_H - TREND_PAD"
+                      stroke="rgba(127,127,127,0.5)" stroke-width="1" stroke-dasharray="2 2" />
+                <circle :cx="trendX(trendHover)" :cy="trendY(trendHoverPt.audit)" r="3" fill="#f59e0b" />
+                <circle :cx="trendX(trendHover)" :cy="trendY(trendHoverPt.ip_changes)" r="3" fill="#0ea5e9" />
+              </template>
+            </svg>
+            <div v-if="trendHover != null && trendHoverPt" class="trend-tip"
+                 :style="{ left: Math.min(trendTip.x + 10, 240) + 'px', top: '2px' }">
+              <div class="tt-day">{{ trendHoverPt.day }}</div>
+              <div><i style="background:#f59e0b"></i>{{ t("dashboard.chart_audit_events") }} {{ trendHoverPt.audit }}</div>
+              <div><i style="background:#0ea5e9"></i>{{ t("nav.ip_changes") }} {{ trendHoverPt.ip_changes }}</div>
+            </div>
+          </div>
           <div class="trend-axis"><span>{{ trend[0]?.day?.slice(5) }}</span><span>{{ trend[trend.length - 1]?.day?.slice(5) }}</span></div>
         </n-card>
       </div>
@@ -470,7 +506,16 @@ onMounted(() => { void load(); void loadPins(); });
 .hbar-val { flex: 0 0 auto; min-width: 40px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; opacity: 0.75; }
 .chart-legend { display: flex; gap: 14px; font-size: 12px; opacity: 0.7; margin-bottom: 8px; flex-wrap: wrap; }
 .chart-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+.trend-wrap { position: relative; }
 .trend-svg { width: 100%; height: 90px; display: block; }
+.trend-tip {
+  position: absolute; pointer-events: none; z-index: 2;
+  background: var(--n-color, #fff); border: 1px solid var(--n-border-color, rgba(127,127,127,0.25));
+  border-radius: 6px; padding: 5px 8px; font-size: 11px; line-height: 1.5;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12); white-space: nowrap;
+}
+.trend-tip .tt-day { font-weight: 600; margin-bottom: 2px; }
+.trend-tip i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
 .trend-axis { display: flex; justify-content: space-between; font-size: 11px; opacity: 0.5; font-variant-numeric: tabular-nums; }
 .hier-chain {
   display: flex;
