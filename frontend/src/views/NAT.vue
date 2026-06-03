@@ -142,13 +142,20 @@ function ipLinkCell(ipId: string | null) {
 }
 
 // alias 參考 → 可點的 tag，導到防火牆頁的「Aliases」分頁並以該名稱篩選（看 alias 成員內容）
-function aliasCell(name: string | null) {
+// 帶上該規則所屬防火牆，讓對方頁面自動選到正確的防火牆
+function aliasCell(name: string | null, fwId?: string | null) {
   if (!name) return null;
   return h(NTag, {
-    size: "small", type: "info", bordered: false, style: "cursor: pointer",
-    title: t("nat.alias_goto"),
-    onClick: () => router.push({ name: "firewall", query: { tab: "aliases", q: name } }),
-  }, { default: () => `@${name}` });
+    size: "small", type: "info", bordered: false,
+    style: "cursor: pointer; max-width: 100%; vertical-align: middle",
+    title: `@${name} — ${t("nat.alias_goto")}`,
+    onClick: () => router.push({
+      name: "firewall",
+      query: { tab: "aliases", q: name, ...(fwId ? { fw: fwId } : {}) },
+    }),
+  }, { default: () => h("span", {
+    style: "display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom",
+  }, `@${name}`) });
 }
 
 function deviceLinkCell(devId: string | null) {
@@ -277,17 +284,17 @@ const allCols = computed<DataTableColumns<NAT>>(() => autoSort([
   { title: t("nat.protocol"), key: "protocol", width: 100 },
   {
     title: t("nat.src_ip"), key: "src_ip_id", width: 110,
-    render: (r) => r.src_ip_id ? ipLinkCell(r.src_ip_id) : (aliasCell(r.src_alias) ?? "—"),
+    render: (r) => r.src_ip_id ? ipLinkCell(r.src_ip_id) : (aliasCell(r.src_alias, r.source_firewall_id) ?? "—"),
   },
   { title: t("nat.src_interface"), key: "src_interface", width: 130, render: (r) => r.src_interface ?? "—" },
   { title: t("nat.src_port"), key: "src_port", width: 110,
-    render: (r) => r.src_port != null ? String(r.src_port) : (aliasCell(r.src_port_alias) ?? "—") },
+    render: (r) => r.src_port != null ? String(r.src_port) : (aliasCell(r.src_port_alias, r.source_firewall_id) ?? "—") },
   {
     title: t("nat.dst_ip"), key: "dst_ip_id", width: 150,
-    render: (r) => r.dst_ip_id ? ipLinkCell(r.dst_ip_id) : (aliasCell(r.dst_alias) ?? aliasCell(r.redirect_alias) ?? "—"),
+    render: (r) => r.dst_ip_id ? ipLinkCell(r.dst_ip_id) : (aliasCell(r.dst_alias, r.source_firewall_id) ?? aliasCell(r.redirect_alias, r.source_firewall_id) ?? "—"),
   },
   { title: t("nat.dst_port"), key: "dst_port", width: 110,
-    render: (r) => r.dst_port != null ? String(r.dst_port) : (aliasCell(r.dst_port_alias) ?? "—") },
+    render: (r) => r.dst_port != null ? String(r.dst_port) : (aliasCell(r.dst_port_alias, r.source_firewall_id) ?? "—") },
   {
     title: t("nav.devices"), key: "device_id", width: 150, ellipsis: { tooltip: true },
     render: (r) => deviceLinkCell(r.device_id),

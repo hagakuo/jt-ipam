@@ -405,6 +405,12 @@ onMounted(() => {
     if (qt === "aliases") aliasFilterQ.value = qq;
     else if (qt === "rules") ruleFilterQ.value = qq;
   }
+  // ?fw=<id>：NAT alias chip 帶來該規則所屬防火牆，預選之（refresh 的 !value 守衛會保留）
+  const qfw = route.query.fw;
+  if (typeof qfw === "string" && qfw) {
+    if (qt === "aliases") aliasesFw.value = qfw;
+    else if (qt === "rules") rulesFw.value = qfw;
+  }
   void refresh();
 });
 </script>
@@ -571,9 +577,9 @@ onMounted(() => {
         </n-form-item>
         <n-form-item :label="t('firewall_admin.sync_sources')">
           <n-space :size="20" wrap>
-            <n-checkbox v-model:checked="newFw.sync_dhcp">DHCP leases</n-checkbox>
-            <n-checkbox v-model:checked="newFw.sync_arp">ARP table</n-checkbox>
-            <n-checkbox v-model:checked="newFw.sync_openvpn">OpenVPN sessions</n-checkbox>
+            <n-checkbox v-model:checked="newFw.sync_dhcp">{{ t("firewall_admin.sync_dhcp_label") }}</n-checkbox>
+            <n-checkbox v-model:checked="newFw.sync_arp">{{ t("firewall_admin.sync_arp_label") }}</n-checkbox>
+            <n-checkbox v-model:checked="newFw.sync_openvpn">{{ t("firewall_admin.sync_openvpn_label") }}</n-checkbox>
             <n-checkbox v-model:checked="newFw.sync_rules">{{ t("firewall_admin.sync_filter_rules") }}</n-checkbox>
             <n-checkbox v-model:checked="newFw.sync_nat">{{ t("firewall_admin.sync_nat_rules") }}</n-checkbox>
             <n-checkbox v-model:checked="newFw.sync_aliases">{{ t("firewall_admin.sync_aliases_label") }}</n-checkbox>

@@ -249,7 +249,8 @@
     "agent_id": "Agent ID",
     "domain": "Domain",
     "destination": "Destination",
-    "label_zhtw": "Label (zh-TW)"
+    "label_zhtw": "Label (zh-TW)",
+    "port": "Port"
   },
   "dashboard": {
     "title": "Dashboard",
@@ -479,7 +480,11 @@
     "device_count": "Devices",
     "devices_on_vlan": "Devices using this VLAN",
     "filter_section": "Filter section (all)",
-    "filter_unit": "Filter customer (all)"
+    "filter_unit": "Filter customer (all)",
+    "port_count": "Ports",
+    "ip_count": "IPs",
+    "members": "Members",
+    "ports_on_vlan": "Ports on this VLAN"
   },
   "topology": {
     "filter_subnets": "Filter subnets (all)",
@@ -939,7 +944,8 @@
     "help_bind9": "Operate BIND 9 via rndc / TSIG; TSIG key format algorithm:keyname:base64key.",
     "help_unbound_opnsense": "Uses the OPNsense Unbound REST API: create an API key/secret in OPNsense with Unbound access.",
     "help_windows_dns": "Connects to a Windows DNS host over WinRM; the account needs DNS admin rights — prefer HTTPS (5986).",
-    "help_ucs": "Calls the Univention UCS UDM REST API (/univention/udm/…) directly — not the internal BIND9. API URL = https://<ucs-host>; use an account with DNS write rights (e.g. Administrator); turn off TLS verification for self-signed certs."
+    "help_ucs": "Calls the Univention UCS UDM REST API (/univention/udm/…) directly — not the internal BIND9. API URL = https://<ucs-host>; use an account with DNS write rights (e.g. Administrator); turn off TLS verification for self-signed certs.",
+    "edit": "Edit DNS server"
   },
   "librenms_admin": {
     "title": "LibreNMS",
@@ -1004,7 +1010,10 @@
     "members": "Members",
     "content": "Content",
     "func_title": "Firewall rules / aliases",
-    "sync_aliases_label": "Aliases"
+    "sync_aliases_label": "Aliases",
+    "sync_dhcp_label": "DHCP leases",
+    "sync_arp_label": "ARP table",
+    "sync_openvpn_label": "OpenVPN sessions"
   },
   "wazuh_admin": {
     "title": "Wazuh",

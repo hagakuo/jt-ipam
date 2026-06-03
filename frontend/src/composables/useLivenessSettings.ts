@@ -73,11 +73,16 @@ export function classifyAddressLiveness(addr: {
   exclude_from_ping?: boolean | null;
   subnet_scan_enabled?: boolean | null;
 }): LivenessKind {
+  // 刻意不偵測（exclude_from_ping）或所屬 subnet 沒啟用掃描時：根本沒主動探測，
+  // 不論有沒有舊的 last_seen，都不該顯示「離線(紅)」——過期最多降為未知(灰)。
+  const noProbe = !!addr.exclude_from_ping || addr.subnet_scan_enabled === false;
   const ts = [addr.last_seen_scanner, addr.last_seen_librenms, addr.last_seen_dns]
     .filter(Boolean)
     .map((s) => new Date(s as string).getTime());
-  if (ts.length) return classifyLiveness(Math.max(...ts));
-  if (addr.exclude_from_ping) return "unknown";
-  if (addr.subnet_scan_enabled === false) return "unknown";
-  return "offline";
+  if (ts.length) {
+    const kind = classifyLiveness(Math.max(...ts));
+    if (kind === "offline" && noProbe) return "unknown";
+    return kind;
+  }
+  return noProbe ? "unknown" : "offline";
 }

@@ -9,7 +9,7 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -189,14 +189,94 @@ async def list_vlans(
         )).all():
             count_map[vid] = cnt
 
+    # 連接埠數（FDB 依 VLAN 號碼，不重複 device+port）與 IP 數（此 VLAN 下子網路）
+    port_map: dict[int, int] = {}
+    ip_map: dict[uuid.UUID, int] = {}
+    if vlan_ids:
+        from app.models.address import IPAddress
+        from app.models.librenms import FDBEntry
+        from app.models.subnet import Subnet
+        numbers = [r.number for r in rows]
+        for num, cnt in (await session.execute(
+            select(FDBEntry.vlan_id_num, func.count(func.distinct(
+                func.concat(cast(FDBEntry.device_id, String), "|", FDBEntry.port_name))))
+            .where(FDBEntry.vlan_id_num.in_(numbers))
+            .group_by(FDBEntry.vlan_id_num)
+        )).all():
+            if num is not None:
+                port_map[int(num)] = int(cnt)
+        for vid, cnt in (await session.execute(
+            select(Subnet.vlan_id, func.count(IPAddress.id))
+            .join(IPAddress, IPAddress.subnet_id == Subnet.id)
+            .where(Subnet.vlan_id.in_(vlan_ids))
+            .group_by(Subnet.vlan_id)
+        )).all():
+            if vid is not None:
+                ip_map[vid] = int(cnt)
+
     items = []
     for r in rows:
         m = VLANRead.model_validate(r)
         m.device_count = count_map.get(r.id, 0)
+        m.port_count = port_map.get(r.number, 0)
+        m.ip_count = ip_map.get(r.id, 0)
         items.append(m)
     return Paginated[VLANRead](
         items=items, total=total, page=page, page_size=page_size,
     )
+
+
+@router.get("/vlans/{vlan_id}/members")
+async def vlan_members(
+    vlan_id: uuid.UUID,
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """此 VLAN 的成員明細：哪些裝置的哪些連接埠（FDB）+ 子網路 + IP。"""
+    from app.models.address import IPAddress
+    from app.models.device import Device
+    from app.models.librenms import FDBEntry, LibreNMSDevice
+    from app.models.subnet import Subnet
+
+    vlan = await session.get(VLAN, vlan_id)
+    if vlan is None:
+        raise HTTPException(404, detail="VLAN not found")
+
+    # FDB：依 VLAN 號碼，列出 (裝置, 連接埠, MAC) — 裝置名走 LibreNMS sysName
+    fdb_rows = list((await session.execute(
+        select(FDBEntry.port_name, FDBEntry.mac, LibreNMSDevice.sysname, LibreNMSDevice.hostname)
+        .join(LibreNMSDevice, LibreNMSDevice.id == FDBEntry.device_id)
+        .where(FDBEntry.vlan_id_num == vlan.number)
+        .order_by(LibreNMSDevice.sysname, FDBEntry.port_name)
+        .limit(2000)
+    )).all())
+    ports = [
+        {"device": sn or hn or "—", "port": pn, "mac": str(m) if m else None}
+        for pn, m, sn, hn in fdb_rows
+    ]
+    # 此 VLAN 的子網路 + IP 數
+    subnets = list((await session.execute(
+        select(Subnet.id, Subnet.cidr).where(Subnet.vlan_id == vlan_id)
+    )).all())
+    subnet_out = []
+    for sid, cidr in subnets:
+        ipn = int(await session.scalar(
+            select(func.count()).select_from(IPAddress).where(IPAddress.subnet_id == sid)
+        ) or 0)
+        subnet_out.append({"id": str(sid), "cidr": str(cidr), "ip_count": ipn})
+    # 掛此 VLAN 的（已連結 jt-ipam）裝置
+    devs = list((await session.execute(
+        select(Device.id, Device.name)
+        .join(LibreNMSDevice, LibreNMSDevice.jt_ipam_device_id == Device.id)
+        .join(DeviceVLAN, DeviceVLAN.librenms_device_id == LibreNMSDevice.id)
+        .where(DeviceVLAN.vlan_id == vlan_id).distinct()
+    )).all())
+    return {
+        "vlan": {"id": str(vlan.id), "number": vlan.number, "name": vlan.name},
+        "ports": ports,
+        "subnets": subnet_out,
+        "devices": [{"id": str(i), "name": n} for i, n in devs],
+    }
 
 
 class VLANDeviceRead(StrictModel):

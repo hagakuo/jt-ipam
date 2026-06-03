@@ -147,6 +147,10 @@ async def update_server(
         raise HTTPException(404, detail="Not found")
 
     rotated: list[str] = []
+    if payload.name is not None:
+        obj.name = payload.name
+    if payload.type is not None:
+        obj.type = payload.type
     if payload.api_url is not None:
         obj.api_url = str(payload.api_url).rstrip("/")
     if payload.server_address is not None:
@@ -174,7 +178,11 @@ async def update_server(
         diff={"rotated_secrets": rotated},
         request_id=getattr(request.state, "request_id", None),
     )
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(409, detail="DNS server name conflict") from exc
     await session.refresh(obj)
     return DNSServerRead.model_validate(obj)
 

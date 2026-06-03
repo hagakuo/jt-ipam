@@ -29,6 +29,8 @@ class DNSServerCreate(StrictModel):
 
 
 class DNSServerUpdate(StrictModel):
+    name: Annotated[str | None, Field(min_length=1, max_length=128)] = None
+    type: DNSServerType | None = None
     api_url: HttpUrl | None = None
     server_address: Annotated[str | None, Field(max_length=255)] = None
     extra_config: Annotated[str | None, Field(max_length=4096)] = None

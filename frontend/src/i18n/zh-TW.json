@@ -249,7 +249,8 @@
     "agent_id": "Agent ID",
     "domain": "網域",
     "destination": "目的",
-    "label_zhtw": "標籤 (中文)"
+    "label_zhtw": "標籤 (中文)",
+    "port": "連接埠"
   },
   "dashboard": {
     "title": "儀表板",
@@ -479,7 +480,11 @@
     "device_count": "裝置數",
     "devices_on_vlan": "使用此 VLAN 的裝置",
     "filter_section": "篩選區段 (全部)",
-    "filter_unit": "篩選單位 (全部)"
+    "filter_unit": "篩選單位 (全部)",
+    "port_count": "連接埠數",
+    "ip_count": "IP 數",
+    "members": "成員",
+    "ports_on_vlan": "此 VLAN 的連接埠"
   },
   "topology": {
     "filter_subnets": "只顯示子網路 (全部)",
@@ -575,7 +580,7 @@
     "switch_port": "交換器位置",
     "switch_port_uncertain": "低信心：此 MAC 經由 uplink/trunk 學到 (該 port 有多個 MAC)，非直連存取埠。LibreNMS 未標記為高信心。",
     "note": "備註",
-    "exclude_from_ping": "不掃 ping",
+    "exclude_from_ping": "略過 Ping 偵測",
     "ptr_ignore": "略過 PTR",
     "source": "來源",
     "effective_status": "實際狀態",
@@ -939,7 +944,8 @@
     "help_bind9": "用 rndc / TSIG 對 BIND 9 操作；TSIG 金鑰格式 algorithm:keyname:base64key。",
     "help_unbound_opnsense": "走 OPNsense Unbound REST：需在 OPNsense 建 API key/secret 並給 Unbound 權限。",
     "help_windows_dns": "透過 WinRM 連到 Windows DNS 主機；帳號需 DNS 管理權，建議走 HTTPS (5986)。",
-    "help_ucs": "直接呼叫 Univention UCS 的 UDM REST API（/univention/udm/…），不連 UCS 內的 BIND9。API URL 填 https://<ucs主機>；帳號用具 DNS 寫權者（如 Administrator）；自簽憑證可關閉「驗證 TLS 憑證」。"
+    "help_ucs": "直接呼叫 Univention UCS 的 UDM REST API（/univention/udm/…），不連 UCS 內的 BIND9。API URL 填 https://<ucs主機>；帳號用具 DNS 寫權者（如 Administrator）；自簽憑證可關閉「驗證 TLS 憑證」。",
+    "edit": "編輯 DNS 服務"
   },
   "librenms_admin": {
     "title": "LibreNMS 整合",
@@ -996,7 +1002,7 @@
     "sync_interval": "排程同步間隔 (秒)",
     "sync_interval_hint": "systemd timer (jt-ipam-sync.timer) 每分鐘檢查；超過此間隔的實例就自動同步。手動按「同步」不受限制。",
     "sync_sources": "同步來源",
-    "sync_filter_rules": "Filter rules (防火牆規則)",
+    "sync_filter_rules": "篩選規則 (Filter rules)",
     "sync_nat_rules": "NAT 規則 (Port Forward / 1:1 / Outbound)",
     "sync_sources_hint": "開啟後 sync 時會拉 OPNsense 對應資料，並 stamp 對到的 IP 的「最後出現 (scanner)」+ 自動補 MAC / hostname",
     "aliases": "別名",
@@ -1004,7 +1010,10 @@
     "members": "成員數",
     "content": "內容",
     "func_title": "防火牆規則 / 別名",
-    "sync_aliases_label": "別名 (Aliases)"
+    "sync_aliases_label": "別名 (Aliases)",
+    "sync_dhcp_label": "DHCP 租約 (DHCP leases)",
+    "sync_arp_label": "ARP 表 (ARP table)",
+    "sync_openvpn_label": "OpenVPN 連線 (OpenVPN sessions)"
   },
   "wazuh_admin": {
     "title": "Wazuh 整合",

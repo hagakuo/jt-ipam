@@ -10,8 +10,8 @@ import {
 import {
   listVLANDomains, listVLANs, createVLANDomain, createVLAN,
   updateVLAN, deleteVLAN, updateVLANDomain, deleteVLANDomain,
-  bulkDeleteVLANs, bulkDeleteVLANDomains, getVlanDevices,
-  type VLAN, type VLANDomain, type VLANDevice,
+  bulkDeleteVLANs, bulkDeleteVLANDomains, getVlanDevices, vlanMembers,
+  type VLAN, type VLANDomain, type VLANDevice, type VLANMembers,
 } from "@/api/basic";
 import {
   VlansIcon, SectionsIcon, PlusIcon, EditIcon, DeleteIcon, RefreshIcon, SaveIcon, CancelIcon,
@@ -62,6 +62,25 @@ async function openVlanDevices(r: VLAN) {
   try { deviceList.value = await getVlanDevices(r.id); }
   catch { /* silent */ } finally { devicesLoading.value = false; }
 }
+
+// 連接埠 / 成員明細（哪些裝置的哪些 port + 子網路）
+const showMembers = ref(false);
+const membersLoading = ref(false);
+const members = ref<VLANMembers | null>(null);
+const membersLabel = ref("");
+async function openVlanMembers(r: VLAN) {
+  membersLabel.value = `VLAN ${r.number} · ${r.name}`;
+  showMembers.value = true;
+  membersLoading.value = true;
+  members.value = null;
+  try { members.value = await vlanMembers(r.id); }
+  catch { /* silent */ } finally { membersLoading.value = false; }
+}
+const memberPortCols: DataTableColumns<any> = [
+  { title: t("cols.device"), key: "device", ellipsis: { tooltip: true } },
+  { title: t("cols.port"), key: "port", width: 160 },
+  { title: "MAC", key: "mac", width: 170, render: (r: any) => r.mac ?? "—" },
+];
 
 const vlanChecked = ref<DataTableRowKey[]>([]);
 const domChecked = ref<DataTableRowKey[]>([]);
@@ -194,14 +213,16 @@ async function delDom(r: VLANDomain) {
 
 const { visibleKeys: vlanVisible, setVisible: setVlanVisible, reset: resetVlan } = useColumnPrefs(
   "vlans",
-  ["number", "name", "domain_id", "devices", "customer", "description", "actions"],
-  ["number", "name", "domain_id", "devices", "customer", "section", "description", "actions"],
+  ["number", "name", "domain_id", "devices", "ports", "ips", "customer", "description", "actions"],
+  ["number", "name", "domain_id", "devices", "ports", "ips", "customer", "section", "description", "actions"],
 );
 const vlanPickerItems = [
   { key: "number", label: "VID" },
   { key: "name", label: t("cols.name") },
   { key: "domain_id", label: "Domain" },
   { key: "devices", label: t("cols.device_count") },
+  { key: "ports", label: t("vlans.port_count") },
+  { key: "ips", label: t("vlans.ip_count") },
   { key: "customer", label: t("cols.unit") },
   { key: "section", label: t("cols.section") },
   { key: "description", label: t("cols.description") },
@@ -245,6 +266,19 @@ const allVlanCols = computed<DataTableColumns<VLAN>>(() => [
       ? h(NButton, { size: "tiny", text: true, type: "primary", onClick: () => openVlanDevices(r) },
           { default: () => String(r.device_count) })
       : "—",
+  },
+  {
+    title: t("vlans.port_count"), key: "ports", width: 90,
+    sorter: (a, b) => (a.port_count ?? 0) - (b.port_count ?? 0),
+    render: (r) => (r.port_count ?? 0) > 0
+      ? h(NButton, { size: "tiny", text: true, type: "primary", onClick: () => openVlanMembers(r) },
+          { default: () => String(r.port_count) })
+      : "—",
+  },
+  {
+    title: t("vlans.ip_count"), key: "ips", width: 80,
+    sorter: (a, b) => (a.ip_count ?? 0) - (b.ip_count ?? 0),
+    render: (r) => String(r.ip_count ?? 0),
   },
   {
     title: t("nav.customers"), key: "customer", width: 160, ellipsis: { tooltip: true },
@@ -474,6 +508,25 @@ onMounted(() => {
             </tr>
           </tbody>
         </n-table>
+      </n-spin>
+    </n-modal>
+
+    <!-- VLAN 成員：連接埠 + 子網路 -->
+    <n-modal v-model:show="showMembers" preset="card"
+             :title="`${membersLabel} — ${t('vlans.members')}`" style="width: 640px">
+      <n-spin :show="membersLoading">
+        <template v-if="members">
+          <div style="font-weight:600;margin-bottom:6px">{{ t('vlans.ports_on_vlan') }} ({{ members.ports.length }})</div>
+          <n-empty v-if="!members.ports.length" :description="t('common.no_data')" size="small" />
+          <n-data-table v-else :columns="memberPortCols" :data="members.ports"
+                        :bordered="false" size="small" :max-height="320" :scroll-x="500" />
+          <div v-if="members.subnets.length" style="font-weight:600;margin:14px 0 6px">{{ t('nav.subnets') }}</div>
+          <n-space v-if="members.subnets.length">
+            <n-tag v-for="s in members.subnets" :key="s.id" size="small">
+              {{ s.cidr }} · {{ s.ip_count }} IP
+            </n-tag>
+          </n-space>
+        </template>
       </n-spin>
     </n-modal>
   </n-card>

@@ -12,8 +12,18 @@ export interface VLANDomain {
 export interface VLAN {
   id: string; domain_id: string; number: number; name: string;
   description: string | null; created_at: string; updated_at: string;
-  device_count?: number;
+  device_count?: number; port_count?: number; ip_count?: number;
   customer_id: string | null; section_id: string | null;
+}
+export interface VLANMembers {
+  vlan: { id: string; number: number; name: string };
+  ports: { device: string; port: string; mac: string | null }[];
+  subnets: { id: string; cidr: string; ip_count: number }[];
+  devices: { id: string; name: string }[];
+}
+export async function vlanMembers(id: string): Promise<VLANMembers> {
+  const { data } = await apiClient.get<VLANMembers>(`/api/v1/vlans/${id}/members`);
+  return data;
 }
 // feature C：掛在 VLAN 上的 LibreNMS 裝置
 export interface VLANDevice {

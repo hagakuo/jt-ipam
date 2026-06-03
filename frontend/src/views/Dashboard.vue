@@ -251,18 +251,16 @@ onMounted(() => { void load(); void loadPins(); });
       <n-card v-if="pinnedLocations.length" :title="t('dashboard.pinned_locations')">
         <n-space vertical :size="8">
           <div v-for="l in pinnedLocations" :key="l.id" class="loc-row" @click="go('locations')">
-            <div class="loc-head">
-              <n-icon :size="16" style="opacity:.6"><LocationsIcon /></n-icon>
-              <span class="loc-name">{{ l.name }}</span>
-              <span class="loc-counts">
-                <n-icon :size="13"><RacksIcon /></n-icon>{{ l.rack_count }}
-                <n-icon :size="13" style="margin-left:8px"><DevicesIcon /></n-icon>{{ l.device_count }}
-              </span>
-            </div>
-            <!-- 橫式分布：各機房裝置數相對長條 -->
+            <n-icon :size="16" style="opacity:.6;flex:0 0 auto"><LocationsIcon /></n-icon>
+            <span class="loc-name">{{ l.name }}</span>
+            <!-- 中間橫式分布條（仿常用子網路），裝置數相對長度 -->
             <div class="loc-bar">
               <div class="loc-bar__fill" :style="{ width: (l.device_count / maxLocDevices * 100) + '%' }"></div>
             </div>
+            <span class="loc-counts">
+              <n-icon :size="13"><RacksIcon /></n-icon>{{ l.rack_count }}
+              <n-icon :size="13" style="margin-left:8px"><DevicesIcon /></n-icon>{{ l.device_count }}
+            </span>
           </div>
         </n-space>
       </n-card>
@@ -375,17 +373,19 @@ onMounted(() => { void load(); void loadPins(); });
 }
 .hier-count { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
 
-/* 常用機房：名稱 + 機櫃/裝置數 + 橫式分布條 */
-.loc-row { cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: background .15s; }
+/* 常用機房：單行 — 名稱 | 中間橫式分布條 | 機櫃/裝置數（仿常用子網路） */
+.loc-row {
+  cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: background .15s;
+  display: flex; align-items: center; gap: 8px;
+}
 .loc-row:hover { background: rgba(127, 127, 127, 0.08); }
-.loc-head { display: flex; align-items: center; gap: 6px; }
-.loc-name { font-weight: 500; }
+.loc-name { font-weight: 500; flex: 0 0 auto; max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .loc-counts {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 2px;
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px;
   font-size: 12px; opacity: 0.7; font-variant-numeric: tabular-nums;
 }
 .loc-bar {
-  margin-top: 4px; height: 6px; border-radius: 3px;
+  flex: 1 1 auto; height: 6px; border-radius: 3px;
   background: rgba(127, 127, 127, 0.15); overflow: hidden;
 }
 .loc-bar__fill {

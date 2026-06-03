@@ -220,8 +220,8 @@ onMounted(() => { void refresh(); });
     <n-modal v-model:show="show" preset="card" style="width: 560px">
       <template #header>
         <n-space align="center">
-          <n-icon :size="20"><PlusIcon /></n-icon>
-          <span>{{ t("dns_admin.create") }}</span>
+          <n-icon :size="20"><component :is="editingId ? EditIcon : PlusIcon" /></n-icon>
+          <span>{{ editingId ? t("dns_admin.edit") : t("dns_admin.create") }}</span>
         </n-space>
       </template>
       <n-form>

@@ -616,6 +616,10 @@ onMounted(() => {
             </span>
           </n-descriptions-item>
           <n-descriptions-item :label="t('subnets.threshold')">{{ subnet.threshold_pct != null ? `${subnet.threshold_pct}%` : "—" }}</n-descriptions-item>
+          <n-descriptions-item :label="t('subnets.gateway')">
+            <span v-if="subnet.gateway" style="font-family: monospace">{{ subnet.gateway }}</span>
+            <span v-else>—</span>
+          </n-descriptions-item>
           <n-descriptions-item :label="t('nav.customers')">
             <a v-if="subnet.customer_id" href="#" class="entity-link"
                @click.prevent="router.push({ name: 'customers' })">

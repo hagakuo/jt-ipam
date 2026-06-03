@@ -83,6 +83,16 @@ function labelEffective(v: string | null | undefined): string {
   return (out === key ? m[1] : out) + rest;
 }
 
+// 不偵測（exclude_from_ping）或 subnet 沒掃描時，後端的「離線」不該照搬 → 顯示未知，與狀態燈一致
+const effectiveDisplay = computed(() => {
+  const a = props.address;
+  const v = a?.effective_status;
+  if (!v) return "—";
+  const noProbe = !!a?.exclude_from_ping || a?.subnet_scan_enabled === false;
+  if (noProbe && /^offline/i.test(v)) return t("addresses.effective_unknown");
+  return labelEffective(v);
+});
+
 const props = defineProps<{
   show: boolean;
   address: IPAddress | null;
@@ -446,7 +456,7 @@ async function remove() {
           <n-descriptions-item :label="t('addresses.exclude_from_ping')">{{ props.address?.exclude_from_ping ? "✓" : "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('addresses.ptr_ignore')">{{ props.address?.ptr_ignore ? "✓" : "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('addresses.source')">{{ labelSource(props.address?.discovery_source) }}</n-descriptions-item>
-          <n-descriptions-item :label="t('addresses.effective_status')">{{ labelEffective(props.address?.effective_status) }}</n-descriptions-item>
+          <n-descriptions-item :label="t('addresses.effective_status')">{{ effectiveDisplay }}</n-descriptions-item>
           <n-descriptions-item :label="t('addresses.last_seen_scanner')">{{ fmtDateTime(props.address?.last_seen_scanner) }}</n-descriptions-item>
           <n-descriptions-item :label="t('addresses.last_seen_librenms')">{{ fmtDateTime(props.address?.last_seen_librenms) }}</n-descriptions-item>
           <n-descriptions-item :label="t('addresses.last_seen_dns')">{{ fmtDateTime(props.address?.last_seen_dns) }}</n-descriptions-item>
@@ -506,13 +516,13 @@ async function remove() {
               <n-select v-model:value="form.state" :options="stateOptions" />
             </n-form-item>
           </n-space>
-          <n-form-item v-if="!isCreate" :label="t('hostnameSrc.pin_label')">
+          <n-form-item v-if="!isCreate" :label="t('hostnameSrc.pin_label')" style="margin-bottom: 12px">
             <n-select
               v-model:value="form.hostname_source_pin"
               :options="pinOptions" :placeholder="t('hostnameSrc.auto')"
             />
             <template #feedback>
-              <span style="font-size: 11px; opacity: .7">{{ t("hostnameSrc.pin_hint") }}</span>
+              <span style="font-size: 11px; opacity: .7; display: block; padding-bottom: 4px">{{ t("hostnameSrc.pin_hint") }}</span>
             </template>
           </n-form-item>
           <n-space :size="12" :wrap-item="false" style="flex-wrap: wrap">

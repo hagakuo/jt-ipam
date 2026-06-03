@@ -57,3 +57,5 @@ class VLANRead(VLANBase):
     updated_at: datetime
     # feature C：掛在此 VLAN 的（LibreNMS）裝置數
     device_count: int = 0
+    port_count: int = 0    # FDB 中屬於此 VLAN 的不重複 (裝置, 連接埠) 數
+    ip_count: int = 0      # 此 VLAN 下子網路的 IP 數
