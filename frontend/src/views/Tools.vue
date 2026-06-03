@@ -237,12 +237,12 @@ async function runEui64() {
         </template>
         <div class="nu-grid">
           <!-- IP 資訊 -->
-          <n-card size="small" class="nu-wide"><template #header><span class="nu-h"><n-icon :size="16"><AddressesIcon /></n-icon>{{ t('tools_page.ip_info') }}</span></template>
+          <n-card size="small"><template #header><span class="nu-h"><n-icon :size="16"><AddressesIcon /></n-icon>{{ t('tools_page.ip_info') }}</span></template>
             <div class="nu-row">
               <n-input v-model:value="ipInput" placeholder="8.8.8.8" @keyup.enter="runIpInfo" />
               <n-button type="primary" class="nu-go" @click="runIpInfo"><template #icon><n-icon><SearchIcon /></n-icon></template>{{ t("tools_page.lookup") }}</n-button>
             </div>
-            <n-descriptions v-if="ipResult" bordered :column="2" size="small" style="margin-top:10px" label-placement="left"
+            <n-descriptions v-if="ipResult" bordered :column="1" size="small" style="margin-top:10px" label-placement="left"
                             label-align="right" :label-style="{ whiteSpace: 'nowrap' }">
               <n-descriptions-item v-for="(v, k) in ipResult" :key="String(k)" :label="fieldLabel(k)">
                 <code>{{ v ?? "—" }}</code>
@@ -274,7 +274,7 @@ async function runEui64() {
           </n-card>
 
           <!-- EUI-64 -->
-          <n-card size="small" class="nu-wide"><template #header><span class="nu-h"><n-icon :size="16"><ListIcon /></n-icon>{{ t('tools_page.eui64') }}</span></template>
+          <n-card size="small"><template #header><span class="nu-h"><n-icon :size="16"><ListIcon /></n-icon>{{ t('tools_page.eui64') }}</span></template>
             <div class="nu-row">
               <n-input v-model:value="macInput" placeholder="00:11:22:33:44:55" @keyup.enter="runEui64" />
               <n-input v-model:value="prefixInput" placeholder="2001:db8::/64" @keyup.enter="runEui64" />
@@ -313,12 +313,12 @@ async function runEui64() {
         </template>
         <div class="nu-grid">
           <!-- CIDR 資訊 -->
-          <n-card size="small" class="nu-wide"><template #header><span class="nu-h"><n-icon :size="16"><SubnetsIcon /></n-icon>{{ t('tools_page.cidr_info') }}</span></template>
+          <n-card size="small"><template #header><span class="nu-h"><n-icon :size="16"><SubnetsIcon /></n-icon>{{ t('tools_page.cidr_info') }}</span></template>
             <div class="nu-row">
               <n-input v-model:value="cidrInput" placeholder="192.168.0.0/24" @keyup.enter="runCidrInfo" />
               <n-button type="primary" class="nu-go" @click="runCidrInfo"><template #icon><n-icon><SearchIcon /></n-icon></template>{{ t("tools_page.lookup") }}</n-button>
             </div>
-            <n-descriptions v-if="cidrResult" bordered :column="2" size="small" style="margin-top:10px" label-placement="left"
+            <n-descriptions v-if="cidrResult" bordered :column="1" size="small" style="margin-top:10px" label-placement="left"
                             label-align="right" :label-style="{ whiteSpace: 'nowrap' }">
               <n-descriptions-item v-for="(v, k) in cidrResult" :key="String(k)" :label="fieldLabel(k)">
                 <code>{{ v ?? "—" }}</code>
@@ -327,7 +327,7 @@ async function runEui64() {
           </n-card>
 
           <!-- CIDR 切割 -->
-          <n-card size="small" class="nu-wide"><template #header><span class="nu-h"><n-icon :size="16"><GridIcon /></n-icon>{{ t('tools_page.cidr_split') }}</span></template>
+          <n-card size="small"><template #header><span class="nu-h"><n-icon :size="16"><GridIcon /></n-icon>{{ t('tools_page.cidr_split') }}</span></template>
             <div class="nu-row">
               <n-input v-model:value="splitCidr" placeholder="192.168.0.0/24" />
               <n-input-number v-model:value="splitNew" :min="0" :max="128" placeholder="new prefix" style="width: 140px; flex:0 0 auto" />
@@ -368,7 +368,7 @@ async function runEui64() {
           </n-card>
 
           <!-- Aggregate -->
-          <n-card size="small" class="nu-wide"><template #header><span class="nu-h"><n-icon :size="16"><GridIcon /></n-icon>{{ t('tools_page.t_aggregate') }}</span></template>
+          <n-card size="small"><template #header><span class="nu-h"><n-icon :size="16"><GridIcon /></n-icon>{{ t('tools_page.t_aggregate') }}</span></template>
             <div class="nu-row">
               <n-input v-model:value="nu.aggIn" type="textarea" :autosize="{ minRows: 1, maxRows: 4 }" placeholder="192.168.0.0/24, 192.168.1.0/24" />
               <n-button type="primary" class="nu-go" @click="nuAgg"><template #icon><n-icon><SearchIcon /></n-icon></template>{{ t("tools_page.lookup") }}</n-button>
@@ -401,7 +401,7 @@ async function runEui64() {
           </n-card>
 
           <!-- MAC 製造商 (OUI) -->
-          <n-card size="small" class="nu-wide"><template #header><span class="nu-h"><n-icon :size="16"><DevicesIcon /></n-icon>{{ t('tools_page.oui_tab') }}</span></template>
+          <n-card size="small"><template #header><span class="nu-h"><n-icon :size="16"><DevicesIcon /></n-icon>{{ t('tools_page.oui_tab') }}</span></template>
             <n-space vertical :size="14">
               <n-alert type="info" size="small">
                 {{ t('tools_page.oui_alert_pre') }} <code>manuf</code> {{ t('tools_page.oui_alert_post') }}
@@ -490,7 +490,7 @@ async function runEui64() {
           </n-card>
 
           <!-- 郵件 / DNS 診斷 -->
-          <n-card size="small" class="nu-wide"><template #header><span class="nu-h"><n-icon :size="16"><DnsIcon /></n-icon>{{ t('tools_page.t_mail') }}</span></template>
+          <n-card size="small"><template #header><span class="nu-h"><n-icon :size="16"><DnsIcon /></n-icon>{{ t('tools_page.t_mail') }}</span></template>
             <div class="nu-row">
               <n-input v-model:value="mail.domain" placeholder="example.com" @keyup.enter="runMail" />
               <n-input v-model:value="mail.selector" :placeholder="t('tools_page.dkim_selector_ph')" style="flex: 0 1 150px" @keyup.enter="runMail" />
@@ -552,15 +552,13 @@ async function runEui64() {
 /* 卡片標題列右側副標：說明這些工具 AI 也能用 */
 .tools-subtitle { font-size: 12px; opacity: 0.7; }
 
-/* 每個分類底下的工具：最多兩欄，不要擠到三欄；窄螢幕自動單欄 */
+/* 每個分類底下的工具一律一排兩個；寬度不夠（窄螢幕）才自動變一排一個 */
 .nu-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   align-items: start;
 }
-/* 輸出較豐富的工具（IP/CIDR 資訊、切割、聚合、OUF、郵件診斷）佔滿整列 */
-.nu-grid > .nu-wide { grid-column: 1 / -1; }
 @media (max-width: 820px) {
   .nu-grid { grid-template-columns: 1fr; }
 }

@@ -246,23 +246,26 @@ async function removeConversation(id: string) {
         </n-space>
       </template>
       <template #header-extra>
-        <n-space class="chat-actions" :size="4" :wrap="false">
-          <n-button text size="tiny" :title="showHistory ? t('chat.hide_history') : t('chat.history')" @click="toggleHistory">
-            <template #icon><n-icon><ChatHistoryIcon /></n-icon></template>
-            <span class="chat-act-label">{{ showHistory ? t("chat.hide_history") : t("chat.history") }}</span>
-          </n-button>
-          <n-button text size="tiny" :title="showTrace ? t('chat.hide_trace') : t('chat.trace')" @click="showTrace = !showTrace">
-            <template #icon><n-icon><ToolsIcon /></n-icon></template>
-            <span class="chat-act-label">{{ showTrace ? t("chat.hide_trace") : t("chat.trace") }}</span>
-          </n-button>
-          <n-button text size="tiny" :title="t('chat.reset')" @click="reset">
-            <template #icon><n-icon><RefreshIcon /></n-icon></template>
-            <span class="chat-act-label">{{ t("chat.reset") }}</span>
-          </n-button>
+        <div class="chat-actions">
+          <!-- 三顆動作鈕收進一個有外框 + 分隔線的分段控制，明顯看得出是按鈕 -->
+          <div class="chat-seg">
+            <n-button text size="small" class="seg-btn" :title="showHistory ? t('chat.hide_history') : t('chat.history')" @click="toggleHistory">
+              <template #icon><n-icon><ChatHistoryIcon /></n-icon></template>
+              <span class="chat-act-label">{{ showHistory ? t("chat.hide_history") : t("chat.history") }}</span>
+            </n-button>
+            <n-button text size="small" class="seg-btn" :title="showTrace ? t('chat.hide_trace') : t('chat.trace')" @click="showTrace = !showTrace">
+              <template #icon><n-icon><ToolsIcon /></n-icon></template>
+              <span class="chat-act-label">{{ showTrace ? t("chat.hide_trace") : t("chat.trace") }}</span>
+            </n-button>
+            <n-button text size="small" class="seg-btn" :title="t('chat.reset')" @click="reset">
+              <template #icon><n-icon><RefreshIcon /></n-icon></template>
+              <span class="chat-act-label">{{ t("chat.reset") }}</span>
+            </n-button>
+          </div>
           <n-button quaternary circle size="small" :title="t('common.cancel')" @click="open = false">
             <template #icon><n-icon :size="18"><CancelIcon /></n-icon></template>
           </n-button>
-        </n-space>
+        </div>
       </template>
 
       <div v-if="showHistory" class="chat-history">
@@ -392,11 +395,34 @@ async function removeConversation(id: string) {
   /* 讓 header 動作鈕能依「視窗實際寬度」決定要不要收成 icon */
   container-type: inline-size;
 }
+/* 標題列右側動作區：與 × 垂直置中 */
+.chat-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 三顆鈕的分段控制：外框 + 圓角，每顆之間一條分隔線，明顯是可按的群組 */
+.chat-seg {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--n-border-color, rgba(128, 128, 128, 0.32));
+  border-radius: 8px;
+  overflow: hidden;
+}
+.chat-seg :deep(.seg-btn) {
+  border-radius: 0;
+  height: 28px;
+  padding: 0 10px;
+  --n-color-hover: rgba(24, 160, 88, 0.12);
+}
+.chat-seg :deep(.seg-btn + .seg-btn) {
+  border-left: 1px solid var(--n-border-color, rgba(128, 128, 128, 0.28));
+}
 /* 視窗夠寬：icon + 文字；視窗被壓窄（手機）→ 只留 icon，標題列才不會折行。
-   標籤藏起來時補一點按鈕內距，icon 才不會貼邊。 */
+   標籤藏起來時 icon 自動置中（padding 已對稱）。 */
 @container (max-width: 430px) {
-  .chat-actions .chat-act-label { display: none; }
-  .chat-actions :deep(.n-button--text-type) { padding: 0 4px; }
+  .chat-act-label { display: none; }
+  .chat-seg :deep(.seg-btn) { padding: 0 9px; }
 }
 .chat-input-row {
   display: flex;

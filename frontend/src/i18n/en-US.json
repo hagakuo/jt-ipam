@@ -825,7 +825,7 @@
     "failed": "Export failed"
   },
   "tools_page": {
-    "title": "Tools",
+    "title": "Utilities",
     "ip_info": "IP info",
     "cidr_info": "CIDR info",
     "cidr_split": "CIDR split",
