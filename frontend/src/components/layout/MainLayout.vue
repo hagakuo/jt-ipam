@@ -368,9 +368,10 @@ function startDrag(e: MouseEvent) {
     </n-layout-sider>
     <n-layout>
       <n-layout-header bordered class="topbar">
-        <n-space align="center" justify="end" style="width: 100%">
+        <n-space align="center" justify="space-between" :wrap="false" style="width: 100%">
+          <global-search v-if="me" />
+          <span v-else />
           <n-space align="center" :size="10" :wrap="false">
-            <global-search v-if="me" />
             <n-select
               :value="locale"
               :options="localeOptions"

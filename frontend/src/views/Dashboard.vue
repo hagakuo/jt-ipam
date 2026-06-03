@@ -98,6 +98,9 @@ const pinnedLocations = computed(() => allLocations.value.filter((l) => locPin.i
 const pinnedRacks = computed(() => allRacks.value.filter((r) => rackPin.isPinned(r.id)));
 // 釘選機房裡裝置數最大值 → 給橫條圖當基準
 const maxLocDevices = computed(() => Math.max(1, ...pinnedLocations.value.map((l) => l.device_count)));
+// 機櫃數 / 裝置數 各自取最寬位數，讓兩欄數字跨列上下對齊
+const locRackDigits = computed(() => Math.max(1, ...pinnedLocations.value.map((l) => String(l.rack_count ?? 0).length)));
+const locDevDigits = computed(() => Math.max(1, ...pinnedLocations.value.map((l) => String(l.device_count ?? 0).length)));
 async function loadPins() {
   try {
     const [l, r] = await Promise.all([listLocations(), listRacks()]);
@@ -258,8 +261,8 @@ onMounted(() => { void load(); void loadPins(); });
               <div class="loc-bar__fill" :style="{ width: (l.device_count / maxLocDevices * 100) + '%' }"></div>
             </div>
             <span class="loc-counts">
-              <n-icon :size="13"><RacksIcon /></n-icon>{{ l.rack_count }}
-              <n-icon :size="13" style="margin-left:8px"><DevicesIcon /></n-icon>{{ l.device_count }}
+              <span class="loc-metric"><n-icon :size="13"><RacksIcon /></n-icon><span class="loc-num" :style="{ minWidth: locRackDigits + 'ch' }">{{ l.rack_count }}</span></span>
+              <span class="loc-metric"><n-icon :size="13"><DevicesIcon /></n-icon><span class="loc-num" :style="{ minWidth: locDevDigits + 'ch' }">{{ l.device_count }}</span></span>
             </span>
           </div>
         </n-space>
@@ -381,10 +384,12 @@ onMounted(() => { void load(); void loadPins(); });
 .loc-row:hover { background: rgba(127, 127, 127, 0.08); }
 .loc-name { font-weight: 500; flex: 0 0 132px; max-width: 132px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .loc-counts {
-  flex: 0 0 auto; min-width: 72px; justify-content: flex-end;
-  display: inline-flex; align-items: center; gap: 2px;
+  flex: 0 0 auto; justify-content: flex-end;
+  display: inline-flex; align-items: center; gap: 12px;
   font-size: 12px; opacity: 0.7; font-variant-numeric: tabular-nums;
 }
+.loc-metric { display: inline-flex; align-items: center; gap: 3px; }
+.loc-num { text-align: right; font-variant-numeric: tabular-nums; }
 .loc-bar {
   flex: 1 1 auto; height: 6px; border-radius: 3px;
   background: rgba(127, 127, 127, 0.15); overflow: hidden;

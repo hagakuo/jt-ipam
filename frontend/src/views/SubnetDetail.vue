@@ -26,6 +26,8 @@ import {
   NSelect,
   NSwitch,
   NInputNumber,
+  NSlider,
+  NDropdown,
   type UploadCustomRequestOptions,
   type DataTableColumns,
   useMessage,
@@ -113,7 +115,7 @@ const { isPinned, toggle: togglePinned, ensureLoaded: ensurePinsLoaded } = usePi
 
 const { visibleKeys: ipVisibleKeys, setVisible: setIpVisible, reset: resetIpVisible } = useColumnPrefs(
   "subnet_detail_ips",
-  ["live", "ip", "hostname", "state", "dhcp", "mac", "mac_vendor", "owner", "switch_port", "description", "last_seen", "note"],
+  ["live", "ip", "hostname", "state", "dhcp", "mac", "mac_vendor", "owner", "switch_port", "description", "last_seen", "stale_days", "note"],
   ["live", "ip", "hostname", "state", "dhcp", "mac", "mac_vendor", "switch_port", "description", "last_seen"],
 );
 const ipColumnPickerItems = [
@@ -128,6 +130,7 @@ const ipColumnPickerItems = [
   { key: "switch_port", label: t("cols.switch_port") },
   { key: "description", label: t("cols.description") },
   { key: "last_seen", label: t("cols.last_seen") },
+  { key: "stale_days", label: t("stale.col_stale") },
   { key: "note", label: t("cols.note") },
 ];
 import { SubnetsIcon, RefreshIcon, UsageIcon, GridIcon, ListIcon, PinIcon, PlusIcon } from "@/icons";
@@ -352,7 +355,7 @@ function stateTag(state: string) {
 
 // 閒置區間列：IP 欄要橫跨「ip 之後的所有可見欄位」，文字才不會被切在一欄裡。
 const IP_COL_ORDER = ["live", "ip", "hostname", "state", "dhcp", "mac", "mac_vendor",
-  "owner", "switch_port", "description", "last_seen", "note"];
+  "owner", "switch_port", "description", "last_seen", "stale_days", "note"];
 const gapSpan = computed(() => {
   const vis = IP_COL_ORDER.filter((k) => ipVisibleKeys.value.includes(k));
   const i = vis.indexOf("ip");
@@ -381,16 +384,24 @@ const allIpColumns = computed<DataTableColumns<IPAddress>>(() => autoSort([
   { title: t("addresses.owner"), key: "owner", width: 120,
     ellipsis: { tooltip: true }, render: (r) => r.owner ?? "" },
   { title: t("addresses.switch_port"), key: "switch_port", width: 160,
-    ellipsis: { tooltip: true },
+    ellipsis: { tooltip: false },   // 裁切但不開 cell tooltip，否則會跟下方 NTooltip 疊成兩個彈框
     render: (r) => !r.switch_port ? ""
-      : (r.switch_port_confident === false
-          ? h(NTooltip, null, {
-              trigger: () => h(SwitchPortLabel, { value: r.switch_port, dim: true }),
-              default: () => t("addresses.switch_port_uncertain") })
-          : h(SwitchPortLabel, { value: r.switch_port })) },
+      : h(NTooltip, null, {
+          trigger: () => h(SwitchPortLabel, { value: r.switch_port, dim: r.switch_port_confident === false }),
+          default: () => r.switch_port_confident === false
+            ? t("addresses.switch_port_uncertain")
+            : r.switch_port }) },
   { title: t("common.description"), key: "description", width: 200,
     ellipsis: { tooltip: true }, render: (r) => r.description ?? "" },
   { title: t("addresses.last_seen"), key: "last_seen", width: 170, render: (r) => lastSeen(r) },
+  { title: t("stale.col_stale"), key: "stale_days", width: 110,
+    sorter: (a: any, b: any) => {
+      if (a.__gap || b.__gap) return 0;
+      const da = isProbed(a) ? (staleDays(a) ?? Number.MAX_SAFE_INTEGER) : -1;
+      const db = isProbed(b) ? (staleDays(b) ?? Number.MAX_SAFE_INTEGER) : -1;
+      return da - db;
+    },
+    render: (r) => (r as any).__gap ? "" : staleDaysLabel(r) },
   { title: t("addresses.note"), key: "note", width: 220,
     ellipsis: { tooltip: true }, render: (r) => r.note ?? "" },
 ]));
@@ -413,6 +424,79 @@ async function bulkDeleteIps() {
     else msg.success(t("common.deleted_n", { n: res.deleted }));
     checkedIps.value = [];
     if (subnet.value) await load(subnet.value.id);
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+  finally { ipBulkBusy.value = false; }
+}
+
+// ── 失聯 IP 篩選 ──
+// 失聯天數 = now − max(last_seen_*)；null = 從未上線。不偵測的 IP(排除 ping / 子網路未掃描) 不納入失聯判定。
+const STALE_PRESETS = [7, 14, 30, 60, 90];
+const staleFilterOn = ref(false);
+const staleThreshold = ref(30);          // 天
+const staleNeverOnly = ref(false);       // 只看「從未上線」
+
+function staleDays(r: IPAddress): number | null {
+  const arr = [r.last_seen_scanner, r.last_seen_librenms, r.last_seen_dns].filter(Boolean) as string[];
+  if (!arr.length) return null;
+  const max = Math.max(...arr.map((s) => new Date(s).getTime()));
+  return Math.floor((Date.now() - max) / 86400000);
+}
+function isProbed(r: IPAddress): boolean {
+  return !r.exclude_from_ping && r.subnet_scan_enabled !== false;
+}
+function staleDaysLabel(r: IPAddress): string {
+  if (!isProbed(r)) return t("stale.not_probed");
+  const d = staleDays(r);
+  if (d === null) return t("stale.never");
+  return t("stale.n_days", { n: d });
+}
+const staleMatches = computed<IPAddress[]>(() =>
+  addresses.value.filter((a) => {
+    if (!isProbed(a)) return false;
+    const d = staleDays(a);
+    if (staleNeverOnly.value) return d === null;
+    return d === null || d >= staleThreshold.value;   // 從未上線視為無限失聯
+  }),
+);
+function applyPreset(days: number) {
+  staleNeverOnly.value = false;
+  staleThreshold.value = days;
+  staleFilterOn.value = true;
+}
+function applyNeverOnly() {
+  staleNeverOnly.value = true;
+  staleFilterOn.value = true;
+}
+
+// 批次設定狀態
+const stateMenuOptions = computed(() =>
+  ["reserved", "offline", "active"].map((s) => ({
+    label: t(`stale.set_state_to`, { state: t(`addresses.state_${s}`) }),
+    key: s,
+  })),
+);
+async function bulkSetState(state: string) {
+  const ids = checkedIps.value.map(String).filter((k) => !k.startsWith("gap:"));
+  if (!ids.length) return;
+  ipBulkBusy.value = true;
+  try {
+    const { bulkSetAddressState } = await import("@/api/addresses");
+    const res = await bulkSetAddressState(ids, state);
+    if (res.failed) msg.warning(t("stale.state_done_partial", { updated: res.updated, failed: res.failed }));
+    else msg.success(t("stale.state_done", { n: res.updated }));
+    checkedIps.value = [];
+    if (subnet.value) await load(subnet.value.id);
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+  finally { ipBulkBusy.value = false; }
+}
+async function bulkNotifyStale() {
+  const ids = checkedIps.value.map(String).filter((k) => !k.startsWith("gap:"));
+  if (!ids.length || !subnet.value) return;
+  ipBulkBusy.value = true;
+  try {
+    const { notifyStaleAddresses } = await import("@/api/addresses");
+    const res = await notifyStaleAddresses(subnet.value.id, ids, staleNeverOnly.value ? 0 : staleThreshold.value);
+    msg.success(t("stale.notify_done", { n: res.ip_count, admins: res.notified_admins }));
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
   finally { ipBulkBusy.value = false; }
 }
@@ -449,6 +533,8 @@ function _gapRow(gs: number, ge: number): any {
   return { __gap: true, id: `gap:${gs}`, ip: _intToIp(gs), _gapEnd: _intToIp(ge), _gapCount: ge - gs + 1 };
 }
 const ipRows = computed<any[]>(() => {
+  // 失聯篩選開啟時：只列符合的已登記 IP，不插入閒置區間列
+  if (staleFilterOn.value) return [...staleMatches.value];
   const cidr = subnet.value?.cidr;
   const list = [...addresses.value];
   if (!cidr || cidr.includes(":")) return list;   // IPv6 暫不算閒置區間
@@ -680,6 +766,10 @@ onMounted(() => {
               <template #icon><n-icon><PlusIcon /></n-icon></template>
               {{ t("subnet_detail.add_address") }}
             </n-button>
+            <n-button size="small" :type="staleFilterOn ? 'warning' : 'default'"
+                      @click="staleFilterOn = !staleFilterOn">
+              {{ t("stale.filter_label") }}
+            </n-button>
             <ColumnPicker :all="ipColumnPickerItems" :visible="ipVisibleKeys"
                           @update:visible="setIpVisible" @reset="resetIpVisible" />
             <n-button @click="load(subnet.id)" :loading="loading">
@@ -688,6 +778,26 @@ onMounted(() => {
             </n-button>
           </n-space>
         </template>
+        <!-- 失聯 IP 篩選：按下表頭「只看失聯 IP」才展開 -->
+        <div v-if="staleFilterOn" class="stale-bar">
+          <div class="stale-row">
+            <n-space :size="4" :wrap="true">
+              <n-button v-for="p in STALE_PRESETS" :key="p" size="tiny"
+                        :type="!staleNeverOnly && staleThreshold === p ? 'primary' : 'default'"
+                        @click="applyPreset(p)">{{ t("stale.n_days", { n: p }) }}</n-button>
+              <n-button size="tiny" :type="staleNeverOnly ? 'primary' : 'default'"
+                        @click="applyNeverOnly">{{ t("stale.never") }}</n-button>
+            </n-space>
+          </div>
+          <div v-if="!staleNeverOnly" class="stale-row">
+            <span class="stale-slider-label">{{ t("stale.threshold_label", { n: staleThreshold }) }}</span>
+            <n-slider v-model:value="staleThreshold" :min="1" :max="180" :step="1" style="flex: 1; max-width: 360px" />
+          </div>
+          <div class="stale-hint">
+            {{ t("stale.match_count", { n: staleMatches.length }) }} · {{ t("stale.exclude_note") }}
+          </div>
+        </div>
+
         <n-space v-if="checkedIps.length" align="center" style="margin-bottom: 8px; padding: 8px 12px; background: rgba(127,127,127,0.08); border-radius: 6px;">
           <span>{{ t("common.selected_n", { n: checkedIps.length }) }}</span>
           <n-popconfirm @positive-click="bulkDeleteIps">
@@ -698,6 +808,12 @@ onMounted(() => {
             </template>
             {{ t("common.confirm_delete_n", { n: checkedIps.length }) }}
           </n-popconfirm>
+          <n-dropdown trigger="click" :options="stateMenuOptions" @select="bulkSetState">
+            <n-button size="small" :loading="ipBulkBusy">{{ t("stale.set_state") }}</n-button>
+          </n-dropdown>
+          <n-button size="small" :loading="ipBulkBusy" @click="bulkNotifyStale">
+            {{ t("stale.notify") }}
+          </n-button>
           <n-button size="small" @click="checkedIps = []">{{ t("common.clear_selection") }}</n-button>
         </n-space>
         <n-data-table
@@ -793,6 +909,11 @@ onMounted(() => {
    水平捲動吸收寬度，卡片不再被撐爆。 */
 :deep(.n-card) { min-width: 0; }
 :deep(.n-data-table) { max-width: 100%; }
+/* 失聯篩選列 */
+.stale-bar { margin-bottom: 10px; display: flex; flex-direction: column; gap: 6px; }
+.stale-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.stale-slider-label { font-size: 12px; opacity: 0.8; min-width: 130px; }
+.stale-hint { font-size: 12px; opacity: 0.6; }
 /* 閒置區間列：灰底、不可點 */
 :deep(.ip-gap-row td) {
   background: rgba(127, 127, 127, 0.06);

@@ -83,3 +83,16 @@ export async function bulkDeleteAddresses(ids: string[]): Promise<BulkDeleteResu
   const { data } = await apiClient.post<BulkDeleteResult>("/api/v1/addresses/bulk-delete", { ids });
   return data;
 }
+
+export interface BulkStateResult { updated: number; failed: number; errors: { id: string; error: string }[]; }
+export async function bulkSetAddressState(ids: string[], state: string): Promise<BulkStateResult> {
+  const { data } = await apiClient.post<BulkStateResult>("/api/v1/addresses/bulk-state", { ids, state });
+  return data;
+}
+
+export interface NotifyStaleResult { notified_admins: number; ip_count: number; }
+export async function notifyStaleAddresses(subnetId: string, ids: string[], days: number): Promise<NotifyStaleResult> {
+  const { data } = await apiClient.post<NotifyStaleResult>("/api/v1/addresses/notify-stale",
+    { subnet_id: subnetId, ids, days });
+  return data;
+}

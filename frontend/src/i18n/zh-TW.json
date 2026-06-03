@@ -1540,5 +1540,21 @@
   "oui_admin": {
     "title": "MAC 製造商資料庫 (OUI)",
     "schedule_note": "系統每月 1 號自動更新一次（systemd timer）。需要時也可在此手動立即更新。"
+  },
+  "stale": {
+    "filter_label": "只看失聯 IP",
+    "n_days": "{n} 天",
+    "never": "從未上線",
+    "not_probed": "未偵測",
+    "threshold_label": "失聯 ≥ {n} 天",
+    "col_stale": "失聯",
+    "match_count": "符合 {n} 個",
+    "exclude_note": "已排除略過 Ping / 未掃描的 IP",
+    "set_state": "批次設定狀態",
+    "set_state_to": "設為「{state}」",
+    "state_done": "已更新 {n} 個 IP 狀態",
+    "state_done_partial": "更新 {updated} 個，{failed} 個失敗",
+    "notify": "提醒管理者",
+    "notify_done": "已就 {n} 個失聯 IP 通知 {admins} 位管理者"
   }
 }

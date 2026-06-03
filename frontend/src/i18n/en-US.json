@@ -1540,5 +1540,21 @@
   "oui_admin": {
     "title": "MAC Vendor Database (OUI)",
     "schedule_note": "Auto-refreshed monthly on the 1st (systemd timer). You can also refresh manually here."
+  },
+  "stale": {
+    "filter_label": "Stale IPs only",
+    "n_days": "{n}d",
+    "never": "Never seen",
+    "not_probed": "Not probed",
+    "threshold_label": "Stale ≥ {n}d",
+    "col_stale": "Stale",
+    "match_count": "{n} matched",
+    "exclude_note": "Excludes no-ping / non-scanned IPs",
+    "set_state": "Set state",
+    "set_state_to": "Set to \"{state}\"",
+    "state_done": "Updated {n} IP states",
+    "state_done_partial": "Updated {updated}, {failed} failed",
+    "notify": "Notify admins",
+    "notify_done": "Notified {admins} admin(s) about {n} stale IPs"
   }
 }

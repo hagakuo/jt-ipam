@@ -29,6 +29,7 @@ import type { IPAddress, Subnet } from "@/types";
 import { AddressesIcon, RefreshIcon, DeleteIcon } from "@/icons";
 import IPAddressEditModal from "@/components/IPAddressEditModal.vue";
 import LiveStatusDot from "@/components/LiveStatusDot.vue";
+import SwitchPortLabel from "@/components/SwitchPortLabel.vue";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
@@ -182,13 +183,14 @@ function liveDot(r: IPAddress) {
   return h(LiveStatusDot, { address: r });
 }
 
-// 交換器位置：FDB 推得但非高信心 (uplink/trunk 學到)→ 灰字 + tooltip 說明
+// 交換器位置：用 SwitchPortLabel 呈現 switch@port；非高信心 (uplink/trunk 學到) 用 dim 橘色斜體 + tooltip 說明
 function switchPortCell(r: IPAddress) {
   if (!r.switch_port) return "";
-  if (r.switch_port_confident !== false) return r.switch_port;
   return h(NTooltip, null, {
-    trigger: () => h("span", { style: "color: var(--n-text-color-3, #888)" }, r.switch_port ?? ""),
-    default: () => t("addresses.switch_port_uncertain"),
+    trigger: () => h(SwitchPortLabel, { value: r.switch_port, dim: r.switch_port_confident === false }),
+    default: () => r.switch_port_confident === false
+      ? t("addresses.switch_port_uncertain")
+      : r.switch_port,
   });
 }
 
@@ -228,7 +230,7 @@ const allColumns: DataTableColumns<IPAddress> = [
     sorter: true,
   },
   {
-    title: () => t("addresses.switch_port"), key: "switch_port", width: 140, ellipsis: { tooltip: true },
+    title: () => t("addresses.switch_port"), key: "switch_port", width: 140, ellipsis: { tooltip: false },
     render: (r) => switchPortCell(r), sorter: true,
   },
   {

@@ -712,6 +712,110 @@ async def bulk_delete(
     return {"deleted": deleted, "failed": len(errors), "errors": errors[:50]}
 
 
+_BULK_STATES = {"active", "reserved", "offline", "dhcp", "used"}
+
+
+class BulkStatePayload(StrictModel):
+    ids: list[uuid.UUID]
+    state: str
+
+
+@router.post("/bulk-state", status_code=status.HTTP_200_OK)
+async def bulk_set_state(
+    payload: BulkStatePayload,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """批次設定 IP 狀態（如把失聯 IP 標為 reserved 待回收）；逐筆檢查 subnet admin 權限。"""
+    if payload.state not in _BULK_STATES:
+        raise HTTPException(422, detail=f"invalid state (allowed: {sorted(_BULK_STATES)})")
+    if not payload.ids:
+        return {"updated": 0, "failed": 0, "errors": []}
+    if len(payload.ids) > 5000:
+        raise HTTPException(400, detail="too many ids in one batch (max 5000)")
+
+    updated = 0
+    errors: list[dict[str, str]] = []
+    actor_ip = request.client.host if request.client else None
+    actor_ua = request.headers.get("user-agent")
+    request_id = getattr(request.state, "request_id", None)
+
+    for aid in payload.ids:
+        obj = await session.get(IPAddress, aid)
+        if obj is None:
+            errors.append({"id": str(aid), "error": "not_found"})
+            continue
+        try:
+            await _require_subnet_perm(session, user, obj.subnet_id, "admin")
+        except HTTPException:
+            errors.append({"id": str(aid), "error": "no_permission"})
+            continue
+        if obj.state == payload.state:
+            updated += 1
+            continue
+        before = obj.state
+        obj.state = payload.state
+        await append_audit(
+            session,
+            actor_user_id=str(user.id),
+            actor_ip=actor_ip,
+            actor_user_agent=actor_ua,
+            object_type="ip_address",
+            object_id=str(obj.id),
+            action="update",
+            diff={"before": {"state": before}, "after": {"state": payload.state}, "bulk": True},
+            request_id=request_id,
+        )
+        updated += 1
+
+    await session.commit()
+    return {"updated": updated, "failed": len(errors), "errors": errors[:50]}
+
+
+class NotifyStalePayload(StrictModel):
+    subnet_id: uuid.UUID
+    ids: list[uuid.UUID]
+    days: int
+
+
+@router.post("/notify-stale", status_code=status.HTTP_200_OK)
+async def notify_stale(
+    payload: NotifyStalePayload,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """對選定的失聯 IP 發提醒：在通知中心推一則摘要給所有管理者。"""
+    from app.services.notification import push_notification
+
+    await _require_subnet_perm(session, user, payload.subnet_id, "read")
+    n = len(payload.ids)
+    if n == 0:
+        return {"notified_admins": 0, "ip_count": 0}
+
+    subnet = await session.get(Subnet, payload.subnet_id)
+    cidr = str(subnet.cidr) if subnet else str(payload.subnet_id)
+
+    admins = list(
+        (await session.execute(select(User).where(User.is_admin.is_(True)))).scalars().all()
+    )
+    title = f"失聯 IP 提醒：{cidr}"
+    body = f"子網路 {cidr} 有 {n} 個 IP 失聯超過 {payload.days} 天（由 {user.username} 提出）。"
+    for admin in admins:
+        await push_notification(
+            session,
+            user_id=admin.id,
+            title=title,
+            body=body,
+            severity="warning",
+            link=f"/subnets/{payload.subnet_id}",
+            object_type="subnet",
+            object_id=payload.subnet_id,
+        )
+    await session.commit()
+    return {"notified_admins": len(admins), "ip_count": n}
+
+
 # ─────────────────── CSV 匯出 / 匯入 ───────────────────
 
 
