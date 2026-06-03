@@ -5,7 +5,7 @@
  * 不引入 JSZip 等相依。PDF 走瀏覽器列印（開新視窗 → 列印 → 另存 PDF），同樣零相依。
  */
 
-export type ExportFormat = "csv" | "md" | "pdf" | "ods" | "odt";
+export type ExportFormat = "csv" | "txt" | "md" | "pdf" | "ods" | "odt" | "xlsx";
 
 export interface ExportColumn {
   key: string;
@@ -53,6 +53,55 @@ function toMarkdown(cols: ExportColumn[], rows: Record<string, any>[]): string {
   const sep = "| " + cols.map(() => "---").join(" | ") + " |";
   const body = rows.map((r) => "| " + cols.map((c) => esc(cell(r, c.key))).join(" | ") + " |").join("\n");
   return [head, sep, body].join("\n") + "\n";
+}
+
+// ── TXT（tab 分隔） ──
+function toTXT(cols: ExportColumn[], rows: Record<string, any>[]): string {
+  const clean = (s: string) => s.replace(/[\t\n\r]/g, " ");
+  const head = cols.map((c) => clean(c.label)).join("\t");
+  const body = rows.map((r) => cols.map((c) => clean(cell(r, c.key))).join("\t")).join("\n");
+  return head + "\n" + body + "\n";
+}
+
+// ── XLSX（最小 OOXML，零相依；字串走 inlineStr） ──
+function exportXLSX(filename: string, cols: ExportColumn[], rows: Record<string, any>[]) {
+  const enc = new TextEncoder();
+  const cellXml = (v: string) => `<c t="inlineStr"><is><t xml:space="preserve">${xmlEscape(v)}</t></is></c>`;
+  const rowXml = (vals: string[]) => `<row>${vals.map(cellXml).join("")}</row>`;
+  const sheetRows = [
+    rowXml(cols.map((c) => c.label)),
+    ...rows.map((r) => rowXml(cols.map((c) => cell(r, c.key)))),
+  ].join("");
+  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+    + `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
+    + `<sheetData>${sheetRows}</sheetData></worksheet>`;
+  const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+    + `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"`
+    + ` xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`
+    + `<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>`;
+  const wbRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+    + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`
+    + `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>`
+    + `</Relationships>`;
+  const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+    + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`
+    + `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>`
+    + `</Relationships>`;
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+    + `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">`
+    + `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>`
+    + `<Default Extension="xml" ContentType="application/xml"/>`
+    + `<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>`
+    + `<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`
+    + `</Types>`;
+  const zip = zipStore([
+    { name: "[Content_Types].xml", data: enc.encode(contentTypes) },
+    { name: "_rels/.rels", data: enc.encode(rootRels) },
+    { name: "xl/workbook.xml", data: enc.encode(workbook) },
+    { name: "xl/_rels/workbook.xml.rels", data: enc.encode(wbRels) },
+    { name: "xl/worksheets/sheet1.xml", data: enc.encode(sheet) },
+  ]);
+  download(filename, zip, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
 }
 
 // ── PDF（瀏覽器列印） ──
@@ -212,6 +261,12 @@ export function exportTable(
   switch (format) {
     case "csv":
       download(`${filenameBase}.csv`, toCSVBlob(cols, rows), "text/csv;charset=utf-8");
+      return;
+    case "txt":
+      download(`${filenameBase}.txt`, new TextEncoder().encode(toTXT(cols, rows)), "text/plain;charset=utf-8");
+      return;
+    case "xlsx":
+      exportXLSX(`${filenameBase}.xlsx`, cols, rows);
       return;
     case "md":
       download(`${filenameBase}.md`, new TextEncoder().encode(toMarkdown(cols, rows)), "text/markdown");

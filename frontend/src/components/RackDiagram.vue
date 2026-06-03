@@ -14,6 +14,7 @@ import { useRouter } from "vue-router";
 import { NCard, NEmpty, NAlert, NSpace, NTooltip, NButton, NIcon, NDropdown } from "naive-ui";
 import type { RackDiagram } from "@/api/racks";
 import { rackTypeColor as colorFor } from "@/utils/rackColors";
+import { exportTable, type ExportColumn } from "@/utils/tableExport";
 import { ExportIcon } from "@/icons";
 import { getRackNameAlign, type RackNameAlign } from "@/api/basic";
 
@@ -146,11 +147,35 @@ const exportOptions = computed(() => [
   { label: "SVG", key: "svg" },
   { label: "PNG", key: "png" },
   { label: "draw.io", key: "drawio" },
+  { type: "divider", key: "d1" },
+  { label: "CSV", key: "csv" },
+  { label: "Excel (.xlsx)", key: "xlsx" },
+  { label: "OpenDocument (.ods)", key: "ods" },
+  { label: "Markdown (.md)", key: "md" },
+  { label: "純文字 (.txt)", key: "txt" },
 ]);
+// 機櫃裝置清單的資料匯出（csv/xlsx/ods/md/txt）
+function exportData(fmt: "csv" | "xlsx" | "ods" | "md" | "txt") {
+  const d = props.diagram;
+  if (!d) return;
+  const cols: ExportColumn[] = [
+    { key: "u_position", label: "U" },
+    { key: "u_size", label: "U Size" },
+    { key: "name", label: t("cols.name") },
+    { key: "type", label: t("cols.type") },
+    { key: "rack_face", label: t("racks.face") },
+    { key: "primary_ip", label: "IP" },
+    { key: "vendor", label: t("cols.vendor") },
+    { key: "model", label: t("cols.model") },
+  ];
+  const rows = [...d.devices].sort((a, b) => (b.u_position ?? 0) - (a.u_position ?? 0));
+  exportTable(fmt, `rack-${d.name}`, cols, rows as any, `Rack ${d.name}`);
+}
 function onExport(key: string) {
   if (key === "svg") exportSvg();
   else if (key === "png") exportPng();
   else if (key === "drawio") exportDrawio();
+  else if (["csv", "xlsx", "ods", "md", "txt"].includes(key)) exportData(key as any);
 }
 const router = useRouter();
 function goDevice(id: string) {
