@@ -81,6 +81,14 @@ class TrendPoint(StrictModel):
     ip_changes: int
 
 
+class RackUsage(StrictModel):
+    rack_id: str
+    name: str
+    used_u: int
+    total_u: int
+    pct: float
+
+
 class DashboardOverview(StrictModel):
     sections: int
     subnets: int
@@ -101,6 +109,7 @@ class DashboardOverview(StrictModel):
     device_types: list[TypeCount]        # 裝置類型分布
     customer_resources: list[CustomerResource]   # 各單位資源占比
     activity_trend: list[TrendPoint]     # 近 14 日 稽核 / IP 異動 趨勢
+    rack_usage: list[RackUsage]          # 機櫃 U 使用率
 
 
 @router.get("/overview", response_model=DashboardOverview)
@@ -311,6 +320,22 @@ async def overview(
         d = (today - timedelta(days=i)).isoformat()
         activity_trend.append(TrendPoint(day=d, audit=audit_by_day.get(d, 0), ip_changes=ipc_by_day.get(d, 0)))
 
+    # ── 機櫃 U 使用率 ──
+    rack_rows = (await session.execute(select(Rack.id, Rack.name, Rack.u_height))).all()
+    used_u_by_rack = {str(r[0]): int(r[1]) for r in (await session.execute(
+        select(Device.rack_id, func.coalesce(func.sum(Device.u_size), 0))
+        .where(Device.rack_id.is_not(None), Device.u_size.is_not(None))
+        .group_by(Device.rack_id))).all()}
+    rack_usage = sorted(
+        [RackUsage(
+            rack_id=str(rid), name=name,
+            used_u=min(used_u_by_rack.get(str(rid), 0), uh or 0),
+            total_u=uh or 0,
+            pct=round(min(100.0, used_u_by_rack.get(str(rid), 0) / uh * 100), 1) if uh else 0.0,
+        ) for rid, name, uh in rack_rows],
+        key=lambda x: x.pct, reverse=True,
+    )[:8]
+
     return DashboardOverview(
         sections=len(visible_sections),
         subnets=len(visible_subnets),
@@ -330,4 +355,5 @@ async def overview(
         device_types=device_types,
         customer_resources=customer_resources,
         activity_trend=activity_trend,
+        rack_usage=rack_usage,
     )

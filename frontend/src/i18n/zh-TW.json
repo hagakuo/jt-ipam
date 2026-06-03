@@ -279,7 +279,9 @@
     "chart_device_types": "裝置類型分布",
     "chart_util_ranking": "子網路使用率排行",
     "chart_customer_res": "各單位資源占比",
-    "chart_activity_trend": "近 14 日 稽核 / IP 異動 趨勢"
+    "chart_activity_trend": "近 14 日 稽核 / IP 異動 趨勢",
+    "chart_audit_events": "稽核事件",
+    "chart_rack_usage": "機櫃 U 使用率"
   },
   "sections": {
     "title": "區段",
@@ -1473,7 +1475,7 @@
     "title": "LLM / AI 全域設定",
     "admin_global_settings": "管理員全域設定",
     "admin_note": "此頁為 {strong}；改了會覆寫 .env 並寫進 system_settings 表，所有 user 跟自動化 (embedding / chat / MCP) 共用這份組態。",
-    "enable_ollama": "啟用 Ollama",
+    "enable_ollama": "啟用 Ollama 伺服器連接",
     "model_not_found": "{model}(未在 Ollama 找到)",
     "ollama_unreachable": "無法連 Ollama：{err}",
     "pick_model": "選擇模型",

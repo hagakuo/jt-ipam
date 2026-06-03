@@ -154,7 +154,8 @@ function aliasCell(name: string | null, fwId?: string | null) {
       query: { tab: "aliases", q: name, ...(fwId ? { fw: fwId } : {}) },
     }),
   }, { default: () => h("span", {
-    style: "display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom",
+    // 給定 px max-width 才會真的截斷（%/auto 對 inline 內容無效）；完整名稱看 hover title
+    style: "display:inline-block; max-width:92px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom",
   }, `@${name}`) });
 }
 

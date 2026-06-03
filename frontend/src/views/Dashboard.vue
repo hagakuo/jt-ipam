@@ -76,7 +76,7 @@ const deviceTypes = computed(() => data.value?.device_types ?? []);
 const deviceTypeMax = computed(() => Math.max(1, ...deviceTypes.value.map((d) => d.count)));
 function deviceTypeColor(t: string) { return DEVICE_TYPE_COLOR[t] ?? "#94a3b8"; }
 
-const utilRanking = computed(() => (data.value?.top_full_subnets ?? []).slice(0, 8));
+const rackUsage = computed(() => data.value?.rack_usage ?? []);
 
 const custResources = computed(() => data.value?.customer_resources ?? []);
 const custResMax = computed(() => Math.max(1, ...custResources.value.map((c) => c.subnets + c.devices + c.ips)));
@@ -274,17 +274,16 @@ onMounted(() => { void load(); void loadPins(); });
           </div>
         </n-card>
 
-        <!-- 子網路使用率排行 -->
-        <n-card :title="t('dashboard.chart_util_ranking')" size="small">
-          <div v-if="!utilRanking.length" class="chart-empty">{{ t("common.no_data") }}</div>
+        <!-- 機櫃 U 使用率 -->
+        <n-card :title="t('dashboard.chart_rack_usage')" size="small">
+          <div v-if="!rackUsage.length" class="chart-empty">{{ t("common.no_data") }}</div>
           <div v-else class="hbars">
-            <div v-for="s in utilRanking" :key="s.subnet_id" class="hbar-row"
-                 @click="go('subnet-detail', { id: s.subnet_id })">
-              <span class="hbar-label mono">{{ s.cidr }}</span>
+            <div v-for="r in rackUsage" :key="r.rack_id" class="hbar-row" @click="go('racks')">
+              <span class="hbar-label">{{ r.name }}</span>
               <div class="hbar-track">
-                <div class="hbar-fill" :style="{ width: s.used_pct + '%', background: usePctColor(s.used_pct) }"></div>
+                <div class="hbar-fill" :style="{ width: r.pct + '%', background: usePctColor(r.pct) }"></div>
               </div>
-              <span class="hbar-val">{{ s.used_pct }}%</span>
+              <span class="hbar-val">{{ r.used_u }}/{{ r.total_u }}U</span>
             </div>
           </div>
         </n-card>
@@ -315,7 +314,7 @@ onMounted(() => { void load(); void loadPins(); });
         <!-- 近 14 日 稽核 / IP 異動 趨勢 -->
         <n-card :title="t('dashboard.chart_activity_trend')" size="small">
           <div class="chart-legend">
-            <span><i style="background:#f59e0b"></i>{{ t("dashboard.kpi_audit_24h") }} · {{ trendTotals.audit }}</span>
+            <span><i style="background:#f59e0b"></i>{{ t("dashboard.chart_audit_events") }} · {{ trendTotals.audit }}</span>
             <span><i style="background:#0ea5e9"></i>{{ t("nav.ip_changes") }} · {{ trendTotals.ip }}</span>
           </div>
           <svg class="trend-svg" :viewBox="`0 0 ${TREND_W} ${TREND_H}`" preserveAspectRatio="none">
@@ -454,8 +453,9 @@ onMounted(() => { void load(); void loadPins(); });
 /* 統計圖表 */
 .chart-grid {
   display: grid; gap: 12px; margin-bottom: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(2, 1fr);
 }
+@media (max-width: 880px) { .chart-grid { grid-template-columns: 1fr; } }
 .chart-empty { text-align: center; opacity: 0.5; font-size: 13px; padding: 20px 0; }
 .hbars { display: flex; flex-direction: column; gap: 7px; }
 .hbar-row { display: flex; align-items: center; gap: 8px; cursor: pointer; }

@@ -287,7 +287,7 @@ const cells = computed<Cell[]>(() => {
 </script>
 
 <template>
-  <n-card v-if="diagram" class="rack-diagram-card" :class="{ 'rd-compact': compact }" :title="`Rack: ${diagram.name} (${diagram.u_height}U)`">
+  <n-card v-if="diagram" class="rack-diagram-card" :class="{ 'rd-compact': compact }" :title="`${t('nav.racks')}: ${diagram.name} (${diagram.u_height}U)`">
     <template #header-extra>
       <n-dropdown trigger="click" :options="exportOptions" @select="onExport">
         <n-button size="tiny" quaternary :title="t('rack_diagram.export_svg_hint')">
@@ -469,8 +469,9 @@ const cells = computed<Cell[]>(() => {
 .u-row.u-hl.u-top { box-shadow: inset 2px 0 0 #fbbf24, inset -2px 0 0 #fbbf24, inset 0 2px 0 #fbbf24; }
 .u-row.u-hl.u-bottom { box-shadow: inset 2px 0 0 #fbbf24, inset -2px 0 0 #fbbf24, inset 0 -2px 0 #fbbf24; }
 .u-row.u-hl.u-top.u-bottom { box-shadow: inset 0 0 0 2px #fbbf24; }
-/* 半 U：一列拆左右兩格 */
-.u-row.u-split { padding: 0; align-items: stretch; }
+/* 半 U：一列拆左右兩格。容器列不畫底線（否則會橫跨在多 U 半 U 裝置中間），
+   分隔交給內層 .u-half 各自的上下框處理。 */
+.u-row.u-split { padding: 0; align-items: stretch; border-bottom: none; }
 .u-half {
   box-sizing: border-box; flex: 1 1 50%; min-width: 0;
   display: flex; align-items: center; justify-content: center;

@@ -38,6 +38,7 @@ export interface DashboardOverview {
   device_types: { type: string; count: number }[];
   customer_resources: { customer_id: string | null; label: string; subnets: number; ips: number; devices: number }[];
   activity_trend: { day: string; audit: number; ip_changes: number }[];
+  rack_usage: { rack_id: string; name: string; used_u: number; total_u: number; pct: number }[];
 }
 
 export async function getOverview(): Promise<DashboardOverview> {

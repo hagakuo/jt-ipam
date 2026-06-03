@@ -242,7 +242,8 @@ async def _link_ip_to_ipam(
         from app.services.arp_precedence import consider_mac
         await consider_mac(session, ip=ipa, mac=mac, source="proxmox")
     if hostname:
-        await apply_observation(session, ip=ipa, source="proxmox", hostname=hostname)
+        # 多台 PVE guest 可能回報同一 IP（共用/浮動 IP）→ 用 tiebreak 穩定收斂，避免每次同步翻轉洗版
+        await apply_observation(session, ip=ipa, source="proxmox", hostname=hostname, tiebreak_min=True)
     return True
 
 

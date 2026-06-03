@@ -279,7 +279,9 @@
     "chart_device_types": "Device type distribution",
     "chart_util_ranking": "Subnet utilization ranking",
     "chart_customer_res": "Per-tenant resources",
-    "chart_activity_trend": "Audit / IP changes (14d)"
+    "chart_activity_trend": "Audit / IP changes (14d)",
+    "chart_audit_events": "Audit events",
+    "chart_rack_usage": "Rack U utilization"
   },
   "sections": {
     "title": "Sections",
@@ -1473,7 +1475,7 @@
     "title": "LLM / AI global settings",
     "admin_global_settings": "admin global settings",
     "admin_note": "This page holds {strong}; changes overwrite .env and persist to system_settings. All users and automation (embedding / chat / MCP) share this config.",
-    "enable_ollama": "Enable Ollama",
+    "enable_ollama": "Enable Ollama server connection",
     "model_not_found": "{model} (not found in Ollama)",
     "ollama_unreachable": "Cannot reach Ollama: {err}",
     "pick_model": "Pick a model",

@@ -153,11 +153,14 @@ async def recompute_effective(
 
 async def apply_observation(
     session: AsyncSession, *, ip: IPAddress, source: str, hostname: str | None,
-    actor_user_id: str | None = None,
+    actor_user_id: str | None = None, tiebreak_min: bool = False,
 ) -> bool:
     """記錄某來源對此 IP 的 hostname 觀測（None/空 → 清掉該來源），再重算有效值。
 
     回傳有效 hostname 是否因此變動。所有 sync / 人為編輯改 hostname 都走這裡。
+
+    tiebreak_min：同一來源、同一 IP 已有不同主機名稱時，保留字典序較小者（穩定收斂）。
+    給「多個來源實體可能指向同一 IP」的 sync 用（如多台 PVE guest 回報同一 IP），避免每次同步來回翻轉、洗版異動記錄。
     """
     if source not in HOSTNAME_SOURCES:
         source = "manual"
@@ -181,9 +184,13 @@ async def apply_observation(
             ip_id=ip.id, source=source, hostname=hostname, observed_at=datetime.now(UTC),
         ))
     elif existing.hostname != hostname:
-        from datetime import UTC, datetime
-        existing.hostname = hostname
-        existing.observed_at = datetime.now(UTC)
+        # 穩定收斂：多實體共用同一 IP 時，保留字典序較小者，避免每次同步來回翻轉
+        if tiebreak_min and existing.hostname and hostname > existing.hostname:
+            pass
+        else:
+            from datetime import UTC, datetime
+            existing.hostname = hostname
+            existing.observed_at = datetime.now(UTC)
 
     # observation 與下面 recompute 在同一交易；flush 讓上面的新增/刪除對 select 可見
     await session.flush()

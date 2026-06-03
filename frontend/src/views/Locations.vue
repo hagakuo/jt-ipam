@@ -169,13 +169,13 @@ function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
 const allCols = computed<DataTableColumns<Location>>(() => [
   { type: "selection" },
   { title: t("common.name"), key: "name", minWidth: 180, ellipsis: { tooltip: true }, sorter: (a, b) => a.name.localeCompare(b.name) },
-  { title: t("cols.unit"), key: "customer_name", width: 160, ellipsis: { tooltip: true },
+  { title: t("cols.unit"), key: "customer_name", width: 140, ellipsis: { tooltip: true },
     render: (r) => (r as any).customer_name ?? "—" },
-  { title: t("cols.coords"), key: "coords", width: 160,
+  { title: t("cols.coords"), key: "coords", width: 150,
     render: (r) => (r.latitude != null && r.longitude != null) ? `${r.latitude}, ${r.longitude}` : "—" },
-  { title: t("locations.address"), key: "address", minWidth: 200, ellipsis: { tooltip: true }, render: (r) => r.address ?? "—",
+  { title: t("locations.address"), key: "address", minWidth: 150, ellipsis: { tooltip: true }, render: (r) => r.address ?? "—",
     sorter: (a, b) => (a.address ?? "").localeCompare(b.address ?? "") },
-  { title: t("common.description"), key: "description", minWidth: 200, ellipsis: { tooltip: true }, render: (r) => r.description ?? "—",
+  { title: t("common.description"), key: "description", minWidth: 150, ellipsis: { tooltip: true }, render: (r) => r.description ?? "—",
     sorter: (a, b) => (a.description ?? "").localeCompare(b.description ?? "") },
   { title: t("cols.rack_count"), key: "rack_count", width: 90, render: (r) => r.rack_count ?? 0,
     sorter: (a, b) => (a.rack_count ?? 0) - (b.rack_count ?? 0) },
@@ -245,7 +245,7 @@ onMounted(() => {
     <locations-map v-if="mapPoints.length" :points="mapPoints" style="margin-bottom: 12px" @select="onMapSelect" />
     <n-data-table
       :columns="cols" :data="displayRows" :loading="loading" :bordered="false"
-      :scroll-x="876"
+      :scroll-x="1048"
       :row-key="(row: Location) => row.id"
       :checked-row-keys="checkedKeys"
       @update:checked-row-keys="(keys: DataTableRowKey[]) => checkedKeys = keys"
@@ -320,3 +320,9 @@ onMounted(() => {
     </n-modal>
   </n-card>
 </template>
+
+<style scoped>
+/* 寬表用內部水平捲動吸收寬度，卡片不被撐爆溢出 */
+:deep(.n-card) { min-width: 0; }
+:deep(.n-data-table) { max-width: 100%; }
+</style>
