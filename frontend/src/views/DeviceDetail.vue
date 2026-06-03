@@ -8,7 +8,7 @@ import {
   useMessage, type DataTableColumns,
 } from "naive-ui";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
-import { DevicesIcon, RefreshIcon, EditIcon } from "@/icons";
+import { DevicesIcon, RefreshIcon, EditIcon, TopologyIcon, AddressesIcon, LibreNMSIcon, WazuhIcon, VirtualizationIcon, SubnetsIcon } from "@/icons";
 import { apiClient } from "@/api/client";
 import { listAddresses } from "@/api/addresses";
 import { listLocations, listRacks, getDeviceVlans, getDeviceLibrenms, type Device, type Location, type Rack, type DeviceVLAN, type DeviceLibreNMS } from "@/api/basic";
@@ -33,6 +33,11 @@ const { t } = useI18n();
 
 const { me } = storeToRefs(useAuthStore());
 const isAdmin = computed(() => !!me.value?.is_admin);
+// 卡片標題：icon + 文字（NCard title 支援 render function）
+function cardHead(icon: any, text: string) {
+  return h("span", { style: "display:inline-flex;align-items:center;gap:8px" },
+    [h(NIcon, { size: 18 }, () => h(icon)), text]);
+}
 const { labelFor: customerLabelFor, ensureLoaded: ensureCustomersLoaded } = useCustomers();
 const { visibleKeys: ipVisibleKeys, setVisible: setIpVisible, reset: resetIpVisible } = useColumnPrefs(
   "device_detail_ips",
@@ -265,18 +270,18 @@ onMounted(() => {
         </n-descriptions>
           </div>
           <div v-if="rackDiagram" class="dev-head-rack">
-            <RackDiagram :diagram="rackDiagram" :show-legend="false" :highlight-id="device.id" :compact="true" />
+            <RackDiagram :diagram="rackDiagram" :show-legend="false" :highlight-id="device.id" :compact="true" :bare="true" />
           </div>
         </div>
       </n-card>
 
-      <n-card v-if="device && relations.length > 1" :title="t('relations.title')" size="small">
+      <n-card v-if="device && relations.length > 1" :title="() => cardHead(TopologyIcon, t('relations.title'))" size="small">
         <relation-chain :nodes="relations" :current-id="device.id" />
       </n-card>
 
       <DevicePortsPanel v-if="device" :device-id="device.id" :device-name="device.name" :admin="isAdmin" />
 
-      <n-card v-if="device" :title="`${t('addresses.ip_list_title')}(${addresses.length})`">
+      <n-card v-if="device" :title="() => cardHead(AddressesIcon, `${t('addresses.ip_list_title')}(${addresses.length})`)">
         <template #header-extra>
           <n-space>
             <ColumnPicker size="small" :all="ipColumnPickerItems" :visible="ipVisibleKeys"
@@ -305,7 +310,7 @@ onMounted(() => {
         </n-data-table>
       </n-card>
 
-      <n-card v-if="device && lnms" title="LibreNMS">
+      <n-card v-if="device && lnms" :title="() => cardHead(LibreNMSIcon, 'LibreNMS')">
         <n-descriptions bordered :column="2" size="small" label-placement="left"
                         :label-style="{ whiteSpace: 'nowrap' }">
           <n-descriptions-item :label="t('cols.hostname')">{{ lnms.hostname ?? "—" }}</n-descriptions-item>
@@ -320,7 +325,7 @@ onMounted(() => {
       </n-card>
 
       <!-- Wazuh agent（依裝置 IP 比對）-->
-      <n-card v-if="integrations && integrations.wazuh" title="Wazuh" style="margin-top: 16px">
+      <n-card v-if="integrations && integrations.wazuh" :title="() => cardHead(WazuhIcon, 'Wazuh')" style="margin-top: 16px">
         <n-descriptions bordered :column="2" size="small" label-placement="left"
                         :label-style="{ whiteSpace: 'nowrap' }">
           <n-descriptions-item :label="t('device_detail.wz_agent')">{{ integrations.wazuh.name ?? "—" }} ({{ integrations.wazuh.agent_id }})</n-descriptions-item>
@@ -335,7 +340,7 @@ onMounted(() => {
       </n-card>
 
       <!-- Proxmox VM（依裝置 IP 比對）-->
-      <n-card v-if="integrations && integrations.vm" :title="t('nav.virtualization')" style="margin-top: 16px">
+      <n-card v-if="integrations && integrations.vm" :title="() => cardHead(VirtualizationIcon, t('nav.virtualization'))" style="margin-top: 16px">
         <n-descriptions bordered :column="2" size="small" label-placement="left"
                         :label-style="{ whiteSpace: 'nowrap' }">
           <n-descriptions-item label="VM">{{ integrations.vm.name ?? "—" }}</n-descriptions-item>
@@ -347,7 +352,7 @@ onMounted(() => {
         </n-descriptions>
       </n-card>
 
-      <n-card v-if="device && vlans.length" :title="`VLAN(${vlans.length})`">
+      <n-card v-if="device && vlans.length" :title="() => cardHead(SubnetsIcon, `VLAN(${vlans.length})`)">
         <n-space :size="8" style="flex-wrap: wrap">
           <n-tag v-for="v in vlans" :key="v.vlan_id" type="info" :bordered="false" size="small">
             {{ v.number }} · {{ v.name }}

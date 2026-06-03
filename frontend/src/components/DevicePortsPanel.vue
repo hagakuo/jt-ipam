@@ -7,7 +7,7 @@ import {
 } from "naive-ui";
 import { Physical, type DevicePort, type PortTrace } from "@/api/phase3";
 import { listDevices } from "@/api/basic";
-import { PlusIcon, EditIcon, DeleteIcon, LinkIcon, RefreshIcon } from "@/icons";
+import { PlusIcon, EditIcon, DeleteIcon, LinkIcon, RefreshIcon, PhysicalIcon } from "@/icons";
 
 const props = defineProps<{ deviceId: string; deviceName: string; admin: boolean }>();
 const { t } = useI18n();
@@ -182,7 +182,7 @@ onMounted(() => { void refresh(); });
 </script>
 
 <template>
-  <n-card :title="t('ports.title')" size="small">
+  <n-card :title="() => h('span', { style: 'display:inline-flex;align-items:center;gap:8px' }, [h(NIcon, { size: 18 }, () => h(PhysicalIcon)), t('ports.title')])" size="small">
     <template #header-extra>
       <n-space :size="8">
         <n-button v-if="admin" size="small" type="primary" @click="openCreate">

@@ -14,7 +14,9 @@ import {
   NAutoComplete,
   NTag,
   NSpace,
+  NIcon,
 } from "naive-ui";
+import { SearchIcon } from "@/icons";
 import { search, type SearchHit } from "@/api/search";
 
 const { t: tr } = useI18n();
@@ -197,6 +199,7 @@ function detectedTagType(d: string): "info" | "success" | "warning" | "default" 
 
 <template>
   <n-space class="global-search" align="center" :wrap="false" :size="6">
+    <span class="gs-badge"><n-icon :size="16"><SearchIcon /></n-icon></span>
     <n-auto-complete
       v-model:value="q"
       :options="options as any"
@@ -223,6 +226,12 @@ function detectedTagType(d: string): "info" | "success" | "warning" | "default" 
 
 <style scoped>
 /* 桌機固定寬度；窄螢幕(手機)改成可縮、最寬不超過容器，避免撐破頂列 */
+.gs-badge {
+  width: 30px; height: 30px; border-radius: 8px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #fff; background: linear-gradient(135deg, #18a058, #36ad6a);
+  box-shadow: 0 1px 3px rgba(24, 160, 88, 0.4);
+}
 .global-search { width: 380px; flex-shrink: 0; }
 .global-search__input { width: 320px; }
 @media (max-width: 640px) {

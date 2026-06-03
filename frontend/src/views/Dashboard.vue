@@ -183,13 +183,14 @@ onMounted(() => { void load(); void loadPins(); });
         <div class="hier-chain">
           <template v-for="(layer, i) in hierLayers" :key="layer.key">
             <span v-if="i > 0" class="hier-arrow">→</span>
-            <div class="hier-node" :title="t(layer.label)" @click="go(layer.route)"
-                 :style="{ borderTopColor: layer.color, background: layer.color + '14' }">
-              <div class="hier-type" :style="{ color: layer.color }">
-                <n-icon :size="15"><component :is="layer.icon" /></n-icon>
-                <span>{{ t(layer.label) }}</span>
+            <div class="hier-node" :title="t(layer.label)" @click="go(layer.route)">
+              <div class="hier-top">
+                <span class="hier-badge" :style="{ background: layer.color + '1f', color: layer.color }">
+                  <n-icon :size="15"><component :is="layer.icon" /></n-icon>
+                </span>
+                <span class="hier-label">{{ t(layer.label) }}</span>
               </div>
-              <div class="hier-count" :style="{ color: layer.color }">{{ layer.value.toLocaleString() }}</div>
+              <div class="hier-count">{{ layer.value.toLocaleString() }}</div>
             </div>
           </template>
         </div>
@@ -480,24 +481,28 @@ onMounted(() => { void load(); void loadPins(); });
 }
 .hier-node {
   flex: 1 1 0;
-  min-width: 76px;
+  min-width: 88px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 10px 14px;
-  border: 1px solid rgba(127, 127, 127, 0.22);
-  border-top: 3px solid rgba(127, 127, 127, 0.4);
-  border-radius: 8px;
-  background: rgba(127, 127, 127, 0.05);
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--n-border-color, rgba(127, 127, 127, 0.16));
+  border-radius: 10px;
+  background: var(--n-card-color, #fff);
   cursor: pointer;
-  transition: border-color .15s, background .15s, transform .1s;
+  transition: transform .12s, box-shadow .12s;
 }
-.hier-node:hover { transform: translateY(-2px); filter: brightness(1.04); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
-.hier-type {
-  display: flex; align-items: center; gap: 5px;
-  font-size: 12px; font-weight: 500; white-space: nowrap;
+.hier-node:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08); }
+.hier-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.hier-badge {
+  width: 26px; height: 26px; border-radius: 7px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
 }
-.hier-count { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.hier-label {
+  font-size: 12px; color: var(--n-text-color-3, #8a8a8a);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hier-count { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
 
 /* 常用機房：單行 — 名稱 | 中間橫式分布條 | 機櫃/裝置數（仿常用子網路） */
 .loc-row {

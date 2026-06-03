@@ -224,7 +224,7 @@ export interface AnomalyReport {
 }
 
 export async function runAnomalyScan(): Promise<AnomalyReport> {
-  const { data } = await apiClient.post<AnomalyReport>("/api/v1/anomaly/scan");
+  const { data } = await apiClient.post<AnomalyReport>("/api/v1/anomalies/scan");
   return data;
 }
 

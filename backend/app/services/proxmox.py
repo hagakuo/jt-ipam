@@ -247,6 +247,63 @@ async def _link_ip_to_ipam(
     return True
 
 
+_NODE_IFACE_TYPES = ("eth", "bridge", "bond", "vlan", "ovs")   # 實體NIC / bridge / bond / vlan / OVS*
+
+
+async def _sync_node_ports(
+    session: AsyncSession, node_name: str, node_ip: str | None, host_ifaces: list[dict[str, Any]],
+) -> int:
+    """把 PVE node 的網路介面（bridge / 實體NIC / bond / vlan）建成該節點裝置的連接埠。
+
+    先用節點管理 IP 找到對應 jt-ipam Device（IPAddress.device_id → primary_ip → 名稱），
+    再為每個介面建 device_ports（已存在的同名埠跳過）。
+    """
+    from sqlalchemy import func
+
+    from app.models.address import IPAddress
+    from app.models.device import Device
+    from app.models.physical import DevicePort
+
+    dev_id = None
+    if node_ip:
+        ipa = (await session.execute(
+            select(IPAddress).where(func.host(IPAddress.ip) == node_ip)
+        )).scalars().first()
+        if ipa is not None:
+            dev_id = ipa.device_id
+            if dev_id is None:
+                d = (await session.execute(
+                    select(Device).where(Device.primary_ip_id == ipa.id)
+                )).scalar_one_or_none()
+                dev_id = d.id if d else None
+    if dev_id is None:
+        d = (await session.execute(
+            select(Device).where(func.lower(Device.name) == node_name.lower())
+        )).scalar_one_or_none()
+        dev_id = d.id if d else None
+    if dev_id is None:
+        return 0
+
+    existing = {p.name for p in (await session.execute(
+        select(DevicePort).where(DevicePort.device_id == dev_id)
+    )).scalars().all()}
+    created = 0
+    for itf in host_ifaces:
+        name = (itf.get("iface") or "").strip()
+        itype = (itf.get("type") or "").lower()
+        if not name or name in existing:
+            continue
+        if not any(k in itype for k in _NODE_IFACE_TYPES):
+            continue   # loopback / alias / unknown 不建
+        session.add(DevicePort(
+            device_id=dev_id, name=name, type="network",
+            description=f"proxmox {itf.get('type') or ''}".strip(),
+        ))
+        existing.add(name)
+        created += 1
+    return created
+
+
 async def _upsert_iface(
     session: AsyncSession, vm_id: uuid.UUID, name: str,
     mac: str | None, bridge: str | None, ip: str | None,
@@ -365,6 +422,8 @@ async def sync_instance(
                 hw = (itf.get("hwaddr") or "").strip().lower() or None
                 if addr and await _link_ip_to_ipam(session, addr, hw, node_name):
                     summary.ipam_linked += 1
+            # 把節點網路介面（bridge / 實體NIC / bond / vlan）建成該節點裝置的連接埠
+            await _sync_node_ports(session, node_name, nip, host_ifaces)
         except ProxmoxError:
             pass
         # VMs (qemu)

@@ -189,8 +189,9 @@ interface Props {
   floorAlignTo?: number;  // 多機櫃並排時傳入該排最高 U 數 → 矮櫃頂端補空白，使底部(U1)靠下對齊
   highlightId?: string | null;  // 常駐高亮某裝置（裝置詳情頁標示本機在機櫃的位置）
   compact?: boolean;            // 較小列高（嵌在裝置詳情等空間有限處）
+  bare?: boolean;               // 去掉卡片外框與標題（嵌入用）
 }
-const props = withDefaults(defineProps<Props>(), { showLegend: true, editable: false, floorAlignTo: 0, highlightId: null, compact: false });
+const props = withDefaults(defineProps<Props>(), { showLegend: true, editable: false, floorAlignTo: 0, highlightId: null, compact: false, bare: false });
 const U_PX = 28;   // 每個 U 列高度（與 .u-row / .u-num-out 一致）
 // 落地對齊：比該排最高櫃矮幾 U，就在頂端補幾 U 的空白
 const floorPad = computed(() => {
@@ -287,7 +288,8 @@ const cells = computed<Cell[]>(() => {
 </script>
 
 <template>
-  <n-card v-if="diagram" class="rack-diagram-card" :class="{ 'rd-compact': compact }" :title="`${t('nav.racks')}: ${diagram.name} (${diagram.u_height}U)`">
+  <n-card v-if="diagram" class="rack-diagram-card" :class="{ 'rd-compact': compact, 'rd-bare': bare }"
+          :bordered="!bare" :title="bare ? undefined : `${t('nav.racks')}: ${diagram.name} (${diagram.u_height}U)`">
     <template #header-extra>
       <n-dropdown trigger="click" :options="exportOptions" @select="onExport">
         <n-button size="tiny" quaternary :title="t('rack_diagram.export_svg_hint')">
@@ -518,6 +520,10 @@ const cells = computed<Cell[]>(() => {
   white-space: nowrap;
   max-width: 90px;
 }
+/* bare：去掉卡片外框/底色/標題與內距，純嵌入 */
+.rd-bare { background: transparent; box-shadow: none; border: none; }
+.rd-bare :deep(.n-card__content) { padding: 0; }
+.rd-bare :deep(.n-card-header) { display: none; }
 /* 聚焦模式：設了 highlightId 時，其他裝置淡化，只突顯本裝置 */
 .u-dim { opacity: 0.32; filter: grayscale(0.4); }
 .u-dim .d-name { opacity: 0.7; }
