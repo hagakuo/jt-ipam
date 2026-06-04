@@ -175,6 +175,7 @@ export const TestIcon = CheckCircle;
  */
 export const ChatHistoryIcon = ChatBubbleQuestion;
 export const ExportIcon = Download;
+export const CopyIcon = Copy;
 
 export function renderIcon(Icon: any, size = 18) {
   return () => h(NIcon, { size }, () => h(Icon));

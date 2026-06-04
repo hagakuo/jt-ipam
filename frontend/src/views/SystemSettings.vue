@@ -8,7 +8,7 @@ import { useI18n } from "vue-i18n";
 import {
   NCard, NSpace, NIcon, NSelect, NInput, NInputNumber, NSwitch, NButton, NTag, useMessage,
 } from "naive-ui";
-import { AdminIcon } from "@/icons";
+import { AdminIcon, SaveIcon, RefreshIcon, CopyIcon } from "@/icons";
 import { getGraylogDsv, putGraylogDsv } from "@/api/system";
 import { fmtDateTime, fmtRelative } from "@/utils/datetime";
 import {
@@ -184,9 +184,11 @@ onMounted(() => {
           <n-select v-model:value="geoip.frequency" :options="geoipFreqOpts" :disabled="!geoip.auto_update"
                     style="width: 200px" />
           <div style="flex:1"></div>
-          <n-button size="small" :loading="geoipSaving" @click="saveGeoip">{{ t("common.save") }}</n-button>
+          <n-button size="small" :loading="geoipSaving" @click="saveGeoip">
+            <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
+          </n-button>
           <n-button size="small" type="primary" :loading="geoipUpdating" @click="updateGeoipNow">
-            {{ t("settings.system.geoip_update_now") }}
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("settings.system.geoip_update_now") }}
           </n-button>
         </div>
         <div class="ss-status">
@@ -226,15 +228,21 @@ onMounted(() => {
           </div>
         </div>
         <div class="ss-row" style="margin-top:12px">
-          <n-button size="small" :loading="dsvSaving" @click="() => saveDsv()">{{ t("common.save") }}</n-button>
-          <n-button size="small" @click="() => saveDsv(true)">{{ t("settings.system.graylog_regen") }}</n-button>
+          <n-button size="small" :loading="dsvSaving" @click="() => saveDsv()">
+            <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
+          </n-button>
+          <n-button size="small" @click="() => saveDsv(true)">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("settings.system.graylog_regen") }}
+          </n-button>
         </div>
-        <div v-if="dsv.enabled && dsvUrl" class="fld" style="margin-top:14px">
+        <div v-if="dsvUrl" class="fld" style="margin-top:14px">
           <label>{{ t("settings.system.graylog_url") }}</label>
-          <n-space :size="6" align="center" :wrap="false">
-            <n-input :value="dsvUrl" readonly />
-            <n-button size="small" @click="copyDsvUrl">{{ t("settings.system.graylog_copy") }}</n-button>
-          </n-space>
+          <div style="display:flex; gap:8px; align-items:center">
+            <n-input :value="dsvUrl" readonly style="flex:1" />
+            <n-button size="small" type="primary" ghost @click="copyDsvUrl">
+              <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
+            </n-button>
+          </div>
         </div>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.graylog_hint") }}</div>
       </section>

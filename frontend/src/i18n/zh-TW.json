@@ -1427,12 +1427,12 @@
       "align_left": "靠左",
       "align_center": "置中",
       "align_right": "靠右",
-      "graylog_title": "Graylog DSV 查表",
-      "graylog_enable": "啟用 DSV 查表端點（供 Graylog 抓取）",
+      "graylog_title": "Graylog DSV 對照表",
+      "graylog_enable": "啟用 DSV 對照表端點（供 Graylog 抓取）",
       "graylog_path": "路徑名稱",
       "graylog_format": "格式",
       "graylog_regen": "重新產生權杖",
-      "graylog_url": "查表網址（給 Graylog）",
+      "graylog_url": "對照表網址（給 Graylog）",
       "graylog_copy": "複製",
       "graylog_hint": "在 Graylog 新增「DSV File from HTTP」資料配接器，URL 填入上方網址；分隔符依格式選 , 或 Tab，key 欄=1、value 欄=2（key=IP、value=主機名稱 / FQDN）。權杖外洩可按「重新產生權杖」即時失效。"
     }
