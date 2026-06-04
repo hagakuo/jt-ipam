@@ -1,7 +1,7 @@
 {
   "app": {
     "title": "jt-ipam",
-    "tagline": "資訊整合型 IPAM — 整合 DNS / LibreNMS / OPNsense / AI，可從 phpIPAM 遷移"
+    "tagline": "為整合而生的 IPAM — 整合 DNS / LibreNMS / OPNsense / AI，可從 phpIPAM 遷移"
   },
   "login": {
     "title": "登入 jt-ipam",
