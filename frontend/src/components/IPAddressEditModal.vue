@@ -170,10 +170,18 @@ const currentIpHost = computed(() => (props.address?.ip ?? "").split("/")[0].tri
 const matchingDevice = computed<Device | null>(() => {
   if (form.value.device_id) return null;
   const ip = currentIpHost.value;
-  if (!ip) return null;
-  return devices.value.find(
-    (d) => (d.ip && d.ip.split("/")[0].trim() === ip) || d.name === ip,
-  ) ?? null;
+  // 以「主機名稱」或「IP」找尚未連結的裝置：hostname=nas2 → 裝置 nas2
+  const hn = (form.value.hostname || props.address?.hostname || "").trim().toLowerCase();
+  if (!ip && !hn) return null;
+  return devices.value.find((d) => {
+    const dip = d.ip ? d.ip.split("/")[0].trim() : "";
+    const dname = (d.name || "").trim().toLowerCase();
+    const dfqdn = String((d as any).fqdn || "").trim().toLowerCase();
+    return (!!ip && dip === ip)            // 裝置主要 IP == 本 IP
+      || (!!hn && dname === hn)            // 裝置名稱 == 本 IP 主機名稱
+      || (!!hn && !!dfqdn && dfqdn === hn) // 裝置 FQDN == 本 IP 主機名稱
+      || (!!ip && dname === ip);           // 舊行為：裝置名稱剛好是 IP 字串
+  }) ?? null;
 });
 function linkMatchingDevice() {
   if (matchingDevice.value) form.value.device_id = matchingDevice.value.id;

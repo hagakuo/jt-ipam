@@ -541,6 +541,17 @@ async def _search_text_trgm(
             allow = {str(x) for x in vis}
             out = [h for h in out if h.type != otype or h.id in allow]
 
+    # 子字串優先：只要有任一「label/sublabel 含查詢字」的命中，
+    # 就濾掉所有純 trigram 相似的命中（查 "nas2" 不該冒出 nas3 / nas4 / NAS4）。
+    # 完全沒有子字串命中時（例如打錯字）才保留模糊結果，維持容錯。
+    ql = q.lower()
+
+    def _is_substr(h: SearchHit) -> bool:
+        return ql in (h.label or "").lower() or ql in (h.sublabel or "").lower()
+
+    if any(_is_substr(h) for h in out):
+        out = [h for h in out if _is_substr(h)]
+
     out.sort(key=lambda h: h.score, reverse=True)
     return out
 

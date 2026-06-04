@@ -48,14 +48,23 @@ async def dsv_lookup(
         .where(IPAddress.hostname.is_not(None), IPAddress.hostname != "")
         .order_by(IPAddress.ip)
     )).all()
+    is_csv = cfg["fmt"] != "tsv"
     lines: list[str] = []
     for ip, host in rows:
         if not ip or not host:
             continue
         h = str(host).strip()
-        if sep in h or '"' in h or "\n" in h:  # DSV 安全：含分隔符就跳過
+        if "\n" in h or "\r" in h:  # 換行無法安全表達，跳過
             continue
-        lines.append(f"{ip}{sep}{h}")
+        if is_csv:
+            # CSV：每欄都用雙引號包起來，內含的 " 以 "" 跳脫（RFC 4180）
+            qip = '"' + str(ip).replace('"', '""') + '"'
+            qh = '"' + h.replace('"', '""') + '"'
+            lines.append(f"{qip}{sep}{qh}")
+        else:
+            if sep in h or '"' in h:  # TSV 不加引號：含分隔符就跳過
+                continue
+            lines.append(f"{ip}{sep}{h}")
     media = "text/tab-separated-values" if cfg["fmt"] == "tsv" else "text/csv"
     return PlainTextResponse("\n".join(lines) + ("\n" if lines else ""),
                              media_type=f"{media}; charset=utf-8")

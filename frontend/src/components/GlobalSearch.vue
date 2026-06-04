@@ -44,6 +44,14 @@ watch(q, (val) => {
   }, 250);
 });
 
+// 重新聚焦時：若框內仍留有上次的字，直接拿它當搜尋條件，而不是顯示「無結果」
+function onFocus() {
+  const val = q.value.trim();
+  if (val.length >= 2 && hits.value.length === 0 && !loading.value) {
+    void runSearch(val);
+  }
+}
+
 async function runSearch(query: string) {
   loading.value = true;
   const myIssue = ++lastIssued;
@@ -211,6 +219,7 @@ function detectedTagType(d: string): "info" | "success" | "warning" | "default" 
       class="global-search__input"
       @select="(v: string) => navigateTo(v)"
       @keyup.enter="onEnter"
+      @focus="onFocus"
     />
     <n-tag
       v-if="detected && detected !== 'free' && detected !== 'empty'"
