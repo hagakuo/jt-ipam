@@ -62,7 +62,7 @@
   .pill:nth-child(6n+6)::before{background:#10b981}
   section{padding:60px 0}
   section.alt{background:#fff;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
-  .sec-head{max-width:720px;margin-bottom:34px}
+  .sec-head{max-width:720px;margin:0 auto 34px;text-align:center}
   .sec-head h2{font-size:clamp(24px,3.5vw,32px);margin:0 0 10px}
   .sec-head p{margin:0;color:var(--muted)}
   .grid{display:grid;gap:18px}
@@ -104,16 +104,11 @@
   .screen-txt h3{margin:0 0 8px;font-size:20px}
   .screen-txt p{margin:0;color:var(--body);line-height:1.7}
   @media(max-width:820px){.screen-row,.screen-row:nth-child(even){flex-direction:column}.screen-row > .shot-ph,.screen-row > .shot{flex-basis:auto;width:100%}}
-  /* 畫面導覽用深色背景，讓白底擷圖跳出來(參考 jt-doc-tools) */
-  #screens{background:linear-gradient(180deg,#0c2017,#0a1912);border-top:1px solid #08140e;border-bottom:1px solid #08140e}
-  #screens .sec-head h2{color:#fff}
-  #screens .sec-head p{color:rgba(255,255,255,0.6)}
-  #screens .eyebrow{display:inline-block;font-size:13px;font-weight:700;letter-spacing:2px;
-    color:#34d399;text-transform:uppercase;margin-bottom:10px}
-  #screens .screen-txt h3{color:#fff}
-  #screens .screen-txt p{color:rgba(255,255,255,0.82)}
-  #screens .num{background:rgba(52,211,153,0.18);color:#6ee7a8}
-  #screens .shot{border-color:rgba(255,255,255,0.12);box-shadow:0 12px 38px rgba(0,0,0,0.45)}
+  /* 畫面導覽：淺綠色帶，白底擷圖靠邊框 + 陰影即可跳出，不用深底 */
+  #screens{background:linear-gradient(180deg,#eaf4ed,#dceadf);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  .eyebrow{display:inline-block;font-size:13px;font-weight:700;letter-spacing:2px;
+    color:var(--green-d);text-transform:uppercase;margin-bottom:10px}
+  #screens .shot{box-shadow:0 14px 40px rgba(15,23,42,0.16)}
   .hub-wrap{margin:0 0 26px}
   .hub-svg{width:100%;max-width:760px;height:auto;display:block;margin:0 auto}
   .hub-node text{paint-order:stroke}
@@ -143,13 +138,6 @@
   .grid .card:nth-child(6n+4) .badge{background:linear-gradient(135deg,#0ea5e9,#38bdf8)}
   .grid .card:nth-child(6n+5) .badge{background:linear-gradient(135deg,#ec4899,#f472b6)}
   .grid .card:nth-child(6n+6) .badge{background:linear-gradient(135deg,#14b8a6,#2dd4bf)}
-  /* 卡片頂端細色條：和 icon 同色系，讓多彩變化一眼可見（綠仍是主色）*/
-  .grid .card{border-top:3px solid var(--green)}
-  .grid .card:nth-child(6n+2){border-top-color:#6366f1}
-  .grid .card:nth-child(6n+3){border-top-color:#f59e0b}
-  .grid .card:nth-child(6n+4){border-top-color:#0ea5e9}
-  .grid .card:nth-child(6n+5){border-top-color:#ec4899}
-  .grid .card:nth-child(6n+6){border-top-color:#14b8a6}
   /* 整合 chip 圓點輪替配色 */
   .integrations .chip:nth-child(5n+1) i{background:#18a058}
   .integrations .chip:nth-child(5n+2) i{background:#6366f1}
@@ -211,7 +199,7 @@
       <span class="pill">SSO</span>
       <span class="pill"><span class="zh">整合 AD / LDAP</span><span class="en">AD / LDAP integration</span></span>
       <span class="pill"><span class="zh">深色 / 淺色雙主題</span><span class="en">Dark / light themes</span></span>
-      <span class="pill"><span class="zh">繁中 / English</span><span class="en">繁中 / English</span></span>
+      <span class="pill"><span class="zh">多語言介面</span><span class="en">Multilingual UI</span></span>
     </div>
     <!-- hero 大圖(建議放「儀表板」整頁截圖)-->
     <div class="hero-shot">
