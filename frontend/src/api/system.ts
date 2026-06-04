@@ -37,6 +37,21 @@ export async function testLdap(): Promise<{ bound: boolean; server: string; port
   return data;
 }
 
+// ── 稽核轉送到 Graylog ──
+export interface AuditForward { enabled: boolean; host: string | null; port: number; protocol: "tcp" | "udp"; fmt: "gelf" | "syslog" | "cef"; }
+export async function getAuditForward(): Promise<AuditForward> {
+  const { data } = await apiClient.get<AuditForward>("/api/v1/system/audit-forward");
+  return data;
+}
+export async function putAuditForward(p: AuditForward): Promise<AuditForward> {
+  const { data } = await apiClient.put<AuditForward>("/api/v1/system/audit-forward", p);
+  return data;
+}
+export async function testAuditForward(p: AuditForward): Promise<{ ok: boolean; sent_to: string; fmt: string }> {
+  const { data } = await apiClient.post("/api/v1/system/audit-forward/test", p);
+  return data;
+}
+
 export interface LLMConfig {
   enabled: boolean;
   url: string;

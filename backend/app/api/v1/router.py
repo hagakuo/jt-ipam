@@ -56,6 +56,9 @@ from app.api.v1.endpoints import (
     ldap_admin as ldap_admin_ep,
 )
 from app.api.v1.endpoints import (
+    audit_admin as audit_admin_ep,
+)
+from app.api.v1.endpoints import (
     system_settings as system_settings_ep,
 )
 
@@ -106,6 +109,7 @@ api_v1_router.include_router(system_settings_ep.public_router)
 api_v1_router.include_router(graylog_dsv_ep.admin_router)
 api_v1_router.include_router(graylog_dsv_ep.public_router)
 api_v1_router.include_router(ldap_admin_ep.admin_router)
+api_v1_router.include_router(audit_admin_ep.admin_router)
 
 # Phase 3 [DONE] Tenancy/Contacts/ASN/Circuits/Wireless、Virtualization/Proxmox、
 #           Cabling/Power/VPN、Topology、OIDC SSO（SAML stub）

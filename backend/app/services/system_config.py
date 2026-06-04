@@ -297,3 +297,63 @@ async def set_ldap_config(
     flag_modified(row, "value")
     await session.commit()
     return val
+
+
+# ─────────────────── 稽核轉送到 Graylog（syslog / CEF / GELF）───────────────────
+AUDIT_FWD_KEY = "audit_forward"
+
+
+@dataclass
+class AuditForwardConfig:
+    enabled: bool
+    host: str | None
+    port: int
+    protocol: str   # tcp | udp
+    fmt: str        # gelf | syslog | cef
+
+
+_af_cache: dict[str, tuple[float, AuditForwardConfig]] = {}
+
+
+async def get_audit_forward(session: AsyncSession) -> AuditForwardConfig:
+    now = time.monotonic()
+    c = _af_cache.get(AUDIT_FWD_KEY)
+    if c and now - c[0] < _TTL_SEC:
+        return c[1]
+    cfg = AuditForwardConfig(enabled=False, host=None, port=12201, protocol="udp", fmt="gelf")
+    row = await session.get(SystemSetting, AUDIT_FWD_KEY)
+    if row and isinstance(row.value, dict):
+        v = row.value
+        if isinstance(v.get("enabled"), bool):
+            cfg.enabled = v["enabled"]
+        if isinstance(v.get("host"), str):
+            cfg.host = v["host"] or None
+        if isinstance(v.get("port"), int):
+            cfg.port = v["port"]
+        if v.get("protocol") in ("tcp", "udp"):
+            cfg.protocol = v["protocol"]
+        if v.get("fmt") in ("gelf", "syslog", "cef"):
+            cfg.fmt = v["fmt"]
+    _af_cache[AUDIT_FWD_KEY] = (now, cfg)
+    return cfg
+
+
+async def set_audit_forward(
+    session: AsyncSession, *, data: dict[str, Any], updated_by_user_id: uuid.UUID
+) -> AuditForwardConfig:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    row = await session.get(SystemSetting, AUDIT_FWD_KEY)
+    if row is None:
+        row = SystemSetting(key=AUDIT_FWD_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    val = dict(row.value or {})
+    for k in ("enabled", "host", "port", "protocol", "fmt"):
+        if k in data:
+            val[k] = data[k]
+    row.value = val
+    row.updated_by = updated_by_user_id
+    flag_modified(row, "value")
+    await session.commit()
+    _af_cache.pop(AUDIT_FWD_KEY, None)
+    return await get_audit_forward(session)

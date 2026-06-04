@@ -9,7 +9,8 @@ import {
   NCard, NSpace, NIcon, NSelect, NInput, NInputNumber, NSwitch, NButton, NTag, useMessage,
 } from "naive-ui";
 import { AdminIcon, SaveIcon, RefreshIcon, CopyIcon } from "@/icons";
-import { getGraylogDsv, putGraylogDsv, getLdap, putLdap, testLdap, type LdapConfig } from "@/api/system";
+import { getGraylogDsv, putGraylogDsv, getLdap, putLdap, testLdap, type LdapConfig,
+  getAuditForward, putAuditForward, testAuditForward, type AuditForward } from "@/api/system";
 import { listGroups } from "@/api/admin";
 import { fmtDateTime, fmtRelative } from "@/utils/datetime";
 import {
@@ -183,6 +184,25 @@ async function doTestLdap() {
   finally { ldapTesting.value = false; }
 }
 
+// 稽核轉送到 Graylog
+const af = ref<AuditForward>({ enabled: false, host: null, port: 12201, protocol: "udp", fmt: "gelf" });
+const afSaving = ref(false);
+const afTesting = ref(false);
+const afProtoOpts = [{ label: "UDP", value: "udp" }, { label: "TCP", value: "tcp" }];
+const afFmtOpts = [{ label: "GELF", value: "gelf" }, { label: "Syslog (RFC5424)", value: "syslog" }, { label: "CEF", value: "cef" }];
+async function loadAf() { try { af.value = await getAuditForward(); } catch { /* ignore */ } }
+async function saveAf() {
+  afSaving.value = true;
+  try { af.value = await putAuditForward(af.value); msg.success(t("common.saved")); }
+  catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.network")); } finally { afSaving.value = false; }
+}
+async function doTestAf() {
+  if (!af.value.host) { msg.warning(t("settings.system.af_need_host")); return; }
+  afTesting.value = true;
+  try { const r = await testAuditForward(af.value); msg.success(`${t("settings.system.af_test_ok")} — ${r.sent_to}`); }
+  catch (e: any) { msg.error(e?.response?.data?.detail ?? t("settings.system.af_test_fail")); } finally { afTesting.value = false; }
+}
+
 onMounted(() => {
   getMapProvider().then((p) => { mapProvider.value = p; }).catch(() => {});
   getRackNameAlign().then((a) => { rackAlign.value = a; }).catch(() => {});
@@ -191,6 +211,7 @@ onMounted(() => {
   void loadDsv();
   void loadLdap();
   void loadLdapGroups();
+  void loadAf();
 });
 </script>
 
@@ -411,6 +432,46 @@ onMounted(() => {
           </n-button>
         </n-space>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.ldap_hint") }}</div>
+      </section>
+
+      <!-- 稽核轉送到 Graylog -->
+      <section class="ss-group">
+        <h3 class="ss-h">{{ t("settings.system.af_title") }}</h3>
+        <div class="fld">
+          <n-space align="center">
+            <n-switch v-model:value="af.enabled" />
+            <span style="font-size:13px">{{ t("settings.system.af_enable") }}</span>
+          </n-space>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 130px; gap:12px">
+          <div class="fld">
+            <label>{{ t("settings.system.af_host") }}</label>
+            <n-input v-model:value="af.host" placeholder="graylog.example.com" />
+          </div>
+          <div class="fld">
+            <label>{{ t("settings.system.af_port") }}</label>
+            <n-input-number v-model:value="af.port" :min="1" :max="65535" style="width:100%" />
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px">
+          <div class="fld">
+            <label>{{ t("settings.system.af_protocol") }}</label>
+            <n-select v-model:value="af.protocol" :options="afProtoOpts" />
+          </div>
+          <div class="fld">
+            <label>{{ t("settings.system.af_format") }}</label>
+            <n-select v-model:value="af.fmt" :options="afFmtOpts" />
+          </div>
+        </div>
+        <n-space style="margin-top:6px">
+          <n-button type="primary" :loading="afSaving" @click="saveAf">
+            <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
+          </n-button>
+          <n-button :loading="afTesting" @click="doTestAf">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("settings.system.af_test") }}
+          </n-button>
+        </n-space>
+        <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.af_hint") }}</div>
       </section>
     </div>
   </n-card>
