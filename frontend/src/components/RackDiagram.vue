@@ -11,7 +11,7 @@
 import { computed, ref, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
-import { NCard, NEmpty, NAlert, NSpace, NTooltip, NButton, NIcon, NDropdown } from "naive-ui";
+import { NCard, NEmpty, NAlert, NSpace, NTooltip, NButton, NButtonGroup, NIcon, NDropdown } from "naive-ui";
 import type { RackDiagram } from "@/api/racks";
 import { rackTypeColor as colorFor } from "@/utils/rackColors";
 import { exportTable, type ExportColumn } from "@/utils/tableExport";
@@ -207,6 +207,8 @@ interface Props {
   bare?: boolean;               // 去掉卡片外框與標題（嵌入用）
 }
 const props = withDefaults(defineProps<Props>(), { showLegend: true, editable: false, floorAlignTo: 0, highlightId: null, compact: false, bare: false });
+const faceView = ref<"front" | "rear">("front");   // 機櫃正面 / 背面切換
+const hasRear = computed(() => (props.diagram?.devices || []).some((d: any) => d.rack_face === "rear"));
 const U_PX = 28;   // 每個 U 列高度（與 .u-row / .u-num-out 一致）
 // 落地對齊：比該排最高櫃矮幾 U，就在頂端補幾 U 的空白
 const floorPad = computed(() => {
@@ -270,6 +272,8 @@ const cells = computed<Cell[]>(() => {
     primary_ip: d.primary_ip,
   });
   for (const d of props.diagram.devices) {
+    // 只顯示目前檢視面（正/背）的裝置；未標面者視為正面
+    if (((d.rack_face ?? "front") as string) !== faceView.value) continue;
     const side = (d.rack_side ?? "full") as "full" | "left" | "right";
     for (let u = d.u_position; u < d.u_position + d.u_size; u++) {
       if (!map[u]) continue;
@@ -306,12 +310,22 @@ const cells = computed<Cell[]>(() => {
   <n-card v-if="diagram" class="rack-diagram-card" :class="{ 'rd-compact': compact, 'rd-bare': bare }"
           :bordered="!bare" :title="bare ? undefined : `${t('nav.racks')}: ${diagram.name} (${diagram.u_height}U)`">
     <template #header-extra>
-      <n-dropdown trigger="click" :options="exportOptions" @select="onExport">
-        <n-button size="tiny" quaternary :title="t('rack_diagram.export_svg_hint')">
-          <template #icon><n-icon><ExportIcon /></n-icon></template>
-          {{ t("common.export") }}
-        </n-button>
-      </n-dropdown>
+      <n-space :size="8" align="center">
+        <n-button-group size="tiny">
+          <n-button :type="faceView === 'front' ? 'primary' : 'default'" @click="faceView = 'front'">
+            {{ t("racks.face_front") }}
+          </n-button>
+          <n-button :type="faceView === 'rear' ? 'primary' : 'default'" @click="faceView = 'rear'">
+            {{ t("racks.face_rear") }}<span v-if="hasRear" style="margin-left:3px">•</span>
+          </n-button>
+        </n-button-group>
+        <n-dropdown trigger="click" :options="exportOptions" @select="onExport">
+          <n-button size="tiny" quaternary :title="t('rack_diagram.export_svg_hint')">
+            <template #icon><n-icon><ExportIcon /></n-icon></template>
+            {{ t("common.export") }}
+          </n-button>
+        </n-dropdown>
+      </n-space>
     </template>
     <n-space vertical :size="12">
       <n-alert

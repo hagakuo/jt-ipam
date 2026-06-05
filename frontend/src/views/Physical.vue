@@ -75,11 +75,22 @@ function statusTag(s: string) {
   return h(NTag, { size: "small", type, bordered: false }, () => s);
 }
 
+// 纜線兩端 device@port：把分隔符 @ 染成不同顏色，裝置與連接埠一眼分得開
+function renderEnd(val: string | null) {
+  if (!val) return "—";
+  const i = val.indexOf("@");
+  if (i < 0) return val;
+  return h("span", null, [
+    val.slice(0, i),
+    h("span", { style: "color:#18a058;font-weight:700;margin:0 1px" }, "@"),
+    val.slice(i + 1),
+  ]);
+}
 const cableColsAll = computed<DataTableColumns<any>>(() => autoSort([
   { title: t("cols.type"), key: "type", width: 100, render: (r: any) => r.type ?? "—" },
   { title: t("physical.cable_label"), key: "label", width: 120, ellipsis: { tooltip: true }, render: (r: any) => r.label ?? "—" },
-  { title: t("physical.a_end"), key: "a_end", minWidth: 190, ellipsis: { tooltip: true }, render: (r: any) => r.a_end ?? "—" },
-  { title: t("physical.b_end"), key: "b_end", minWidth: 190, ellipsis: { tooltip: true }, render: (r: any) => r.b_end ?? "—" },
+  { title: t("physical.a_end"), key: "a_end", minWidth: 190, ellipsis: { tooltip: true }, render: (r: any) => renderEnd(r.a_end) },
+  { title: t("physical.b_end"), key: "b_end", minWidth: 190, ellipsis: { tooltip: true }, render: (r: any) => renderEnd(r.b_end) },
   { title: t("common.status"), key: "status", width: 100, render: (r: any) => statusTag(r.status) },
   { title: t("sections.description"), key: "description", minWidth: 150, ellipsis: { tooltip: true }, render: (r: any) => r.description ?? "—" },
   { title: t("common.actions"), key: "actions", width: 96, render: (r: any) => h(NSpace, { size: 4 }, () => [
