@@ -17,7 +17,7 @@ For **Proxmox LXC, bare metal, and VMs** (Ubuntu 22.04+/Debian 12+). This projec
 |---|---|---|---|
 | OS | Ubuntu 22.04 / Debian 12 | **Ubuntu 24.04 LTS** | 24.04 ships Python 3.12 + PG 16 + Node 18, saving effort |
 | CPU | 2 vCPU | 4 vCPU | argon2id + pgvector embeddings are CPU-heavy |
-| RAM | 4 GB | 8 GB | add another 8 GB if running Ollama |
+| RAM | 4 GB | 8 GB | add another 8 GB if running LLM Server |
 | Disk | 20 GB | 50 GB | audit log grows |
 | Python | 3.11 | 3.12 | 24.04 defaults to 3.12 |
 | PostgreSQL | 16 + pgvector | — | 22.04 needs the PGDG repo (the script adds it automatically) |

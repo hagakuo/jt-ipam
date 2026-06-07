@@ -16,7 +16,7 @@ Familiar to phpIPAM users so they are productive from day one, but built from sc
 - **LibreNMS** — device sync, ARP / FDB harvesting, online-status reconciliation, auto-onboarding to monitoring
 - **Infrastructure** — Proxmox VE, Wazuh, OPNsense (alias / rule / NAT sync)
 - **Graylog** — exposes an IP→hostname/FQDN DSV lookup endpoint for Graylog's "DSV File from HTTP" data adapter
-- **Local AI** — natural-language queries and semantic search over Ollama (data never leaves the host), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM; `gemma4:26b` works well in our testing
+- **Local AI** — natural-language queries and semantic search over LLM Server (data never leaves the host), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM; `gemma4:26b` works well in our testing
 
 ## Graylog log enrichment (DSV lookup)
 
@@ -70,7 +70,7 @@ Security is a day-one requirement; every module and PR is checked against **OWAS
 | Database | PostgreSQL 16 (native `inet`/`cidr`/`macaddr`) + pgvector |
 | Frontend | Vue 3 · TypeScript · Vite · Naive UI · Pinia · vue-i18n |
 | Auth | argon2id · TOTP · short-lived JWT + refresh |
-| AI | Ollama (local) · pgvector · MCP server |
+| AI | LLM Server (local) · pgvector · MCP server |
 | Deploy | systemd + nginx + apt packages — **no containers** (Proxmox VE LXC / bare-metal friendly) |
 
 ## Install (single host / Proxmox VE LXC)
@@ -152,7 +152,7 @@ jt-ipam/
 - **Phase 1 (done)** — phpIPAM-equivalent features + improvements (Section/Subnet/IP/VLAN/VRF/NAT/Devices/Racks/Locations/IP-Requests, TOTP/API-Token/RBAC, phpIPAM import, CSV/RIPE/TWNIC, visual subnet grid, forced TLS)
 - **Phase 2 (done)** — multi-vendor DNS + deep LibreNMS integration (device/ARP/FDB/effective-status) + anomaly detection + SHA-256 audit chain + pgvector AI semantic search
 - **Phase 3 (done)** — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox VE sync + Cytoscape topology + OIDC/SAML SSO + OPNsense firewall sync + Wazuh agent inventory
-- **Phase 4 (done, scoped)** — MCP server + local-LLM natural language (Ollama) + plugin mechanism
+- **Phase 4 (done, scoped)** — MCP server + local-LLM natural language (LLM Server) + plugin mechanism
 
 **Out of scope:** HA deployment, Ansible Collection, Terraform Provider, Zimbra/Odoo integration, Docker/Helm/K8s.
 

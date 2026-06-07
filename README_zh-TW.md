@@ -16,7 +16,7 @@ phpIPAM 老使用者幾乎零學習成本；以現代技術全新打造（非基
 - **LibreNMS**：裝置同步、ARP / FDB 抓取、上線狀態互補、自動加入監控
 - **基礎設施**：Proxmox VE、Wazuh、OPNsense
 - **Graylog**：提供 IP→主機名稱/FQDN 的 DSV 對照表端點，供 Graylog「DSV File from HTTP」資料配接器抓取
-- **本地 AI**：Ollama 自然語言查詢 + 語意搜尋（資料不外送），並提供 MCP server（stdio / Streamable HTTP）；實測搭配 `gemma4:26b` 效果良好
+- **本地 AI**：LLM Server 自然語言查詢 + 語意搜尋（資料不外送），並提供 MCP server（stdio / Streamable HTTP）；實測搭配 `gemma4:26b` 效果良好
 
 ## Graylog 記錄補實（DSV 對照表）
 
@@ -45,7 +45,7 @@ jt-ipam 會**即時**產生一份 IP → 主機名稱 / FQDN 的對照表，讓 
 
 ## 技術堆疊
 
-後端 FastAPI + SQLAlchemy 2.0(async) + PostgreSQL 16 + Alembic + Pydantic v2；前端 Vue 3 + TypeScript + Naive UI + Pinia；本地 AI 走 Ollama + pgvector。**不使用容器**：systemd + apt（適合 Proxmox VE LXC / 裸機）。
+後端 FastAPI + SQLAlchemy 2.0(async) + PostgreSQL 16 + Alembic + Pydantic v2；前端 Vue 3 + TypeScript + Naive UI + Pinia；本地 AI 走 LLM Server + pgvector。**不使用容器**：systemd + apt（適合 Proxmox VE LXC / 裸機）。
 
 ## 安裝
 

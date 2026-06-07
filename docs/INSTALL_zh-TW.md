@@ -16,7 +16,7 @@
 |---|---|---|---|
 | OS | Ubuntu 22.04 / Debian 12 | **Ubuntu 24.04 LTS** | 24.04 內建 Python 3.12 + PG 16 + Node 18，省事 |
 | CPU | 2 vCPU | 4 vCPU | argon2id + pgvector embedding 吃 CPU |
-| RAM | 4 GB | 8 GB | 開 Ollama 還要再加 8 GB |
+| RAM | 4 GB | 8 GB | 開 LLM Server 還要再加 8 GB |
 | Disk | 20 GB | 50 GB | audit log 累積 |
 | Python | 3.11 | 3.12 | 24.04 預設就是 3.12  |
 | PostgreSQL | 16 + pgvector | — | 22.04 需 PGDG repo（腳本會自動加）|
