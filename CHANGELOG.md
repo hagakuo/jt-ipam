@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.140] — 2026-06-14
+
+### Changed — Certificate auto-fetch source UX
+- SFTP source config clarity: **"Login password" / "Login private key (SSH key, PEM)"** are now a
+  distinct "SFTP login auth" section placed right under the username, with a hint: "Used to log in to
+  the SFTP host. Provide a password OR an SSH private key (key takes precedence). The certificate's own
+  private key is the remote key_path file below — unrelated to this." Remote file paths
+  (cert_path/key_path/chain_path) are grouped separately. (The backend already supported SSH-key login;
+  only the field placement/naming was easy to mistake for the certificate's private key.)
+- The "Off" source type now reads **"Off (manual upload)"** so it's clear upload / paste / self-signed
+  are still available.
+
+### Changed — Certificate / distribution-agent tables match the rest of the app
+- Both tables now have **sortable columns** (autoSort) and a **column picker** (preferences persisted to
+  the backend and synced across devices).
+- Action-column buttons now show **icon + text** and collapse to **icon-only** when the column is too
+  narrow (col-actions container query; the label still shows on hover).
+
 ## [0.4.139] — 2026-06-14
 
 ### Added — Distribution-agent version display & self-update

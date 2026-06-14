@@ -5,9 +5,15 @@ import { useI18n } from "vue-i18n";
 import {
   NCard, NTabs, NTabPane, NDataTable, NSpace, NButton, NIcon, NTag, NModal, NForm,
   NFormItem, NInput, NInputNumber, NDynamicTags, NSelect, NPopconfirm, NAlert,
-  NCheckbox, NRadioGroup, NRadioButton, NTooltip, useMessage, type DataTableColumns,
+  NCheckbox, NRadioGroup, NRadioButton, NTooltip, NDivider, useMessage, type DataTableColumns,
 } from "naive-ui";
-import { PlusIcon, RefreshIcon, CopyIcon, LockIcon, InfoIcon, SaveIcon } from "@/icons";
+import {
+  PlusIcon, RefreshIcon, CopyIcon, LockIcon, InfoIcon, SaveIcon,
+  ImportIcon, TokenIcon, SettingsIcon, SyncIcon, DeleteIcon,
+} from "@/icons";
+import { autoSort } from "@/composables/useTableSort";
+import { useColumnPrefs } from "@/composables/useColumnPrefs";
+import ColumnPicker from "@/components/ColumnPicker.vue";
 import {
   listCertificates, createCertificate, deleteCertificate, uploadVersion, generateSelfSigned,
   setCertSource, fetchCertNow,
@@ -208,38 +214,79 @@ const configExample = `deployments:
   - cert: mail-cert
     profile: pmg`;
 
-const certCols = computed<DataTableColumns<Certificate>>(() => [
-  { title: t("cols.name"), key: "name" },
-  { title: t("certs.domains"), key: "domains",
+// 操作欄按鈕：icon + 文字；欄寬不足時由全域 col-actions CSS 收成只剩 icon。
+function actBtn(icon: any, label: string, onClick: () => void, props: Record<string, any> = {}) {
+  return h(NButton, { size: "small", ...props, onClick }, {
+    icon: () => h(NIcon, null, () => h(icon)),
+    default: () => label,
+  });
+}
+
+// ── 憑證表格欄位 + 顯示偏好 ──
+const CERT_KEYS = ["name", "domains", "exp", "version_count", "source", "actions"];
+const certPrefs = useColumnPrefs("certificates", CERT_KEYS, CERT_KEYS);
+const certPickerItems = computed(() => [
+  { key: "name", label: t("cols.name") },
+  { key: "domains", label: t("certs.domains") },
+  { key: "exp", label: t("certs.expiry") },
+  { key: "version_count", label: t("certs.versions") },
+  { key: "source", label: t("certSource.col_source") },
+  { key: "actions", label: t("cols.actions") },
+]);
+const certColsAll = computed<DataTableColumns<Certificate>>(() => autoSort([
+  { title: t("cols.name"), key: "name", minWidth: 120, ellipsis: { tooltip: true } },
+  { title: t("certs.domains"), key: "domains", minWidth: 180,
+    sorter: (a, b) => (a.domains?.[0] ?? "").localeCompare(b.domains?.[0] ?? ""),
     render: (c) => h(NSpace, { size: 4 }, () => (c.domains ?? []).slice(0, 4).map(d =>
       h(NTag, { size: "small" }, () => d))) },
-  { title: t("certs.expiry"), key: "exp", render: expiryTag },
+  { title: t("certs.expiry"), key: "exp", width: 150,
+    sorter: (a, b) => (a.current_not_after ?? "").localeCompare(b.current_not_after ?? ""),
+    render: expiryTag },
   { title: t("certs.versions"), key: "version_count", width: 80 },
-  { title: t("certSource.col_source"), key: "source", width: 90, render: (c) =>
-    c.source_type === "none"
-      ? h("span", { style: "opacity:.5" }, "—")
-      : h(NTag, { size: "small", type: c.last_fetch_error ? "error" : "info" },
-          () => c.source_type.toUpperCase()) },
-  { title: t("cols.actions"), key: "actions", width: 420, render: (c) => h(NSpace, { size: 6 }, () => [
-    h(NButton, { size: "small", onClick: () => openUpload(c) }, () => t("certs.upload_version")),
-    h(NButton, { size: "small", onClick: () => openSelf(c) }, () => t("certs.self_signed")),
-    h(NButton, { size: "small", onClick: () => openSource(c) }, () => t("certSource.source")),
-    c.source_type !== "none"
-      ? h(NButton, { size: "small", type: "primary", ghost: true, onClick: () => doFetchNow(c) },
-          () => t("certSource.fetch_now"))
-      : null,
-    h(NPopconfirm, { onPositiveClick: () => removeCert(c) }, {
-      trigger: () => h(NButton, { size: "small", tertiary: true, type: "error" }, () => t("common.delete")),
-      default: () => t("certs.delete_confirm") }),
-  ]) },
-]);
+  { title: t("certSource.col_source"), key: "source", width: 90,
+    sorter: (a, b) => a.source_type.localeCompare(b.source_type),
+    render: (c) =>
+      c.source_type === "none"
+        ? h("span", { style: "opacity:.5" }, "—")
+        : h(NTag, { size: "small", type: c.last_fetch_error ? "error" : "info" },
+            () => c.source_type.toUpperCase()) },
+  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 360,
+    render: (c) => h(NSpace, { size: 4, wrapItem: false, wrap: false }, () => [
+      actBtn(ImportIcon, t("certs.upload_version"), () => openUpload(c)),
+      actBtn(TokenIcon, t("certs.self_signed"), () => openSelf(c)),
+      actBtn(SettingsIcon, t("certSource.source"), () => openSource(c)),
+      c.source_type !== "none"
+        ? actBtn(SyncIcon, t("certSource.fetch_now"), () => doFetchNow(c), { type: "primary", ghost: true })
+        : null,
+      h(NPopconfirm, { onPositiveClick: () => removeCert(c) }, {
+        trigger: () => actBtn(DeleteIcon, t("common.delete"), () => {}, { tertiary: true, type: "error" }),
+        default: () => t("certs.delete_confirm") }),
+    ]) },
+]));
+const certCols = computed<DataTableColumns<Certificate>>(() =>
+  certColsAll.value.filter((c: any) => certPrefs.visibleKeys.value.includes(c.key)));
 
-const agentCols = computed<DataTableColumns<CertAgent>>(() => [
-  { title: t("cols.name"), key: "name" },
+// ── 派送代理表格欄位 + 顯示偏好 ──
+const AGENT_KEYS = ["name", "enabled", "scope", "agent_version", "source_ip", "last_seen_at", "reported", "actions"];
+const agentPrefs = useColumnPrefs("cert_agents", AGENT_KEYS, AGENT_KEYS);
+const agentPickerItems = computed(() => [
+  { key: "name", label: t("cols.name") },
+  { key: "enabled", label: t("cols.enabled") },
+  { key: "scope", label: t("certs.scope") },
+  { key: "agent_version", label: t("cols.version") },
+  { key: "source_ip", label: t("cols.source_ip") },
+  { key: "last_seen_at", label: t("cols.last_report") },
+  { key: "reported", label: t("certs.deployed") },
+  { key: "actions", label: t("cols.actions") },
+]);
+const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
+  { title: t("cols.name"), key: "name", minWidth: 120, ellipsis: { tooltip: true } },
   { title: t("cols.enabled"), key: "enabled", width: 70,
+    sorter: (a, b) => Number(a.enabled) - Number(b.enabled),
     render: (a) => h(NTag, { size: "small", type: a.enabled ? "success" : "default" },
       () => a.enabled ? "✓" : "—") },
   { title: t("certs.scope"), key: "scope", width: 90,
+    sorter: (a, b) => (a.scope_cert_ids ?? []).length - (b.scope_cert_ids ?? []).length,
     render: (a) => `${(a.scope_cert_ids ?? []).length} ${t("certs.certs_unit")}` },
   { title: t("cols.version"), key: "agent_version", width: 110,
     render: (a) => {
@@ -259,17 +306,22 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() => [
   { title: t("cols.source_ip"), key: "source_ip", width: 128,
     render: (a) => a.last_source_ip
       ? h("span", { style: "font-family:monospace" }, a.last_source_ip) : "—" },
-  { title: t("cols.last_report"), key: "last_seen_at",
+  { title: t("cols.last_report"), key: "last_seen_at", width: 170,
+    sorter: (a, b) => (a.last_seen_at ?? "").localeCompare(b.last_seen_at ?? ""),
     render: (a) => a.last_seen_at ? fmtDateTime(a.last_seen_at) : "—" },
-  { title: t("certs.deployed"), key: "reported",
+  { title: t("certs.deployed"), key: "reported", width: 90,
+    sorter: (a, b) => (a.reported ?? []).length - (b.reported ?? []).length,
     render: (a) => `${(a.reported ?? []).filter(d => (d as any).status === "ok").length} / ${(a.reported ?? []).length}` },
-  { title: t("cols.actions"), key: "actions", width: 200, render: (a) => h(NSpace, { size: 6 }, () => [
-    h(NButton, { size: "small", onClick: () => doRotate(a) }, () => t("certs.rotate_key")),
-    h(NPopconfirm, { onPositiveClick: () => removeAgent(a) }, {
-      trigger: () => h(NButton, { size: "small", tertiary: true, type: "error" }, () => t("common.delete")),
-      default: () => t("common.delete") + "?" }),
-  ]) },
-]);
+  { title: t("cols.actions"), key: "actions", className: "col-actions", width: 180,
+    render: (a) => h(NSpace, { size: 4, wrapItem: false, wrap: false }, () => [
+      actBtn(SyncIcon, t("certs.rotate_key"), () => doRotate(a)),
+      h(NPopconfirm, { onPositiveClick: () => removeAgent(a) }, {
+        trigger: () => actBtn(DeleteIcon, t("common.delete"), () => {}, { tertiary: true, type: "error" }),
+        default: () => t("common.delete") + "?" }),
+    ]) },
+]));
+const agentCols = computed<DataTableColumns<CertAgent>>(() =>
+  agentColsAll.value.filter((c: any) => agentPrefs.visibleKeys.value.includes(c.key)));
 </script>
 
 <template>
@@ -287,9 +339,13 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() => [
           <n-button type="primary" size="small" @click="showNew = true">
             <template #icon><n-icon :component="PlusIcon" /></template>{{ t("certs.new") }}
           </n-button>
-          <n-button size="small" quaternary @click="loadCerts">
-            <template #icon><n-icon :component="RefreshIcon" /></template>{{ t("common.refresh") }}
-          </n-button>
+          <n-space :size="8">
+            <ColumnPicker :all="certPickerItems" :visible="certPrefs.visibleKeys.value"
+                          @update:visible="certPrefs.setVisible" @reset="certPrefs.reset" />
+            <n-button size="small" quaternary @click="loadCerts">
+              <template #icon><n-icon :component="RefreshIcon" /></template>{{ t("common.refresh") }}
+            </n-button>
+          </n-space>
         </n-space>
         <n-data-table :columns="certCols" :data="certs" :loading="loading" size="small"
                       :row-key="(r:Certificate) => r.id" />
@@ -306,9 +362,13 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() => [
               <template #icon><n-icon :component="InfoIcon" /></template>{{ t("certHelp.button") }}
             </n-button>
           </n-space>
-          <n-button size="small" quaternary @click="loadAgents">
-            <template #icon><n-icon :component="RefreshIcon" /></template>{{ t("common.refresh") }}
-          </n-button>
+          <n-space :size="8">
+            <ColumnPicker :all="agentPickerItems" :visible="agentPrefs.visibleKeys.value"
+                          @update:visible="agentPrefs.setVisible" @reset="agentPrefs.reset" />
+            <n-button size="small" quaternary @click="loadAgents">
+              <template #icon><n-icon :component="RefreshIcon" /></template>{{ t("common.refresh") }}
+            </n-button>
+          </n-space>
         </n-space>
         <n-data-table :columns="agentCols" :data="agents" size="small" :row-key="(r:CertAgent) => r.id" />
       </n-tab-pane>
@@ -411,11 +471,18 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() => [
         <n-form-item :label="t('certSource.host')"><n-input v-model:value="sourceForm.host" placeholder="ca.example.com" /></n-form-item>
         <n-form-item :label="t('certSource.port')"><n-input-number v-model:value="sourceForm.port" :min="1" :max="65535" /></n-form-item>
         <n-form-item :label="t('certSource.username')"><n-input v-model:value="sourceForm.username" /></n-form-item>
+        <n-divider style="margin: 4px 0 10px" title-placement="left">
+          <span style="font-size: 12px; opacity: .7">{{ t("certSource.auth_section") }}</span>
+        </n-divider>
+        <div style="font-size: 12px; opacity: .7; margin: -4px 0 8px">{{ t("certSource.auth_hint") }}</div>
+        <n-form-item :label="t('certSource.password')"><n-input v-model:value="sourceForm.source_password" type="password" show-password-on="click" :placeholder="t('certSource.secret_keep')" /></n-form-item>
+        <n-form-item :label="t('certSource.private_key')"><n-input v-model:value="sourceForm.source_private_key" type="textarea" :rows="3" :placeholder="t('certSource.ssh_key_keep')" /></n-form-item>
+        <n-divider style="margin: 4px 0 10px" title-placement="left">
+          <span style="font-size: 12px; opacity: .7">{{ t("certSource.remote_files") }}</span>
+        </n-divider>
         <n-form-item label="cert_path"><n-input v-model:value="sourceForm.cert_path" placeholder="/etc/ssl/cert.pem" /></n-form-item>
         <n-form-item label="key_path"><n-input v-model:value="sourceForm.key_path" :placeholder="t('certSource.optional_reuse_key')" /></n-form-item>
         <n-form-item label="chain_path"><n-input v-model:value="sourceForm.chain_path" :placeholder="t('certSource.optional')" /></n-form-item>
-        <n-form-item :label="t('certSource.password')"><n-input v-model:value="sourceForm.source_password" type="password" show-password-on="click" :placeholder="t('certSource.secret_keep')" /></n-form-item>
-        <n-form-item :label="t('certSource.private_key')"><n-input v-model:value="sourceForm.source_private_key" type="textarea" :rows="3" :placeholder="t('certSource.secret_keep')" /></n-form-item>
       </template>
 
       <n-form-item v-if="sourceForm.source_type !== 'none'" :label="t('certSource.interval_hours')">
