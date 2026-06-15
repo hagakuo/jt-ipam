@@ -184,13 +184,21 @@ cmd_install() {
     #    → `sudo: command not found`（客戶回報手動補 PG 後卡住的第二關多半是這個）。
     apt-get install -y -qq ca-certificates curl gnupg sudo
 
+    # 套件是否可安裝：用命令替換、**不要** `apt-cache madison X | grep -q .`。
+    # 在 `set -o pipefail` 下，madison 對「有多個候選版本」的套件（如 Debian 13 的 postgresql-17
+    # 同時有 17.10 安全更新與 17.9）會輸出多行，`grep -q` 命中第一行就關閉管線 → 上游 apt-cache 寫
+    # 第二行時收到 SIGPIPE(141) → pipefail 把整條管線判失敗 → 套件「明明有」卻被當成沒有。這正是
+    # 客戶 Debian 13 native PG17 沒被選到、白繞 PGDG 又 FATAL 的真正主因（單一版本的發行版只有一行、
+    # 不會 SIGPIPE，所以一直沒被發現）。命令替換會把 stdout 全收完，無管線、不會 SIGPIPE。
+    _pkg_installable() { [ -n "$(apt-cache madison "$1" 2>/dev/null)" ]; }
+
     # Detect available Python (newest to oldest, needs >= 3.11).
-    # Use apt-cache madison: only counts if actually installable (apt-cache show matches Provides, unreliable).
+    # madison 只認「真的裝得到」的（apt-cache show 會比對 Provides、不可靠）。
     local PYTHON_BIN=""
     local PYTHON_PKGS=()
     local ver
     for ver in python3.14 python3.13 python3.12 python3.11; do
-        if apt-cache madison "${ver}-venv" 2>/dev/null | grep -q .; then
+        if _pkg_installable "${ver}-venv"; then
             PYTHON_BIN="$ver"
             PYTHON_PKGS=("$ver" "${ver}-venv" "${ver}-dev")
             break
@@ -233,10 +241,10 @@ cmd_install() {
     # 改成：先在預設庫找「server+pgvector 成對」的版本（16→17→18，app 三者皆相容），
     # 找不到才補 PGDG 再找一次（PGDG/trixie 會給 17+pgvector）。
     _pick_pg() {   # echo 第一個 server 與 pgvector 都可安裝的版本，否則回非零
-        local v
+        local v                                   # （用 _pkg_installable，避免 grep -q SIGPIPE 雷）
         for v in 16 17 18; do
-            apt-cache madison "postgresql-$v"          2>/dev/null | grep -q . || continue
-            apt-cache madison "postgresql-$v-pgvector" 2>/dev/null | grep -q . || continue
+            _pkg_installable "postgresql-$v"          || continue
+            _pkg_installable "postgresql-$v-pgvector" || continue
             echo "$v"; return 0
         done
         return 1

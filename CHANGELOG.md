@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.178] — 2026-06-15
+
+### Fixed
+- **Real root cause of the Debian 13 install failure: a `set -o pipefail` + `grep -q` SIGPIPE bug in the
+  package-availability check.** `apt-cache madison <pkg> | grep -q .` reports a package as *unavailable*
+  whenever madison emits multiple version lines (e.g. trixie lists `postgresql-17` twice — 17.10 from
+  -security and 17.9 from main): `grep -q` exits on the first line and closes the pipe, `apt-cache` gets
+  SIGPIPE (rc 141) writing the next line, and `pipefail` propagates that as a failed pipeline. So the
+  installer "couldn't see" native PG 17 + pgvector even though both exist, and fell through to PGDG and a
+  FATAL. Replaced the piped check with a pipe-free `_pkg_installable()` (command substitution + `[ -n ]`),
+  applied to both the PostgreSQL and Python detection loops. Single-version distros (Ubuntu 24.04) emit
+  one line and never hit it, which is why it surfaced only on Debian 13. Install-script only.
+
 ## [0.4.177] — 2026-06-15
 
 ### Changed

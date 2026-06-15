@@ -4,6 +4,17 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.178] — 2026-06-15
+
+### 修正
+- **Debian 13 安裝失敗的真正根因：套件偵測在 `set -o pipefail` 下踩到 `grep -q` 的 SIGPIPE 雷。**
+  `apt-cache madison <套件> | grep -q .` 在 madison 輸出多行版本時（例如 trixie 的 `postgresql-17` 會列
+  兩筆——17.10 來自 -security、17.9 來自 main）會把套件誤判成「不存在」：`grep -q` 命中第一行就關閉管
+  線，`apt-cache` 寫下一行時收到 SIGPIPE（rc 141），`pipefail` 再把整條管線判失敗。於是安裝腳本「看不到」
+  原生的 PG 17＋pgvector（其實都在），退回 PGDG 又 FATAL。改用無管線的 `_pkg_installable()`（命令替換＋
+  `[ -n ]`），同時套用到 PostgreSQL 與 Python 偵測迴圈。單一版本的發行版（Ubuntu 24.04）只輸出一行、不會
+  踩到，所以只在 Debian 13 浮現。純安裝腳本改動。
+
 ## [0.4.177] — 2026-06-15
 
 ### 變更
