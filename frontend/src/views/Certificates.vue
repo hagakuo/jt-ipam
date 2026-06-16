@@ -825,19 +825,25 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
           </n-dropdown>
         </n-space>
       </n-space>
-      <div class="cert-ver-detail">
-        <div><b>{{ t("certFiles.domains") }}：</b>{{ (v.domains ?? []).join("、") || "—" }}</div>
-        <div><b>{{ t("certFiles.subject") }}：</b>{{ v.subject || "—" }}</div>
-        <div><b>{{ t("certFiles.issuer") }}：</b>{{ v.issuer || "—" }}</div>
-        <div><b>{{ t("certFiles.serial") }}：</b><code>{{ v.serial || "—" }}</code></div>
-        <div><b>{{ t("certFiles.validity") }}：</b>{{ v.not_before ? fmtDateTime(v.not_before).slice(0, 10) : "—" }} ~ {{ fmtDateTime(v.not_after).slice(0, 10) }}</div>
-        <div style="display:flex;align-items:center;gap:6px">
-          <b style="flex:0 0 auto">{{ t("certFiles.fingerprint") }}：</b>
-          <code style="word-break:break-all;flex:1">{{ v.fingerprint_sha256 }}</code>
+      <dl class="cert-ver-detail">
+        <dt>{{ t("certFiles.domains") }}</dt>
+        <dd>{{ (v.domains ?? []).join("、") || "—" }}</dd>
+        <dt>{{ t("certFiles.subject") }}</dt>
+        <dd>{{ v.subject || "—" }}</dd>
+        <dt>{{ t("certFiles.issuer") }}</dt>
+        <dd>{{ v.issuer || "—" }}</dd>
+        <dt>{{ t("certFiles.serial") }}</dt>
+        <dd><code>{{ v.serial || "—" }}</code></dd>
+        <dt>{{ t("certFiles.validity") }}</dt>
+        <dd>{{ v.not_before ? fmtDateTime(v.not_before).slice(0, 10) : "—" }} ～ {{ fmtDateTime(v.not_after).slice(0, 10) }}</dd>
+        <dt>{{ t("certFiles.fingerprint") }}</dt>
+        <dd class="fp">
+          <code>{{ v.fingerprint_sha256 }}</code>
           <n-button size="tiny" text @click="copy(v.fingerprint_sha256)"><template #icon><n-icon :component="CopyIcon" /></template></n-button>
-        </div>
-        <div><b>{{ t("certFiles.uploaded_at") }}：</b>{{ fmtDateTime(v.created_at) }}</div>
-      </div>
+        </dd>
+        <dt>{{ t("certFiles.uploaded_at") }}</dt>
+        <dd>{{ fmtDateTime(v.created_at) }}</dd>
+      </dl>
     </div>
   </n-modal>
 
@@ -1262,9 +1268,13 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
 }
 .help-subtle { font-size: 12px; opacity: .7; }
 .help-note { font-size: 12px; opacity: .68; line-height: 1.6; margin-top: 8px; }
-.cert-ver-detail { font-size: 12px; line-height: 1.75; opacity: .9; }
-.cert-ver-detail b { opacity: .55; font-weight: 600; }
-.cert-ver-detail code { font-size: 11px; }
+/* 憑證版本詳細資訊：兩欄對齊（標籤欄 + 值欄），值整齊靠左對齊 */
+.cert-ver-detail { display: grid; grid-template-columns: max-content 1fr; column-gap: 16px; row-gap: 7px; margin: 0; font-size: 12px; align-items: baseline; }
+.cert-ver-detail dt { opacity: .5; font-weight: 600; white-space: nowrap; }
+.cert-ver-detail dd { margin: 0; opacity: .92; word-break: break-word; }
+.cert-ver-detail code { font-size: 11px; font-family: var(--n-font-family-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace); }
+.cert-ver-detail dd.fp { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cert-ver-detail dd.fp code { word-break: break-all; flex: 1; }
 /* 服務多選格：欄寬足夠容下最長標籤（wazuh-dashboard），每項不換行 */
 .gen-svc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(135px, 1fr)); gap: 8px 10px; }
 .gen-svc-grid :deep(.n-checkbox__label) { white-space: nowrap; }

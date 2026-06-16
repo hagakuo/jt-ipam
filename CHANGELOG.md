@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.181] — 2026-06-16
+
+### Changed
+- **Tidier certificate detail panel.** The per-version detail in the certificate Files modal (domains /
+  subject / issuer / serial / validity / fingerprint / uploaded-at) is now a two-column aligned grid
+  (definition list) so every value lines up in a single column, with serial and fingerprint in a
+  monospace font. Previously it was a ragged list of `label：value` lines.
+
 ## [0.4.180] — 2026-06-16
 
 ### Fixed
