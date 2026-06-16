@@ -4,7 +4,7 @@
     "tagline": "Modern self-hosted IPAM — integrating DNS / LibreNMS / OPNsense / AI, with phpIPAM migration"
   },
   "login": {
-    "title": "Sign in to jt-ipam",
+    "title": "Sign in to NKUST IPAM",
     "username": "Username or Email",
     "password": "Password",
     "realm": "Realm",

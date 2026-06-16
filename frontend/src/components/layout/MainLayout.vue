@@ -422,7 +422,7 @@ function startDrag(e: MouseEvent) {
           <circle cx="24" cy="24" r="2.6" fill="#18a058" />
         </svg>
         <svg v-else
-             xmlns="http://www.w3.org/2000/svg" viewBox="0 0 232 48" class="brand-logo" aria-label="jt-ipam">
+             xmlns="http://www.w3.org/2000/svg" viewBox="0 0 292 48" class="brand-logo" aria-label="IPAM fork jt-ipam">
           <rect width="48" height="48" rx="10" fill="#18a058" />
           <g stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-opacity="0.9">
             <line x1="13" y1="13" x2="24" y2="24" />
@@ -438,13 +438,17 @@ function startDrag(e: MouseEvent) {
           </g>
           <circle cx="24" cy="24" r="6" fill="#ffffff" />
           <circle cx="24" cy="24" r="2.6" fill="#18a058" />
-          <text x="60" y="32"
+          <text x="60" y="31"
                 font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
                 font-size="22" font-weight="600" fill="currentColor"
-                letter-spacing="-0.3">jt-ipam</text>
-          <text x="150" y="33"
+                letter-spacing="0">IPAM</text>
+          <text x="116" y="31"
                 font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
-                font-size="16" font-weight="500" fill="currentColor" fill-opacity="0.72"
+                font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.72"
+                letter-spacing="0">fork jt-ipam</text>
+          <text x="202" y="31"
+                font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+                font-size="13" font-weight="500" fill="currentColor" fill-opacity="0.62"
                 letter-spacing="0">v{{ appVersion }}</text>
         </svg>
       </div>

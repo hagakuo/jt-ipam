@@ -4,7 +4,7 @@
     "tagline": "為整合而生的 IPAM — 整合 DNS / LibreNMS / OPNsense / AI，可從 phpIPAM 遷移"
   },
   "login": {
-    "title": "登入 jt-ipam",
+    "title": "登入NKUST IPAM",
     "username": "帳號或 Email",
     "password": "密碼",
     "realm": "領域",
