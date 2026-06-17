@@ -4,6 +4,17 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.186] — 2026-06-17
+
+### 修正
+- **IP 位址編輯視窗的「儲存」按鈕沒反應／改動遺失（issue #6，感謝 @lin-junyou）。** 條件渲染的操作按鈕
+  （儲存／編輯／新增／取消／返回）與刪除確認框以 `v-if`/`v-else` 共用同一位置、且沒有唯一 `:key`，導致 Vue 在
+  檢視↔編輯切換時重用 vnode、保留了**上一個分支的** `@click` —— 按「儲存」實際觸發的是返回/編輯，改動就被默默
+  丟掉。已為每個條件按鈕／確認框補上穩定 `key`（行內 `#header-extra` 與視窗 `#footer` 都修）。
+- **Ubuntu 26 安裝失敗「requires a different Python: 3.14 not in '<3.14,>=3.11'」（issue #5，感謝 @Ghucos）。**
+  Ubuntu 26.04 預設 Python 3.14，但後端 `requires-python` 把上限卡在 3.14 以下，pip 直接拒裝。放寬為
+  `>=3.11,<3.15` 以允許 3.14。
+
 ## [0.4.185] — 2026-06-16
 
 ### 新增

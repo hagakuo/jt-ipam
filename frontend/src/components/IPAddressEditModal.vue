@@ -505,10 +505,10 @@ async function remove() {
       <template v-if="inline && !isCreate" #header-extra>
         <n-space align="center" :size="8" :wrap-item="false">
           <template v-if="!editMode">
-            <n-button type="primary" size="small" @click="editMode = true">
+            <n-button key="hx-edit" type="primary" size="small" @click="editMode = true">
               <template #icon><n-icon><EditIcon /></n-icon></template>{{ t("common.edit") }}
             </n-button>
-            <n-popconfirm @positive-click="remove">
+            <n-popconfirm key="hx-del-view" @positive-click="remove">
               <template #trigger>
                 <n-button type="error" ghost size="small" :loading="deleting">
                   <template #icon><n-icon><DeleteIcon /></n-icon></template>{{ t("common.delete") }}
@@ -516,12 +516,12 @@ async function remove() {
               </template>
               {{ t("common.confirm_delete") }}
             </n-popconfirm>
-            <n-button size="small" @click="emit('back')">
+            <n-button key="hx-back" size="small" @click="emit('back')">
               <template #icon><n-icon><ArrowLeftIcon /></n-icon></template>{{ t("common.back") }}
             </n-button>
           </template>
           <template v-else>
-            <n-popconfirm @positive-click="remove">
+            <n-popconfirm key="hx-del-edit" @positive-click="remove">
               <template #trigger>
                 <n-button type="error" ghost size="small" :loading="deleting">
                   <template #icon><n-icon><DeleteIcon /></n-icon></template>{{ t("common.delete") }}
@@ -529,10 +529,10 @@ async function remove() {
               </template>
               {{ t("common.confirm_delete") }}
             </n-popconfirm>
-            <n-button size="small" @click="close">
+            <n-button key="hx-cancel" size="small" @click="close">
               <template #icon><n-icon><CancelIcon /></n-icon></template>{{ t("common.cancel") }}
             </n-button>
-            <n-button type="success" size="small" :loading="saving" @click="save">
+            <n-button key="hx-save" type="success" size="small" :loading="saving" @click="save">
               <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
             </n-button>
           </template>
@@ -772,7 +772,7 @@ async function remove() {
 
       <template v-if="!inline" #footer>
         <n-space justify="space-between">
-          <n-popconfirm v-if="!isCreate && (!inline || editMode)" @positive-click="remove">
+          <n-popconfirm v-if="!isCreate && (!inline || editMode)" key="ft-del" @positive-click="remove">
             <template #trigger>
               <n-button type="error" ghost size="small" :loading="deleting" :disabled="!props.address">
                 <template #icon><n-icon><DeleteIcon /></n-icon></template>
@@ -783,19 +783,19 @@ async function remove() {
           </n-popconfirm>
           <span v-else></span>
           <n-space>
-            <n-button v-if="!inline || editMode || isCreate" @click="close">
+            <n-button v-if="!inline || editMode || isCreate" key="ft-cancel" @click="close">
               <template #icon><n-icon><CancelIcon /></n-icon></template>
               {{ t("common.cancel") }}
             </n-button>
-            <n-button v-if="isCreate" type="primary" :loading="saving" @click="save">
+            <n-button v-if="isCreate" key="ft-create" type="primary" :loading="saving" @click="save">
               <template #icon><n-icon><PlusIcon /></n-icon></template>
               {{ t("common.create") }}
             </n-button>
-            <n-button v-else-if="!editMode" type="primary" @click="editMode = true">
+            <n-button v-else-if="!editMode" key="ft-edit" type="primary" @click="editMode = true">
               <template #icon><n-icon><EditIcon /></n-icon></template>
               {{ t("common.edit") }}
             </n-button>
-            <n-button v-else type="success" :loading="saving" @click="save">
+            <n-button v-else key="ft-save" type="success" :loading="saving" @click="save">
               <template #icon><n-icon><SaveIcon /></n-icon></template>
               {{ t("common.save") }}
             </n-button>

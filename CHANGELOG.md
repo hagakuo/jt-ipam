@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.186] — 2026-06-17
+
+### Fixed
+- **Save button in the IP address edit modal did nothing / lost edits (issue #6, thanks @lin-junyou).**
+  The conditionally-rendered action buttons (Save / Edit / Create / Cancel / Back) and the delete
+  popconfirm shared a slot via `v-if`/`v-else` with no unique `:key`, so Vue reused the vnode across the
+  view↔edit switch and kept the *previous* branch's `@click` — clicking Save fired Back/Edit and the edit
+  was silently dropped. Gave each conditional button/popconfirm a stable `key` (both the inline
+  `#header-extra` and the modal `#footer`).
+- **Install on Ubuntu 26 failed with "requires a different Python: 3.14 not in '<3.14,>=3.11'" (issue #5,
+  thanks @Ghucos).** Ubuntu 26.04 ships Python 3.14; the backend's `requires-python` capped it below 3.14,
+  so pip refused to install. Widened to `>=3.11,<3.15` to allow 3.14.
+
 ## [0.4.185] — 2026-06-16
 
 ### Added
