@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.193] — 2026-06-18
+
+### Changed
+- **Graylog DSV page: the endpoint list is now a real data table and drives the guide.** The DSV sources
+  table gains sorting, a column picker, a quick-filter box and a refresh button; clicking a row selects
+  that source and the Graylog setup guide below re-renders for it (correct lookup URL, Lookup Table
+  names, key/value columns and a matching pipeline rule — IP→hostname keeps the LAN cidr_match guard,
+  firewall rule/alias sources use a plain rid/alias lookup), with a fade/slide transition when switching.
+  The page also drops its fixed max-width and uses the full width. Term: "詳情" → "詳細資料".
+
 ## [0.4.192] — 2026-06-18
 
 ### Changed

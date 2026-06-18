@@ -4,6 +4,15 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.193] — 2026-06-18
+
+### 變更
+- **Graylog DSV 頁面：端點清單改成真正的資料表格，並驅動下方教學。** DSV 來源表格加上排序、欄位選擇、
+  篩選框與重新整理；點某一列即選取該來源，下方 Graylog 串接教學會重繪成那個來源的版本（正確的查表網址、
+  Lookup Table 名稱、key／value 欄位與對應的 pipeline rule——IP→主機名稱保留 LAN cidr_match 判斷、防火牆
+  規則／別名則用單純的 rid／alias 查表），切換時帶淡入淡出過場。頁面也移除固定寬度限制、改用全寬。
+  用詞：「詳情」→「詳細資料」。
+
 ## [0.4.192] — 2026-06-18
 
 ### 變更

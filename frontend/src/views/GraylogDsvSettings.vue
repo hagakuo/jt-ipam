@@ -1,65 +1,75 @@
 <script setup lang="ts">
 /**
- * Graylog DSV 對照表（僅管理員）— 從「系統設定」拆出的獨立頁。
- * 上半：端點設定（啟用 / 路徑 / 格式 / token / 複製網址）。
- * 下半：Graylog 串接教學（Lookup Table 三層、Extractor、Pipeline、只對內網 IP 查）。
+ * Graylog DSV 對照表（僅管理員）。
+ * 上半：所有 DSV 端點的表格（可排序 / 選欄 / 篩選 / 重新整理）+ 詳細資料抽屜。
+ * 下半：Graylog 串接教學 — 內容跟著表格選取的那個 DSV 來源變動（含切換過場）。
+ * 可擴充：未來新 DSV 類型只要往 dsvSources push 一筆，表格與教學自動帶出。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, h, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NCard, NSpace, NIcon, NInput, NSelect, NSwitch, NButton, NAlert, NTag,
-  NDrawer, NDrawerContent, useMessage,
+  NDrawer, NDrawerContent, NDataTable, useMessage, type DataTableColumns,
 } from "naive-ui";
 import { ExportIcon, SaveIcon, RefreshIcon, CopyIcon, InfoIcon } from "@/icons";
 import { getGraylogDsv, putGraylogDsv, type GraylogDsv } from "@/api/system";
 import { listFirewalls } from "@/api/integrations";
+import { autoSort } from "@/composables/useTableSort";
+import { useColumnPrefs } from "@/composables/useColumnPrefs";
+import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
+import ColumnPicker from "@/components/ColumnPicker.vue";
 
 const { t } = useI18n();
 const msg = useMessage();
 
-// 防火牆 DSV：每台啟用「對外提供 DSV」的 OPNsense → 兩支查表（規則 label→alias、alias→成員）
+const dsv = ref<GraylogDsv>({ enabled: false, fmt: "csv", path: "ip-fqdn", token: "" });
+const saving = ref(false);
+const loading = ref(false);
+const fmtOpts = [{ label: "CSV (,)", value: "csv" }, { label: "TSV (Tab)", value: "tsv" }];
+const DSV_HTTP_PORT = 8088;
+
+// 防火牆 DSV：每台啟用「對外提供 DSV」的 OPNsense
 const fwDsv = ref<{ id: string; name: string }[]>([]);
 function fwLookupUrl(id: string, kind: "rule-aliases" | "aliases", http = false): string {
   if (!dsv.value.token) return "";
-  const base = http
-    ? `http://${location.hostname}:${DSV_HTTP_PORT}`
-    : location.origin;
+  const base = http ? `http://${location.hostname}:${DSV_HTTP_PORT}` : location.origin;
   return `${base}/api/v1/lookup/firewall/${id}/${kind}?token=${dsv.value.token}`;
 }
-
-const dsv = ref<GraylogDsv>({ enabled: false, fmt: "csv", path: "ip-fqdn", token: "" });
-const saving = ref(false);
-const fmtOpts = [{ label: "CSV (,)", value: "csv" }, { label: "TSV (Tab)", value: "tsv" }];
+function slugify(s: string): string {
+  return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "fw";
+}
 
 const dsvUrl = computed(() =>
   dsv.value.token ? `${location.origin}/api/v1/lookup/${dsv.value.path}?token=${dsv.value.token}` : "");
-const DSV_HTTP_PORT = 8088;
 const dsvUrlHttp = computed(() =>
   dsv.value.token
     ? `http://${location.hostname}:${DSV_HTTP_PORT}/api/v1/lookup/${dsv.value.path}?token=${dsv.value.token}`
     : "");
+const gSep = computed(() => (dsv.value.fmt === "tsv" ? "\\t" : ","));
 
-// 教學裡示範用的網址：優先顯示實際端點，未啟用時用佔位
-const sampleUrl = computed(() => dsvUrl.value || "https://<jt-ipam>/api/v1/lookup/ip-fqdn?token=<token>");
-const sampleUrlHttp = computed(() => dsvUrlHttp.value || `http://<jt-ipam>:${DSV_HTTP_PORT}/api/v1/lookup/ip-fqdn?token=<token>`);
-const sep = computed(() => (dsv.value.fmt === "tsv" ? "\\t" : ","));
-
-// 可擴充的 DSV 來源清單：未來新增 DSV 類型只要往這裡 push 一筆，下方表格＋詳情抽屜會自動帶出。
+// ── 可擴充的 DSV 來源清單 ──
+type DsvKind = "hostname" | "fw_rules" | "fw_aliases";
 interface DsvSource {
   id: string;
   name: string;
-  mapping: string;       // key → value 對照說明
+  kind: DsvKind;
+  mapping: string;       // "key → value"，表格與教學共用
+  base: string;          // Graylog 物件名前綴（adapter/cache/table）
+  defaultField: string;  // 教學裡預設的 log 欄位
   enabled: boolean;
   https: string;
   http: string;
   notes: string;
-  editable: boolean;     // 全域 IP→主機名稱 那筆，可在抽屜內改開關 / 路徑
+  editable: boolean;     // IP→主機名稱 那筆可在抽屜內改開關 / 路徑
 }
 const dsvSources = computed<DsvSource[]>(() => {
   const out: DsvSource[] = [{
     id: "hostname",
     name: t("settings.system.graylog_src_hostname"),
+    kind: "hostname",
     mapping: "IP → hostname / FQDN",
+    base: "jt_ipam",
+    defaultField: "src_ip",
     enabled: dsv.value.enabled,
     https: dsvUrl.value,
     http: dsvUrlHttp.value,
@@ -67,10 +77,14 @@ const dsvSources = computed<DsvSource[]>(() => {
     editable: true,
   }];
   for (const fw of fwDsv.value) {
+    const sl = slugify(fw.name);
     out.push({
       id: `fw:${fw.id}:rules`,
       name: `${fw.name} · ${t("settings.system.graylog_src_fw_rules")}`,
+      kind: "fw_rules",
       mapping: "filterlog rid → alias",
+      base: `jt_ipam_${sl}_rules`,
+      defaultField: "rid",
       enabled: true,
       https: fwLookupUrl(fw.id, "rule-aliases"),
       http: fwLookupUrl(fw.id, "rule-aliases", true),
@@ -80,7 +94,10 @@ const dsvSources = computed<DsvSource[]>(() => {
     out.push({
       id: `fw:${fw.id}:aliases`,
       name: `${fw.name} · ${t("settings.system.graylog_src_fw_aliases")}`,
+      kind: "fw_aliases",
       mapping: "alias → members",
+      base: `jt_ipam_${sl}_aliases`,
+      defaultField: "alias",
       enabled: true,
       https: fwLookupUrl(fw.id, "aliases"),
       http: fwLookupUrl(fw.id, "aliases", true),
@@ -90,21 +107,65 @@ const dsvSources = computed<DsvSource[]>(() => {
   }
   return out;
 });
+
+// ── 表格（排序 / 選欄 / 篩選 / 重新整理）──
+const PICKER = computed(() => [
+  { key: "name", label: t("settings.system.graylog_tbl_name") },
+  { key: "mapping", label: t("settings.system.graylog_tbl_mapping") },
+  { key: "enabled", label: t("common.status") },
+]);
+const { visibleKeys, setVisible, reset } = useColumnPrefs(
+  "graylog_dsv_sources", ["name", "mapping", "enabled"], ["name", "mapping", "enabled"]);
+const { query, filtered } = useTableQuickFilter(dsvSources);
+const allCols = computed<DataTableColumns<DsvSource>>(() => autoSort([
+  { title: t("settings.system.graylog_tbl_name"), key: "name", minWidth: 200, ellipsis: { tooltip: true } },
+  { title: t("settings.system.graylog_tbl_mapping"), key: "mapping", minWidth: 200,
+    render: (r) => h("code", { class: "dsv-map" }, r.mapping) },
+  { title: t("common.status"), key: "enabled", width: 96,
+    render: (r) => h(NTag, { size: "small", bordered: false, type: r.enabled ? "success" : "default" },
+      () => r.enabled ? t("settings.system.graylog_status_on") : t("settings.system.graylog_status_off")) },
+  { title: t("common.actions"), key: "_", className: "col-actions", width: 158,
+    render: (r) => h(NSpace, { size: 6, wrapItem: false, wrap: false }, () => [
+      h(NButton, { size: "tiny", tertiary: true, disabled: !r.https,
+        onClick: (e: MouseEvent) => { e.stopPropagation(); copy(r.https); } },
+        { icon: () => h(NIcon, null, () => h(CopyIcon)), default: () => t("settings.system.graylog_copy") }),
+      h(NButton, { size: "tiny", tertiary: true,
+        onClick: (e: MouseEvent) => { e.stopPropagation(); openDetail(r.id); } },
+        { icon: () => h(NIcon, null, () => h(InfoIcon)), default: () => t("settings.system.graylog_detail") }),
+    ]) },
+]));
+const cols = computed(() => allCols.value.filter((c: any) => c.key === "_" || visibleKeys.value.includes(String(c.key))));
+function rowProps(row: DsvSource) {
+  return {
+    style: "cursor: pointer",
+    class: row.id === selectedId.value ? "dsv-row-selected" : "",
+    onClick: () => { selectedId.value = row.id; },
+  };
+}
+
+// ── 詳細資料抽屜 ──
 const detailId = ref<string | null>(null);
-const detail = computed<DsvSource | null>(
-  () => dsvSources.value.find((s) => s.id === detailId.value) ?? null);
+const detail = computed<DsvSource | null>(() => dsvSources.value.find((s) => s.id === detailId.value) ?? null);
 function openDetail(id: string) { detailId.value = id; }
 const detailOpen = computed({
   get: () => detailId.value !== null,
   set: (v: boolean) => { if (!v) detailId.value = null; },
 });
 
+// ── 選取（驅動下方教學）──
+const selectedId = ref("hostname");
+const selected = computed<DsvSource>(() => dsvSources.value.find((s) => s.id === selectedId.value) ?? dsvSources.value[0]);
+
 async function load() {
+  loading.value = true;
   try { dsv.value = await getGraylogDsv(); } catch { /* ignore */ }
   try {
     const r = await listFirewalls(200, 0);
     fwDsv.value = r.items.filter((f) => f.expose_dsv).map((f) => ({ id: f.id, name: f.name }));
   } catch { /* ignore */ }
+  // 選取的來源若已不存在（防火牆關閉 DSV），退回第一筆
+  if (!dsvSources.value.some((s) => s.id === selectedId.value)) selectedId.value = "hostname";
+  loading.value = false;
 }
 async function save(regenerate = false) {
   saving.value = true;
@@ -119,21 +180,37 @@ function copy(text: string) {
   if (text) { void navigator.clipboard.writeText(text); msg.success(t("common.ok")); }
 }
 
-// Pipeline rule 範例（程式碼不翻譯）；使用者可輸入自己的 IP 欄位名稱，範例自動代換
-// lookup_value 第一個參數是 Lookup Table 的「名稱」(jt_ipam_table)，不是 DSV 路徑
-const ipField = ref("src_ip");
-// Graylog 欄位名稱規範：只能英文字母 / 數字 / 底線，且不可數字開頭
-const ipFieldError = computed(() => {
-  const v = (ipField.value || "").trim();
+// ── 教學內容（跟著 selected 變動）──
+const gBase = computed(() => selected.value.base);
+const gAdapter = computed(() => `${gBase.value}_adapter`);
+const gCache = computed(() => `${gBase.value}_cache`);
+const gTable = computed(() => `${gBase.value}_table`);
+const gUrl = computed(() => selected.value.https || "https://<jt-ipam>/api/v1/lookup/…?token=<token>");
+const gUrlHttp = computed(() => selected.value.http
+  || `http://<jt-ipam>:${DSV_HTTP_PORT}/api/v1/lookup/…?token=<token>`);
+const mapParts = computed(() => selected.value.mapping.split("→").map((s) => s.trim()));
+const gKeyDesc = computed(() => mapParts.value[0] || "key");
+const gValDesc = computed(() => mapParts.value[1] || "value");
+const isHostname = computed(() => selected.value.kind === "hostname");
+
+// log 欄位（切換來源時帶回該來源預設）
+const gField = ref("src_ip");
+watch(selected, (s) => { if (s) gField.value = s.defaultField; }, { immediate: true });
+const gFieldError = computed(() => {
+  const v = (gField.value || "").trim();
   if (!v) return t("settings.system.graylog_g_field_err_empty");
   if (/^[0-9]/.test(v)) return t("settings.system.graylog_g_field_err_digit");
   if (!/^[A-Za-z0-9_]+$/.test(v)) return t("settings.system.graylog_g_field_err_chars");
   return "";
 });
-const ipFieldClean = computed(() => (ipField.value || "").trim().replace(/[^A-Za-z0-9_]/g, "") || "src_ip");
+const gFieldClean = computed(() =>
+  (gField.value || "").trim().replace(/[^A-Za-z0-9_]/g, "") || selected.value.defaultField);
+const gOutField = computed(() => selected.value.kind === "fw_rules" ? "rule_alias"
+  : selected.value.kind === "fw_aliases" ? "alias_members" : `${gFieldClean.value}_hostname`);
 const pipelineRule = computed(() => {
-  const f = ipFieldClean.value;
-  return `rule "jt-ipam enrich ${f} -> ${f}_hostname (LAN only)"
+  const f = gFieldClean.value, tbl = gTable.value, out = gOutField.value;
+  if (isHostname.value) {
+    return `rule "jt-ipam enrich ${f} -> ${out} (LAN only)"
 when
     has_field("${f}") &&
     (
@@ -142,8 +219,16 @@ when
         cidr_match("192.168.0.0/16", to_ip($message.${f}))
     )
 then
-    let h = lookup_value("jt_ipam_table", to_string($message.${f}));
-    set_field("${f}_hostname", h);
+    let v = lookup_value("${tbl}", to_string($message.${f}));
+    set_field("${out}", v);
+end`;
+  }
+  return `rule "jt-ipam enrich ${f} -> ${out}"
+when
+    has_field("${f}")
+then
+    let v = lookup_value("${tbl}", to_string($message.${f}));
+    set_field("${out}", v);
 end`;
 });
 
@@ -152,7 +237,7 @@ onMounted(() => { void load(); });
 
 <template>
   <div class="gd-wrap">
-    <!-- ── 端點設定 ── -->
+    <!-- ── 端點設定 + 表格 ── -->
     <n-card>
       <template #header>
         <n-space align="center" :wrap-item="false">
@@ -183,40 +268,24 @@ onMounted(() => { void load(); });
         </n-button>
       </n-alert>
 
-      <!-- DSV 端點清單（可擴充：新 DSV 類型只要進 dsvSources 就會出現在這）-->
-      <table v-else class="dsv-tbl">
-        <thead>
-          <tr>
-            <th>{{ t("settings.system.graylog_tbl_name") }}</th>
-            <th>{{ t("settings.system.graylog_tbl_mapping") }}</th>
-            <th style="width:84px">{{ t("common.status") }}</th>
-            <th style="width:154px">{{ t("common.actions") }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="s in dsvSources" :key="s.id">
-            <td>{{ s.name }}</td>
-            <td><code>{{ s.mapping }}</code></td>
-            <td>
-              <n-tag size="small" :bordered="false" :type="s.enabled ? 'success' : 'default'">
-                {{ s.enabled ? t("settings.system.graylog_status_on") : t("settings.system.graylog_status_off") }}
-              </n-tag>
-            </td>
-            <td class="dsv-act">
-              <n-button size="tiny" tertiary :disabled="!s.https" @click="copy(s.https)">
-                <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
-              </n-button>
-              <n-button size="tiny" tertiary @click="openDetail(s.id)">
-                <template #icon><n-icon><InfoIcon /></n-icon></template>{{ t("settings.system.graylog_detail") }}
-              </n-button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.graylog_tbl_hint") }}</div>
+      <template v-else>
+        <!-- 工具列：篩選 / 重新整理 / 選欄 -->
+        <n-space align="center" style="margin:14px 0 8px">
+          <n-input v-model:value="query" clearable style="width:220px" :placeholder="t('common.filter')" />
+          <n-button :loading="loading" @click="load">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("common.refresh") }}
+          </n-button>
+          <ColumnPicker :all="PICKER" :visible="visibleKeys" @update:visible="setVisible" @reset="reset" />
+        </n-space>
+        <n-data-table
+          :columns="cols" :data="filtered" :loading="loading" :bordered="false"
+          :row-props="rowProps" :scroll-x="640" size="small"
+        />
+        <div class="hint" style="line-height:1.6; margin-top:8px">{{ t("settings.system.graylog_tbl_hint") }}</div>
+      </template>
     </n-card>
 
-    <!-- ── DSV 詳情抽屜 ── -->
+    <!-- ── DSV 詳細資料抽屜 ── -->
     <n-drawer v-model:show="detailOpen" :width="540" placement="right">
       <n-drawer-content :title="detail?.name ?? ''" closable>
         <template v-if="detail">
@@ -224,8 +293,6 @@ onMounted(() => { void load(); });
             <label>{{ t("settings.system.graylog_tbl_mapping") }}</label>
             <code>{{ detail.mapping }}</code>
           </div>
-
-          <!-- 全域 IP→主機名稱：開關 / 路徑 在這裡改 -->
           <template v-if="detail.editable">
             <div class="gd-row" style="margin-top:14px">
               <n-switch v-model:value="dsv.enabled" @update:value="() => save()" />
@@ -241,7 +308,6 @@ onMounted(() => { void load(); });
               </div>
             </div>
           </template>
-
           <div class="fld" style="margin-top:14px">
             <label>{{ t("settings.system.graylog_url") }}</label>
             <div class="gd-url">
@@ -266,111 +332,99 @@ onMounted(() => { void load(); });
       </n-drawer-content>
     </n-drawer>
 
-    <!-- ── Graylog 串接教學 ── -->
+    <!-- ── Graylog 串接教學（跟著表格選取的來源）── -->
     <n-card style="margin-top:16px">
       <template #header>
         <n-space align="center" :wrap-item="false">
           <n-icon :size="20"><InfoIcon /></n-icon>
-          <span>{{ t("settings.system.graylog_guide_card") }}</span>
+          <span>{{ t("settings.system.graylog_guide_card") }} — {{ selected.name }}</span>
         </n-space>
       </template>
 
-      <n-alert type="info" :show-icon="true" style="margin-bottom:16px">
-        {{ t("settings.system.graylog_g_how") }}
-      </n-alert>
+      <Transition name="guide-swap" mode="out-in">
+        <div :key="selectedId">
+          <n-alert type="info" :show-icon="true" style="margin-bottom:16px">
+            {{ t("settings.system.graylog_g_how") }}
+          </n-alert>
 
-      <!-- 步驟 1：Lookup Table 三層 -->
-      <h4 class="gd-h">{{ t("settings.system.graylog_g_lt_title") }}</h4>
-      <p class="gd-p">{{ t("settings.system.graylog_g_lt_intro") }}</p>
+          <h4 class="gd-h">{{ t("settings.system.graylog_g_lt_title") }}</h4>
+          <p class="gd-p">{{ t("settings.system.graylog_g_lt_intro") }}</p>
 
-      <div class="gd-sub">① Data Adapter — <code>DSV File from HTTP</code></div>
-      <table class="gd-tbl">
-        <tr><td>Title</td><td><code>jt_ipam_adapter</code></td></tr>
-        <tr><td>Description</td><td>{{ t("settings.system.graylog_g_adapter_desc") }}</td></tr>
-        <tr><td>Name</td><td><code>jt_ipam_adapter</code></td></tr>
-        <tr><td>File / Download URL</td><td>
-          <div>HTTPS：<code>{{ sampleUrl }}</code></div>
-          <div style="margin-top:4px">{{ t("settings.system.graylog_g_url_or_http") }}<code>{{ sampleUrlHttp }}</code></div>
-        </td></tr>
-        <tr><td>Separator</td><td><code>{{ sep }}</code> （CSV=逗號、TSV=Tab）</td></tr>
-        <tr><td>Line Separator</td><td><code>\n</code></td></tr>
-        <tr><td>Quote character</td><td><code>"</code>（TSV 可留空）</td></tr>
-        <tr><td>Ignore characters</td><td><code>#</code></td></tr>
-        <tr><td>Key column</td><td><code>1</code>（IP）</td></tr>
-        <tr><td>Value column</td><td><code>2</code>（hostname / FQDN）</td></tr>
-        <tr><td>Refresh interval</td><td><code>300</code> 秒（多久重抓一次）</td></tr>
-      </table>
+          <div class="gd-sub">① Data Adapter — <code>DSV File from HTTP</code></div>
+          <table class="gd-tbl">
+            <tr><td>Title / Name</td><td><code>{{ gAdapter }}</code></td></tr>
+            <tr><td>Description</td><td>{{ selected.name }}（<code>{{ selected.mapping }}</code>）</td></tr>
+            <tr><td>File / Download URL</td><td>
+              <div>HTTPS：<code>{{ gUrl }}</code></div>
+              <div style="margin-top:4px">{{ t("settings.system.graylog_g_url_or_http") }}<code>{{ gUrlHttp }}</code></div>
+            </td></tr>
+            <tr><td>Separator</td><td><code>{{ gSep }}</code> （CSV=逗號、TSV=Tab）</td></tr>
+            <tr><td>Line Separator</td><td><code>\n</code></td></tr>
+            <tr><td>Quote character</td><td><code>"</code>（TSV 可留空）</td></tr>
+            <tr><td>Ignore characters</td><td><code>#</code></td></tr>
+            <tr><td>Key column</td><td><code>1</code>（{{ gKeyDesc }}）</td></tr>
+            <tr><td>Value column</td><td><code>2</code>（{{ gValDesc }}）</td></tr>
+            <tr><td>Refresh interval</td><td><code>300</code> 秒（多久重抓一次）</td></tr>
+          </table>
 
-      <div class="gd-sub">② Cache — <code>Node-local, in-memory cache</code></div>
-      <table class="gd-tbl">
-        <tr><td>Title</td><td><code>jt_ipam_cache</code></td></tr>
-        <tr><td>Description</td><td>{{ t("settings.system.graylog_g_cache_desc") }}</td></tr>
-        <tr><td>Name</td><td><code>jt_ipam_cache</code></td></tr>
-        <tr><td>Maximum entries</td><td><code>100000</code></td></tr>
-        <tr><td>Expire after access</td><td><code>300</code> 秒（自最後一次使用起算過期）</td></tr>
-        <tr><td>Expire after write</td><td>{{ t("settings.system.graylog_g_leave_empty") }}</td></tr>
-      </table>
+          <div class="gd-sub">② Cache — <code>Node-local, in-memory cache</code></div>
+          <table class="gd-tbl">
+            <tr><td>Title / Name</td><td><code>{{ gCache }}</code></td></tr>
+            <tr><td>Description</td><td>{{ t("settings.system.graylog_g_cache_desc") }}</td></tr>
+            <tr><td>Maximum entries</td><td><code>100000</code></td></tr>
+            <tr><td>Expire after access</td><td><code>300</code> 秒</td></tr>
+            <tr><td>Expire after write</td><td>{{ t("settings.system.graylog_g_leave_empty") }}</td></tr>
+          </table>
 
-      <div class="gd-sub">③ Lookup Table</div>
-      <table class="gd-tbl">
-        <tr><td>Title</td><td><code>jt_ipam_table</code></td></tr>
-        <tr><td>Description</td><td>{{ t("settings.system.graylog_g_lt_desc") }}</td></tr>
-        <tr><td>Name</td><td><code>jt_ipam_table</code></td></tr>
-        <tr><td>Data Adapter</td><td>{{ t("settings.system.graylog_g_pick_adapter") }}</td></tr>
-        <tr><td>Cache</td><td>{{ t("settings.system.graylog_g_pick_cache") }}</td></tr>
-        <tr><td>Default single value</td><td>{{ t("settings.system.graylog_g_leave_empty") }}</td></tr>
-        <tr><td>Default multi value</td><td>{{ t("settings.system.graylog_g_leave_empty") }}</td></tr>
-      </table>
+          <div class="gd-sub">③ Lookup Table</div>
+          <table class="gd-tbl">
+            <tr><td>Title / Name</td><td><code>{{ gTable }}</code></td></tr>
+            <tr><td>Description</td><td>{{ t("settings.system.graylog_g_lt_desc") }}</td></tr>
+            <tr><td>Data Adapter</td><td>{{ t("settings.system.graylog_g_pick_adapter") }}<code>{{ gAdapter }}</code></td></tr>
+            <tr><td>Cache</td><td>{{ t("settings.system.graylog_g_pick_cache") }}<code>{{ gCache }}</code></td></tr>
+            <tr><td>Default single value</td><td>{{ t("settings.system.graylog_g_leave_empty") }}</td></tr>
+            <tr><td>Default multi value</td><td>{{ t("settings.system.graylog_g_leave_empty") }}</td></tr>
+          </table>
 
-      <!-- 步驟 2A：Extractor -->
-      <h4 class="gd-h">{{ t("settings.system.graylog_g_ex_title") }}</h4>
-      <p class="gd-p">{{ t("settings.system.graylog_g_ex") }}</p>
+          <h4 class="gd-h">{{ t("settings.system.graylog_g_pl_title") }}</h4>
+          <p class="gd-p">{{ isHostname ? t("settings.system.graylog_g_pl") : t("settings.system.graylog_g_pl_fw") }}</p>
 
-      <!-- 步驟 2B：Pipeline -->
-      <h4 class="gd-h">{{ t("settings.system.graylog_g_pl_title") }}</h4>
-      <p class="gd-p">{{ t("settings.system.graylog_g_pl") }}</p>
-
-      <!-- 步驟 3：只對內網 IP -->
-      <h4 class="gd-h">{{ t("settings.system.graylog_g_lan_title") }}</h4>
-      <p class="gd-p">{{ t("settings.system.graylog_g_lan") }}</p>
-      <div class="gd-ipfield">
-        <span>{{ t("settings.system.graylog_g_ipfield_label") }}</span>
-        <n-input v-model:value="ipField" size="small" placeholder="src_ip" style="max-width: 200px"
-                 :status="ipFieldError ? 'error' : undefined" />
-        <span v-if="ipFieldError" class="gd-field-err">{{ ipFieldError }}</span>
-        <span v-else class="gd-note" style="margin:0">→ <code>$message.{{ ipFieldClean }}</code> → <code>{{ ipFieldClean }}_hostname</code></span>
-      </div>
-      <div class="gd-code-head">
-        <span>Pipeline rule</span>
-        <n-button size="tiny" quaternary @click="copy(pipelineRule)">
-          <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
-        </n-button>
-      </div>
-      <pre class="gd-code">{{ pipelineRule }}</pre>
-      <p class="gd-note">{{ t("settings.system.graylog_g_note") }}</p>
+          <div class="gd-ipfield">
+            <span>{{ t("settings.system.graylog_g_field_label") }}</span>
+            <n-input v-model:value="gField" size="small" :placeholder="selected.defaultField" style="max-width: 200px"
+                     :status="gFieldError ? 'error' : undefined" />
+            <span v-if="gFieldError" class="gd-field-err">{{ gFieldError }}</span>
+            <span v-else class="gd-note" style="margin:0">→ <code>$message.{{ gFieldClean }}</code> → <code>{{ gOutField }}</code></span>
+          </div>
+          <div class="gd-code-head">
+            <span>Pipeline rule</span>
+            <n-button size="tiny" quaternary @click="copy(pipelineRule)">
+              <template #icon><n-icon><CopyIcon /></n-icon></template>{{ t("settings.system.graylog_copy") }}
+            </n-button>
+          </div>
+          <pre class="gd-code">{{ pipelineRule }}</pre>
+          <p v-if="isHostname" class="gd-note">{{ t("settings.system.graylog_g_note") }}</p>
+        </div>
+      </Transition>
     </n-card>
   </div>
 </template>
 
 <style scoped>
-.gd-wrap { max-width: 820px; }
+.gd-wrap { width: 100%; }
 .gd-intro { font-size: 13px; opacity: .75; margin: 0 0 14px; line-height: 1.6; }
 .gd-row { display: flex; align-items: center; gap: 8px; }
 .gd-switch-label { font-size: 13px; }
-.gd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.gd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; max-width: 640px; }
 .fld label { display: block; font-size: 12px; opacity: .8; margin-bottom: 4px; }
 .gd-url { display: flex; gap: 8px; align-items: center; }
-/* DSV 端點表 */
-.dsv-tbl { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 14px; }
-.dsv-tbl th, .dsv-tbl td { padding: 8px 10px; border: 1px solid rgba(128,128,128,.18); text-align: left; vertical-align: middle; }
-.dsv-tbl th { font-weight: 600; opacity: .8; font-size: 12px; background: rgba(128,128,128,.06); }
-.dsv-act { white-space: nowrap; display: flex; gap: 6px; }
+.dsv-map { font-size: 12px; }
+:deep(.dsv-row-selected td) { background: rgba(64,128,255,0.10) !important; }
 .hint { font-size: 11px; opacity: .65; }
 .gd-h { font-size: 14px; margin: 22px 0 6px; padding-top: 14px; border-top: 1px solid var(--n-border-color, rgba(128,128,128,.15)); }
 .gd-h:first-of-type { border-top: none; padding-top: 0; }
 .gd-p { font-size: 13px; line-height: 1.7; opacity: .85; margin: 0 0 8px; }
 .gd-sub { font-size: 13px; font-weight: 600; margin: 12px 0 6px; }
-.gd-tbl, .gd-tbl tr, .gd-tbl td,
 .gd-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 6px; }
 .gd-tbl td { padding: 5px 8px; border: 1px solid rgba(128,128,128,.18); vertical-align: top; }
 .gd-tbl td:first-child { width: 200px; opacity: .8; white-space: nowrap; }
@@ -381,4 +435,8 @@ code { background: rgba(128,128,128,.14); padding: 1px 5px; border-radius: 4px; 
 .gd-code { background: rgba(128,128,128,.1); border: 1px solid rgba(128,128,128,.18); border-radius: 6px;
   padding: 12px; font-size: 12px; line-height: 1.5; overflow-x: auto; white-space: pre; margin: 4px 0 8px; }
 .gd-note { font-size: 12px; opacity: .65; line-height: 1.6; }
+/* 教學切換過場：舊內容淡出上移、新內容淡入下方（out-in）*/
+.guide-swap-enter-active, .guide-swap-leave-active { transition: opacity .22s ease, transform .22s ease; }
+.guide-swap-enter-from { opacity: 0; transform: translateY(10px); }
+.guide-swap-leave-to { opacity: 0; transform: translateY(-10px); }
 </style>
