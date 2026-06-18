@@ -4,6 +4,13 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.194] — 2026-06-18
+
+### 變更
+- **Graylog DSV 串接教學再優化。** 步驟改用明顯的數字圓圈（比照憑證安裝說明），每個來源——包含防火牆規則／
+  別名 DSV——都同時提供 **Extractor 與 Pipeline 兩種**做法（各自帶該來源的實際欄位／Lookup Table／輸出欄位）。
+  設定表格左欄（欄位名）加上淡底與值區分；每個要貼進 Graylog 的值都**點一下即複製**（點任何灰底的值）。
+
 ## [0.4.193] — 2026-06-18
 
 ### 變更

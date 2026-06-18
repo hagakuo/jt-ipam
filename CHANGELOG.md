@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.194] — 2026-06-18
+
+### Changed
+- **Graylog DSV guide polish.** The setup steps now use prominent numbered circles (matching the cert
+  install help), and every source — including the firewall rule/alias DSVs — shows **both** the Extractor
+  and the Pipeline method (each with the concrete field / Lookup Table / output for that source). The
+  config tables now tint the left (field-name) column to separate it from the values, and every value you
+  paste into Graylog is **click-to-copy** (click any highlighted value).
+
 ## [0.4.193] — 2026-06-18
 
 ### Changed

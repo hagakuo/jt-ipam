@@ -179,6 +179,14 @@ async function save(regenerate = false) {
 function copy(text: string) {
   if (text) { void navigator.clipboard.writeText(text); msg.success(t("common.ok")); }
 }
+// 教學表格內任何 <code>（要貼進 Graylog 的值）點一下就複製
+function onCodeCopy(e: MouseEvent) {
+  const el = e.target as HTMLElement;
+  if (el && el.tagName === "CODE") {
+    const txt = (el.innerText || el.textContent || "").trim();
+    if (txt) { void navigator.clipboard.writeText(txt); msg.success(t("common.ok")); }
+  }
+}
 
 // ── 教學內容（跟著 selected 變動）──
 const gBase = computed(() => selected.value.base);
@@ -342,12 +350,14 @@ onMounted(() => { void load(); });
       </template>
 
       <Transition name="guide-swap" mode="out-in">
-        <div :key="selectedId">
-          <n-alert type="info" :show-icon="true" style="margin-bottom:16px">
+        <div :key="selectedId" class="guide-body" @click="onCodeCopy">
+          <n-alert type="info" :show-icon="true" style="margin-bottom:10px">
             {{ t("settings.system.graylog_g_how") }}
           </n-alert>
+          <p class="gd-note" style="margin-bottom:14px">{{ t("settings.system.graylog_g_click_copy") }}</p>
 
-          <h4 class="gd-h">{{ t("settings.system.graylog_g_lt_title") }}</h4>
+          <div class="gd-step"><span class="gd-step-num">1</span>
+            <span class="gd-step-title">{{ t("settings.system.graylog_g_lt_title") }}</span></div>
           <p class="gd-p">{{ t("settings.system.graylog_g_lt_intro") }}</p>
 
           <div class="gd-sub">① Data Adapter — <code>DSV File from HTTP</code></div>
@@ -386,9 +396,7 @@ onMounted(() => { void load(); });
             <tr><td>Default multi value</td><td>{{ t("settings.system.graylog_g_leave_empty") }}</td></tr>
           </table>
 
-          <h4 class="gd-h">{{ t("settings.system.graylog_g_pl_title") }}</h4>
-          <p class="gd-p">{{ isHostname ? t("settings.system.graylog_g_pl") : t("settings.system.graylog_g_pl_fw") }}</p>
-
+          <!-- 你的 log 欄位（Extractor / Pipeline 共用）-->
           <div class="gd-ipfield">
             <span>{{ t("settings.system.graylog_g_field_label") }}</span>
             <n-input v-model:value="gField" size="small" :placeholder="selected.defaultField" style="max-width: 200px"
@@ -396,6 +404,21 @@ onMounted(() => { void load(); });
             <span v-if="gFieldError" class="gd-field-err">{{ gFieldError }}</span>
             <span v-else class="gd-note" style="margin:0">→ <code>$message.{{ gFieldClean }}</code> → <code>{{ gOutField }}</code></span>
           </div>
+
+          <!-- 步驟 2：Extractor（最簡單）-->
+          <div class="gd-step"><span class="gd-step-num">2</span>
+            <span class="gd-step-title">{{ t("settings.system.graylog_g_ex_title") }}</span></div>
+          <p class="gd-p">{{ t("settings.system.graylog_g_ex") }}</p>
+          <table class="gd-tbl">
+            <tr><td>Source field</td><td><code>{{ gFieldClean }}</code></td></tr>
+            <tr><td>Lookup Table</td><td><code>{{ gTable }}</code></td></tr>
+            <tr><td>Store as</td><td><code>{{ gOutField }}</code></td></tr>
+          </table>
+
+          <!-- 步驟 3：Pipeline（較彈性）-->
+          <div class="gd-step"><span class="gd-step-num">3</span>
+            <span class="gd-step-title">{{ t("settings.system.graylog_g_pl_title") }}</span></div>
+          <p class="gd-p">{{ isHostname ? t("settings.system.graylog_g_pl") : t("settings.system.graylog_g_pl_fw") }}</p>
           <div class="gd-code-head">
             <span>Pipeline rule</span>
             <n-button size="tiny" quaternary @click="copy(pipelineRule)">
@@ -421,14 +444,24 @@ onMounted(() => { void load(); });
 .dsv-map { font-size: 12px; }
 :deep(.dsv-row-selected td) { background: rgba(64,128,255,0.10) !important; }
 .hint { font-size: 11px; opacity: .65; }
-.gd-h { font-size: 14px; margin: 22px 0 6px; padding-top: 14px; border-top: 1px solid var(--n-border-color, rgba(128,128,128,.15)); }
-.gd-h:first-of-type { border-top: none; padding-top: 0; }
 .gd-p { font-size: 13px; line-height: 1.7; opacity: .85; margin: 0 0 8px; }
 .gd-sub { font-size: 13px; font-weight: 600; margin: 12px 0 6px; }
+/* 數字步驟（仿憑證安裝說明的綠色圓圈）*/
+.gd-step { display: flex; align-items: center; gap: 10px; margin: 24px 0 8px; padding-top: 16px;
+  border-top: 1px solid var(--n-border-color, rgba(128,128,128,.15)); }
+.gd-step:first-of-type { border-top: none; padding-top: 4px; margin-top: 4px; }
+.gd-step-num { flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%;
+  background: var(--primary-color, #18a058); color: #fff; display: flex; align-items: center;
+  justify-content: center; font-size: 13px; font-weight: 700; line-height: 1; }
+.gd-step-title { font-size: 14px; font-weight: 600; }
 .gd-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 6px; }
 .gd-tbl td { padding: 5px 8px; border: 1px solid rgba(128,128,128,.18); vertical-align: top; }
-.gd-tbl td:first-child { width: 200px; opacity: .8; white-space: nowrap; }
+/* 左欄（欄位名）淡底，跟右欄（值）做區分 */
+.gd-tbl td:first-child { width: 200px; opacity: .85; white-space: nowrap; background: rgba(128,128,128,.07); font-weight: 500; }
 code { background: rgba(128,128,128,.14); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+/* 教學區的值點一下即複製 */
+.guide-body code { cursor: pointer; transition: background .12s ease; }
+.guide-body code:hover { background: rgba(64,128,255,.22); outline: 1px solid rgba(64,128,255,.4); }
 .gd-ipfield { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; font-size: 13px; }
 .gd-field-err { color: #d03050; font-size: 12px; }
 .gd-code-head { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
