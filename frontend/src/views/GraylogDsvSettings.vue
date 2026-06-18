@@ -35,6 +35,11 @@ function fwLookupUrl(id: string, kind: "rule-aliases" | "aliases", http = false)
   const base = http ? `http://${location.hostname}:${DSV_HTTP_PORT}` : location.origin;
   return `${base}/api/v1/lookup/firewall/${id}/${kind}?token=${dsv.value.token}`;
 }
+function proxmoxVmsUrl(http = false): string {
+  if (!dsv.value.token) return "";
+  const base = http ? `http://${location.hostname}:${DSV_HTTP_PORT}` : location.origin;
+  return `${base}/api/v1/lookup/proxmox/vms?token=${dsv.value.token}`;
+}
 function slugify(s: string): string {
   return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "fw";
 }
@@ -48,7 +53,7 @@ const dsvUrlHttp = computed(() =>
 const gSep = computed(() => (dsv.value.fmt === "tsv" ? "\\t" : ","));
 
 // ── 可擴充的 DSV 來源清單 ──
-type DsvKind = "hostname" | "fw_rules" | "fw_aliases";
+type DsvKind = "hostname" | "fw_rules" | "fw_aliases" | "pve_vms";
 interface DsvSource {
   id: string;
   name: string;
@@ -75,6 +80,18 @@ const dsvSources = computed<DsvSource[]>(() => {
     http: dsvUrlHttp.value,
     notes: t("settings.system.graylog_hint"),
     editable: true,
+  }, {
+    id: "pve_vms",
+    name: t("settings.system.graylog_src_pve_vms"),
+    kind: "pve_vms",
+    mapping: "vmid → vm name",
+    base: "jt_ipam_pve_vms",
+    defaultField: "vmid",
+    enabled: true,
+    https: proxmoxVmsUrl(),
+    http: proxmoxVmsUrl(true),
+    notes: t("settings.system.graylog_pve_hint"),
+    editable: false,
   }];
   for (const fw of fwDsv.value) {
     const sl = slugify(fw.name);
@@ -209,7 +226,9 @@ const gFieldError = computed(() => {
 const gFieldClean = computed(() =>
   (gField.value || "").trim().replace(/[^A-Za-z0-9_]/g, "") || selected.value.defaultField);
 const gOutField = computed(() => selected.value.kind === "fw_rules" ? "rule_alias"
-  : selected.value.kind === "fw_aliases" ? "alias_members" : `${gFieldClean.value}_hostname`);
+  : selected.value.kind === "fw_aliases" ? "alias_members"
+  : selected.value.kind === "pve_vms" ? "vm_name"
+  : `${gFieldClean.value}_hostname`);
 const pipelineRule = computed(() => {
   const f = gFieldClean.value, tbl = gTable.value, out = gOutField.value;
   if (isHostname.value) {

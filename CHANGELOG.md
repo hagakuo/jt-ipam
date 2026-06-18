@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.202] — 2026-06-18
+
+### Added
+- **New Graylog DSV source for Proxmox VE VMs (vmid → VM name).** Endpoint
+  `GET /api/v1/lookup/proxmox/vms` (reusing the Graylog DSV token) maps key = Proxmox VMID to value = the
+  synced VM name, so Graylog can enrich a log's vmid with a readable VM name. If vmids collide across
+  clusters, only the first per vmid is emitted. The Graylog DSV settings page lists it automatically
+  (global, alongside "IP → hostname").
+
+### Fixed
+- **Firewall DSV hint text column indices** also corrected to key = 0, value = 1 (0-based; the previous
+  release only fixed the main guide table and missed this hint string).
+
 ## [0.4.201] — 2026-06-18
 
 ### Changed

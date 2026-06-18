@@ -4,6 +4,17 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.202] — 2026-06-18
+
+### 新增
+- **Graylog DSV 新增 Proxmox VE VM 來源（vmid → VM 名稱）。** 端點 `GET /api/v1/lookup/proxmox/vms`
+  （沿用 Graylog DSV token），key = Proxmox VMID、value = 已同步的 VM 名稱，讓 Graylog 把記錄裡的
+  vmid 補上可讀的 VM 名稱。跨叢集 vmid 若重複，每個 vmid 只輸出第一筆。Graylog DSV 設定頁的來源表格
+  自動帶出這筆（全域、與「IP → 主機名稱」並列）。
+
+### 修正
+- **防火牆 DSV 提示文字的欄位索引也修正**為 key 欄=0、value 欄=1（0 起算；前一版只改了主教學表格、漏了這段提示）。
+
 ## [0.4.201] — 2026-06-18
 
 ### 變更

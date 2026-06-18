@@ -23,6 +23,7 @@ from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.address import IPAddress
 from app.models.firewall import OPNsenseFirewall, OPNsenseRuleLabel, OPNsenseSyncedAlias
+from app.models.virt import VirtualMachine
 from app.schemas.base import StrictModel
 from app.services.system_config import get_graylog_dsv, set_graylog_dsv
 
@@ -159,6 +160,29 @@ async def fw_aliases_dsv(
         if len(members) > _ALIAS_MEMBER_CAP:
             val += f" …(+{len(members) - _ALIAS_MEMBER_CAP})"
         pairs.append((name, val))
+    media, body = _dsv_lines(pairs, cfg["fmt"])
+    return PlainTextResponse(body, media_type=f"{media}; charset=utf-8")
+
+
+@public_router.get("/proxmox/vms")
+async def proxmox_vms_dsv(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    token: str = Query("", description="存取權杖（沿用 Graylog DSV token）"),
+) -> PlainTextResponse:
+    """Proxmox VE VM DSV：key = vmid，value = VM 名稱（沿用 graylog_dsv token）。
+
+    跨叢集 vmid 可能重複 → _dsv_lines 自動去重保留第一筆（key 必須唯一）。
+    路徑兩段，不會撞到 dsv_lookup 的單段 `/{name}`。
+    """
+    cfg = await get_graylog_dsv(session)
+    if not cfg["token"] or token != cfg["token"]:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    rows = (await session.execute(
+        select(VirtualMachine.legacy_vmid, VirtualMachine.name)
+        .where(VirtualMachine.legacy_vmid.is_not(None))
+        .order_by(VirtualMachine.legacy_vmid)
+    )).all()
+    pairs = [(str(vmid), name or "") for vmid, name in rows]
     media, body = _dsv_lines(pairs, cfg["fmt"])
     return PlainTextResponse(body, media_type=f"{media}; charset=utf-8")
 
