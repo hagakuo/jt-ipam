@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.4.207] — 2026-06-19
+
+### Changed
+- **Docker Compose now auto-generates the admin password.** `gen-env.sh` also generates a random `admin`
+  password (printed in its output, stored as `JT_IPAM_ADMIN_PASSWORD` in `.env`, mode 0600); the backend
+  creates the admin on first boot using it, so you can log in straight away — matching the systemd installer's
+  "auto-create admin" experience.
+- **The site's Deployment section is now split into two zones:** "Primary: systemd + apt" and "Optional:
+  Docker Compose", each boxed/badged with its own install / first-password / upgrade commands. The Docker
+  zone spells out that upgrading is `./update.sh` (**not** `jt-ipam.sh upgrade`).
+- docs/INSTALL §2.7 and the deploy/docker README (EN + zh) "first admin" notes updated to match.
+
 ## [0.4.206] — 2026-06-19
 
 ### Changed

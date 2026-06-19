@@ -4,6 +4,15 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.4.207] — 2026-06-19
+
+### 變更
+- **Docker Compose 的管理員密碼自動產生。** `gen-env.sh` 現在會連 `admin` 密碼一起隨機產（印在輸出、存進
+  `.env` 的 `JT_IPAM_ADMIN_PASSWORD`，0600），backend 首次啟動就用它建好 admin，可直接登入（比照 systemd 安裝的「自動建 admin」體驗）。
+- **首頁部署區改成兩區塊：**「主力：systemd + apt」與「選用：Docker Compose」，各自有框 / 標籤 / 淡底，
+  並各自列出安裝 / 首次密碼 / 升級指令。Docker 區明確標出升版是 `./update.sh`（**別用 `jt-ipam.sh upgrade`**）。
+- docs/INSTALL §2.7 與 deploy/docker README（中英）的「第一個管理員」同步更新成上述自動產密碼行為。
+
 ## [0.4.206] — 2026-06-19
 
 ### 變更

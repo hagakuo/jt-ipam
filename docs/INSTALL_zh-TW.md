@@ -180,7 +180,9 @@ docker compose up -d --build   # 建置映像並啟動
 # 開瀏覽器到 https://localhost（首次自簽憑證，瀏覽器跳警告自行信任）
 ```
 
-- **第一個管理員：** 在 `.env` 設 `JT_IPAM_ADMIN_PASSWORD`（首次啟動自動建立），或之後再用
+- **第一個管理員：** `gen-env.sh` 會自動產生一組隨機 `admin` 密碼（印在它的輸出、並存進 `.env` 的
+  `JT_IPAM_ADMIN_PASSWORD`，檔案 0600），backend 首次啟動就用它建立 admin——登入後請立即更換。想自己指定就在
+  第一次 `up` 前改 `.env` 的 `JT_IPAM_ADMIN_PASSWORD`；或留空、之後用
   `docker compose exec backend python -m app.cli.bootstrap create-admin --username admin --email admin@example.com --password-stdin` 建立。
 - **正式憑證：** 把 `server.crt` / `server.key` 放到 `deploy/docker/certs/` 即蓋過自簽。
 - **連接埠 / 網域：** 改 `.env` 的 `HTTP_PORT` / `HTTPS_PORT` / `JT_IPAM_SERVER_NAME`，並把 `APP_PUBLIC_URL` / `CORS_ORIGINS` 一起改成相符的 `https://...`。

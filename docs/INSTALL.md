@@ -184,7 +184,10 @@ docker compose up -d --build   # build images and start the stack
 # then open https://localhost  (self-signed cert on first run — trust the warning)
 ```
 
-- **First admin:** set `JT_IPAM_ADMIN_PASSWORD` in `.env` (created on first boot), or create it later with
+- **First admin:** `gen-env.sh` generates a random `admin` password (printed in its output, stored as
+  `JT_IPAM_ADMIN_PASSWORD` in `.env`, mode 0600) and the backend creates the admin on first boot — change it
+  after the first login. Prefer your own? Set `JT_IPAM_ADMIN_PASSWORD` in `.env` before the first `up`; or
+  leave it empty and create one later with
   `docker compose exec backend python -m app.cli.bootstrap create-admin --username admin --email admin@example.com --password-stdin`.
 - **Real TLS cert:** drop `server.crt` / `server.key` into `deploy/docker/certs/` to override the self-signed one.
 - **Ports / domain:** edit `HTTP_PORT` / `HTTPS_PORT` / `JT_IPAM_SERVER_NAME` and the matching `APP_PUBLIC_URL` / `CORS_ORIGINS` in `.env`.

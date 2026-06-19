@@ -189,6 +189,15 @@
   .sysreq{font-size:13px;color:#1f3a2e;background:linear-gradient(135deg,#eafaf0,#f3fbf7);
     border:1px solid #cbe8d6;border-left:4px solid #18a058;border-radius:12px;padding:16px 20px}
   .sysreq strong{color:#0c7a43}
+  /* 部署分兩區：主力 systemd+apt、選用 Docker Compose，各自一個有框/淡底的區塊 */
+  .deploy-zone{border:1px solid var(--line);border-radius:14px;padding:18px 22px 22px;margin:18px 0 0;background:#fff}
+  .deploy-zone--primary{border-left:4px solid #18a058;background:linear-gradient(180deg,#f6fdf9,#fff)}
+  .deploy-zone--optional{border-left:4px solid #9aa3af;background:linear-gradient(180deg,#f7f8fa,#fff)}
+  .dz-head{font-size:17px;font-weight:700;display:flex;align-items:center;gap:10px;margin:0 0 6px}
+  .dz-badge{font-size:11px;font-weight:700;letter-spacing:.4px;padding:3px 9px;border-radius:999px;
+    background:#eef0f3;color:#566;text-transform:uppercase}
+  .dz-badge--primary{background:rgba(24,160,88,.14);color:#0c7a43}
+  .dz-h3{font-size:14px;margin:18px 0 7px;color:#33414e}
   /* 卡片 icon / badge 配色輪替：綠為主體，輔以多色，避免整頁只有綠+白 */
   .grid .card .ic{color:var(--green);background:rgba(24,160,88,.12)}
   .grid .card:nth-child(6n+2) .ic{color:#6366f1;background:rgba(99,102,241,.13)}
@@ -620,32 +629,53 @@
   <div class="wrap">
     <div class="sec-head">
       <h2><span class="zh">部署</span><span class="en">Deployment</span></h2>
-      <p><span class="zh">以 systemd 託管、預設強制 HTTPS：可選擇 nginx 反向代理或 uvicorn 自簽憑證，內網、對外都能安心上線。</span><span class="en">Runs under systemd with HTTPS enforced by default — choose an nginx reverse proxy or a self-signed uvicorn, secure whether on an intranet or the public internet.</span></p>
+      <p><span class="zh">兩種部署方式：<strong>主力</strong>是 systemd + apt（預設強制 HTTPS，可選擇 nginx 反向代理或 uvicorn 自簽憑證）；另有<strong>選用</strong>的 Docker Compose。</span><span class="en">Two ways to deploy: the <strong>primary</strong> one is systemd + apt (HTTPS enforced by default — choose an nginx reverse proxy or a self-signed uvicorn); plus an <strong>optional</strong> Docker Compose path.</span></p>
     </div>
     <p style="margin:0 0 14px" class="sysreq">
       <span class="zh"><strong>系統需求：</strong>Debian 12+ 或 Ubuntu 22.04+（64 位元）。<br><strong>硬體：</strong>最低 2 核心 CPU / 4 GB 記憶體 / 20 GB 磁碟；建議 4 核心 / 8 GB / 40 GB 以上（保留給資料庫與備份成長）。選用的本地 LLM 請另跑於獨立主機、依模型自行配足記憶體 / 顯示記憶體，不含在此。<br><strong>自動安裝：</strong>安裝腳本會自動裝好並設定 PostgreSQL 16、Python 3.11+、Node 20+、nginx 等相依套件，並自動產生所有金鑰。<br><strong>更多：</strong>完整步驟與環境變數見 GitHub 上的 README 與 <code>scripts/</code>。</span>
       <span class="en"><strong>Requirements:</strong> Debian 12+ or Ubuntu 22.04+ (64-bit).<br><strong>Hardware:</strong> minimum 2 vCPU / 4 GB RAM / 20 GB disk; recommended 4 vCPU / 8 GB / 40 GB+ (headroom for the database and backups). The optional local LLM runs on a separate host with its own RAM/VRAM and is not included here.<br><strong>Auto-setup:</strong> the install script installs and configures PostgreSQL 16, Python 3.11+, Node 20+ and nginx, and generates all keys for you.<br><strong>More:</strong> see the README and <code>scripts/</code> on GitHub for full steps and env vars.</span>
     </p>
-    <h3 style="margin:20px 0 8px"><span class="zh">安裝</span><span class="en">Install</span></h3>
-    <pre>curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-ipam/main/scripts/bootstrap.sh | sudo <span class="g">bash</span></pre>
-    <p style="margin:10px 0 0" class="disclaimer">
-      <span class="zh"><strong>首次登入密碼：</strong>安裝程式會自動建立管理員帳號 <code>admin</code> 並產生一組隨機密碼，於安裝結束時印出一次（同時存到 <code>/etc/jt-ipam/.admin-initial-password</code>，僅 root 可讀；該檔在 <code>/etc</code> 之下、不在 web root 內，無法透過 HTTP 連到）。請登入後立即更換，之後即可安全刪除此檔（<code>sudo rm /etc/jt-ipam/.admin-initial-password</code>）；日後可用 <code>create-admin --force-update</code> CLI 重置（詳見 README）。</span>
-      <span class="en"><strong>First-login password:</strong> the installer creates the <code>admin</code> account with a random password and prints it once at the end (also saved to <code>/etc/jt-ipam/.admin-initial-password</code>, root-only — under <code>/etc</code>, outside the web root, so never reachable over HTTP). Change it right after logging in, then you can safely delete the file (<code>sudo rm /etc/jt-ipam/.admin-initial-password</code>); reset later with the <code>create-admin --force-update</code> CLI (see the README).</span>
-    </p>
+    <!-- ───────── Zone A: systemd + apt (primary) ───────── -->
+    <div class="deploy-zone deploy-zone--primary">
+      <div class="dz-head"><span class="dz-badge dz-badge--primary"><span class="zh">主力</span><span class="en">Primary</span></span> systemd + apt</div>
 
-    <h3 style="margin:22px 0 8px"><span class="zh">升級</span><span class="en">Upgrade</span></h3>
-    <pre>sudo <span class="g">bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade</span></pre>
+      <h3 class="dz-h3"><span class="zh">安裝</span><span class="en">Install</span></h3>
+      <pre>curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-ipam/main/scripts/bootstrap.sh | sudo <span class="g">bash</span></pre>
+      <p style="margin:10px 0 0" class="disclaimer">
+        <span class="zh"><strong>首次登入密碼：</strong>安裝程式會自動建立管理員帳號 <code>admin</code> 並產生一組隨機密碼，於安裝結束時印出一次（同時存到 <code>/etc/jt-ipam/.admin-initial-password</code>，僅 root 可讀；該檔在 <code>/etc</code> 之下、不在 web root 內，無法透過 HTTP 連到）。請登入後立即更換，之後即可安全刪除此檔（<code>sudo rm /etc/jt-ipam/.admin-initial-password</code>）；日後可用 <code>create-admin --force-update</code> CLI 重置（詳見 README）。</span>
+        <span class="en"><strong>First-login password:</strong> the installer creates the <code>admin</code> account with a random password and prints it once at the end (also saved to <code>/etc/jt-ipam/.admin-initial-password</code>, root-only — under <code>/etc</code>, outside the web root, so never reachable over HTTP). Change it right after logging in, then you can safely delete the file (<code>sudo rm /etc/jt-ipam/.admin-initial-password</code>); reset later with the <code>create-admin --force-update</code> CLI (see the README).</span>
+      </p>
 
-    <h3 style="margin:22px 0 8px"><span class="zh">移除</span><span class="en">Uninstall</span></h3>
-    <pre>sudo <span class="g">bash /opt/jt-ipam/scripts/jt-ipam.sh uninstall</span></pre>
+      <h3 class="dz-h3"><span class="zh">升級</span><span class="en">Upgrade</span></h3>
+      <pre>sudo <span class="g">bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade</span></pre>
 
-    <h3 style="margin:22px 0 8px"><span class="zh">選用：Docker Compose</span><span class="en">Optional: Docker Compose</span></h3>
-    <p style="margin:0 0 10px" class="disclaimer">
-      <span class="zh"><strong>非優先模式。</strong>Docker Compose 屬<strong>選用 / 次要</strong>部署路徑，<strong>並非本專案優先或主力的部署模式</strong>——主力且建議的仍是上方的 systemd + apt。Compose 適合快速試用或容器優先的環境；相關檔案（含 <code>gen-env.sh</code>）都在 <strong>git clone 下來的 repo</strong> 的 <code>deploy/docker/</code> 內，所以要先 clone。升版只要 <code>./update.sh</code>（backend 啟動時自動跑資料庫遷移）。</span>
-      <span class="en"><strong>Not the preferred mode.</strong> Docker Compose is an <strong>optional / secondary</strong> path and is <strong>not</strong> the project's preferred or primary deployment mode — systemd + apt above remains the recommended one. Use Compose for a quick trial or container-first setups; the files (including <code>gen-env.sh</code>) live in the <strong>cloned repo</strong> under <code>deploy/docker/</code>, so clone first. Updating is just <code>./update.sh</code> (the backend auto-runs DB migrations on start).</span>
-    </p>
-    <pre>git clone https://github.com/jasoncheng7115/jt-ipam.git
+      <h3 class="dz-h3"><span class="zh">移除</span><span class="en">Uninstall</span></h3>
+      <pre>sudo <span class="g">bash /opt/jt-ipam/scripts/jt-ipam.sh uninstall</span></pre>
+    </div>
+
+    <!-- ───────── Zone B: Docker Compose (optional) ───────── -->
+    <div class="deploy-zone deploy-zone--optional">
+      <div class="dz-head"><span class="dz-badge"><span class="zh">選用</span><span class="en">Optional</span></span> Docker Compose</div>
+      <p style="margin:0 0 12px" class="disclaimer">
+        <span class="zh"><strong>非優先模式。</strong>Docker Compose 屬<strong>選用 / 次要</strong>部署路徑，<strong>並非本專案優先或主力的部署模式</strong>——主力且建議的仍是上方的 systemd + apt。Compose 適合快速試用或容器優先的環境；相關檔案（含 <code>gen-env.sh</code>）都在 <strong>git clone 下來的 repo</strong> 的 <code>deploy/docker/</code> 內，所以要先 clone。</span>
+        <span class="en"><strong>Not the preferred mode.</strong> Docker Compose is an <strong>optional / secondary</strong> path and is <strong>not</strong> the project's preferred or primary deployment mode — systemd + apt above remains the recommended one. Use it for a quick trial or container-first setups; the files (including <code>gen-env.sh</code>) live in the <strong>cloned repo</strong> under <code>deploy/docker/</code>, so clone first.</span>
+      </p>
+
+      <h3 class="dz-h3"><span class="zh">安裝</span><span class="en">Install</span></h3>
+      <pre>git clone https://github.com/jasoncheng7115/jt-ipam.git
 cd jt-ipam/deploy/docker &amp;&amp; ./gen-env.sh &amp;&amp; <span class="g">docker compose up -d --build</span></pre>
+      <p style="margin:10px 0 0" class="disclaimer">
+        <span class="zh"><strong>首次登入密碼：</strong><code>gen-env.sh</code> 會自動產生一組隨機 <code>admin</code> 密碼，印在它的輸出、並存進 <code>.env</code> 的 <code>JT_IPAM_ADMIN_PASSWORD</code>（檔案 0600）；首次啟動 backend 會用它建立 admin 帳號。登入後請立即更換。也可自己改 <code>.env</code> 指定，或留空、之後用 <code>docker compose exec backend python -m app.cli.bootstrap create-admin …</code> 手動建立。</span>
+        <span class="en"><strong>First-login password:</strong> <code>gen-env.sh</code> generates a random <code>admin</code> password, prints it in its output and stores it as <code>JT_IPAM_ADMIN_PASSWORD</code> in <code>.env</code> (mode 0600); the backend creates the admin on first boot using it. Change it right after logging in. You can also set your own in <code>.env</code>, or leave it empty and create the admin later with <code>docker compose exec backend python -m app.cli.bootstrap create-admin …</code>.</span>
+      </p>
+
+      <h3 class="dz-h3"><span class="zh">升級</span><span class="en">Upgrade</span></h3>
+      <pre>cd jt-ipam/deploy/docker &amp;&amp; <span class="g">./update.sh</span></pre>
+      <p style="margin:10px 0 0" class="disclaimer">
+        <span class="zh"><code>./update.sh</code> = <code>git pull</code> → <code>docker compose build</code> → <code>docker compose up -d</code>；backend 啟動時自動跑資料庫遷移（<code>alembic upgrade head</code>），不需手動。<strong>別用 <code>jt-ipam.sh upgrade</code></strong>（那是 systemd 安裝專用）。</span>
+        <span class="en"><code>./update.sh</code> = <code>git pull</code> → <code>docker compose build</code> → <code>docker compose up -d</code>; the backend auto-runs DB migrations (<code>alembic upgrade head</code>) on start. <strong>Do not use <code>jt-ipam.sh upgrade</code></strong> — that is for the systemd install only.</span>
+      </p>
+    </div>
   </div>
 </section>
 

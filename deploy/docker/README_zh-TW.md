@@ -25,7 +25,9 @@ docker compose up -d --build    # 建置映像並啟動
 
 ### 第一個管理員
 
-在 `.env` 設 `JT_IPAM_ADMIN_PASSWORD`（搭配 `JT_IPAM_ADMIN_USERNAME` / `JT_IPAM_ADMIN_EMAIL`），backend 首次啟動就會自動建立管理員。或留空、之後自己用 CLI 建：
+`gen-env.sh` 會自動產生一組隨機 `admin` 密碼——**印在它的輸出**、並存進 `.env` 的 `JT_IPAM_ADMIN_PASSWORD`（檔案 0600）。backend 首次啟動就用它建立 `admin` 帳號，可直接登入。**登入後請立即更換。**
+
+想自己指定？在第一次 `up` 之前先改 `.env` 的 `JT_IPAM_ADMIN_PASSWORD`（可一併改 `JT_IPAM_ADMIN_USERNAME` / `JT_IPAM_ADMIN_EMAIL`）。或留空、之後用 CLI 手動建：
 
 ```bash
 docker compose exec backend python -m app.cli.bootstrap \

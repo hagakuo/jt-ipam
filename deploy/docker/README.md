@@ -30,8 +30,12 @@ Open `https://localhost` (a self-signed cert is generated on first run; trust th
 
 ### First admin
 
-Set `JT_IPAM_ADMIN_PASSWORD` in `.env` (with `JT_IPAM_ADMIN_USERNAME` / `JT_IPAM_ADMIN_EMAIL`) and the backend
-creates the admin on first boot. Or leave it empty and create one later:
+`gen-env.sh` generates a random `admin` password — it **prints it in its output** and stores it as
+`JT_IPAM_ADMIN_PASSWORD` in `.env` (mode 0600). On first boot the backend creates the `admin` account with it,
+so you can log in straight away. **Change it right after the first login.**
+
+Prefer your own password? Set `JT_IPAM_ADMIN_PASSWORD` (and optionally `JT_IPAM_ADMIN_USERNAME` /
+`JT_IPAM_ADMIN_EMAIL`) in `.env` before the first `up`. Or leave it empty and create the admin later:
 
 ```bash
 docker compose exec backend python -m app.cli.bootstrap \
