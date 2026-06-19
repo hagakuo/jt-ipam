@@ -2,8 +2,8 @@
 
 > English: [INSTALL.md](INSTALL.md)
 
-針對 **Proxmox LXC、裸機、虛擬機**（Ubuntu 22.04+/Debian 12+）。本專案
-**不使用 Docker**；以 systemd + apt 直裝。
+針對 **Proxmox LXC、裸機、虛擬機**（Ubuntu 22.04+/Debian 12+）。**主力且建議**的安裝方式是
+**systemd + apt** 直裝（不使用 Docker）。另有 Docker Compose 路徑，但**屬可選 / 次要、並非優先模式**——見下方 §2.6。
 
 > 安全為 day-one 需求：所有環境強制 HTTPS；憑證可走 nginx 反代或
 > uvicorn 直接吃自簽。SSL 沒設好 backend **不會啟動**（A02）。
@@ -161,6 +161,38 @@ openssl s_client -connect ipam.example.com:443 -servername ipam.example.com </de
 
 > 想自己重新產自簽憑證：`sudo bash /opt/jt-ipam/scripts/generate-self-signed-cert.sh` 後 `systemctl restart jt-ipam-backend`。
 > 從 direct 改走 nginx 反代：把 `/etc/jt-ipam/backend.env` 的 `BACKEND_TLS_MODE` 改成 `nginx`、裝好 nginx site，再重啟 backend + reload nginx。
+
+### 2.6 可選：Docker Compose（非本專案優先使用模式）
+
+> ⚠️ **Docker Compose 是次要 / 可選的部署路徑，並非本專案優先或主力的部署模式。** 受支援且建議的安裝方式是
+> **systemd + apt**（上面各節）。Compose 適合快速試用或本來就以容器為主的環境；systemd 路徑測試最完整。
+
+檔案在 [`deploy/docker/`](https://github.com/jasoncheng7115/jt-ipam/tree/main/deploy/docker)。一組 compose 會起：
+`postgres`（pgvector）、`redis`、`backend`（FastAPI/uvicorn）、`sync`（背景同步迴圈，取代 systemd timer）、
+`web`（nginx：服務前端 + 反代 `/api`，首次啟動自動產自簽 HTTPS 憑證）。
+
+```bash
+cd deploy/docker
+./gen-env.sh                   # 產生 .env 並填入隨機密鑰（只需一次）
+docker compose up -d --build   # 建置映像並啟動
+# 開瀏覽器到 https://localhost（首次自簽憑證，瀏覽器跳警告自行信任）
+```
+
+- **第一個管理員：** 在 `.env` 設 `JT_IPAM_ADMIN_PASSWORD`（首次啟動自動建立），或之後再用
+  `docker compose exec backend python -m app.cli.bootstrap create-admin --username admin --email admin@example.com --password-stdin` 建立。
+- **正式憑證：** 把 `server.crt` / `server.key` 放到 `deploy/docker/certs/` 即蓋過自簽。
+- **連接埠 / 網域：** 改 `.env` 的 `HTTP_PORT` / `HTTPS_PORT` / `JT_IPAM_SERVER_NAME`，並把 `APP_PUBLIC_URL` / `CORS_ORIGINS` 一起改成相符的 `https://...`。
+
+**升版只要一個指令：**
+
+```bash
+./update.sh    # git pull  →  docker compose build  →  docker compose up -d
+```
+
+backend 容器啟動時會**自動**跑資料庫遷移（entrypoint 執行 `alembic upgrade head`），不需另外手動跑 migration。
+
+> Compose 版未內含：Graylog DSV 的明文 8088 埠、以及 GeoIP / OUI 排程更新。完整說明見
+> [`deploy/docker/README.md`](https://github.com/jasoncheng7115/jt-ipam/blob/main/deploy/docker/README.md)。
 
 ---
 

@@ -638,6 +638,13 @@
 
     <h3 style="margin:22px 0 8px"><span class="zh">移除</span><span class="en">Uninstall</span></h3>
     <pre>sudo <span class="g">bash /opt/jt-ipam/scripts/jt-ipam.sh uninstall</span></pre>
+
+    <h3 style="margin:22px 0 8px"><span class="zh">可選：Docker Compose</span><span class="en">Optional: Docker Compose</span></h3>
+    <p style="margin:0 0 10px" class="disclaimer">
+      <span class="zh"><strong>非優先模式。</strong>Docker Compose 屬<strong>可選 / 次要</strong>部署路徑，<strong>並非本專案優先或主力的部署模式</strong>——主力且建議的仍是上方的 systemd + apt。Compose 適合快速試用或容器優先的環境，檔案在 <code>deploy/docker/</code>，升版只要 <code>./update.sh</code>（backend 啟動時自動跑資料庫遷移）。</span>
+      <span class="en"><strong>Not the preferred mode.</strong> Docker Compose is an <strong>optional / secondary</strong> path and is <strong>not</strong> the project's preferred or primary deployment mode — systemd + apt above remains the recommended one. Use Compose for a quick trial or container-first setups; files live in <code>deploy/docker/</code> and updating is just <code>./update.sh</code> (the backend auto-runs DB migrations on start).</span>
+    </p>
+    <pre>cd deploy/docker &amp;&amp; ./gen-env.sh &amp;&amp; <span class="g">docker compose up -d --build</span></pre>
   </div>
 </section>
 
