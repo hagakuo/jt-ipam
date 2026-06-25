@@ -42,7 +42,7 @@ import sys
 import time
 import urllib.request
 
-AGENT_VERSION = "1.3.0"
+AGENT_VERSION = "1.4.0"
 SERVER = os.environ.get("JT_IPAM_URL", "").rstrip("/")
 KEY = os.environ.get("JT_IPAM_AGENT_KEY", "")
 INTERVAL = int(os.environ.get("JT_IPAM_INTERVAL", "300"))
@@ -82,7 +82,8 @@ def _capabilities() -> list[str]:
     """回報本機實際能做的探測（送 X-Agent-Probes header 給 server）。
 
     icmp/tcp/rdns 一律支援；arp 需 neigh 表可讀；os/ports 需 PATH 上有 nmap；
-    netbios/mdns 需對應工具，沒有就略過（Phase B）。不做需要憑證的探測（如 SNMP）。
+    netbios 需 nmblookup/nbtscan、mdns 需 avahi-resolve（有才回報能力、才會實際查名）。
+    不做需要憑證/社群字串的探測（如 SNMP）。
     """
     caps = ["icmp", "tcp", "rdns"]
     try:
@@ -92,10 +93,10 @@ def _capabilities() -> list[str]:
         pass
     if shutil.which("nmap"):
         caps.extend(["os", "ports"])
-    # netbios / mdns 目前無內建工具支援；偵測到再加入。
+    # NetBIOS / mDNS：有對應工具才回報能力（_netbios / _mdns 實際查名）
     if shutil.which("nmblookup") or shutil.which("nbtscan"):
         caps.append("netbios")
-    if shutil.which("avahi-resolve") or shutil.which("dns-sd"):
+    if shutil.which("avahi-resolve"):
         caps.append("mdns")
     # 去重並維持 ALL_PROBES 順序
     seen = set(caps)
@@ -192,6 +193,58 @@ def _rdns(ip: str) -> str | None:
         return host or None
     except Exception:
         return None
+
+
+def _netbios(ip: str) -> str | None:
+    """NetBIOS 名稱探測：nmblookup -A <ip> 取 <00> UNIQUE（非 <GROUP>）工作站名；或 nbtscan -q。"""
+    nmb = shutil.which("nmblookup")
+    if nmb:
+        try:
+            r = subprocess.run([nmb, "-A", ip], capture_output=True, text=True, timeout=5)
+            for line in r.stdout.splitlines():
+                # 例： "    DESKTOP-ABC   <00> -         B <ACTIVE>"  → UNIQUE 機名（要）
+                #      "    WORKGROUP     <00> - <GROUP> B <ACTIVE>"  → 群組（略過）
+                if "<00>" in line and "<GROUP>" not in line:
+                    name = line.split()[0].strip()
+                    if name and name != ip:
+                        return name
+        except Exception:
+            pass
+    nbt = shutil.which("nbtscan")
+    if nbt:
+        try:
+            r = subprocess.run([nbt, "-q", ip], capture_output=True, text=True, timeout=5)
+            for line in r.stdout.splitlines():
+                parts = line.split()
+                # 例： "192.168.1.10   WORKGROUP\\DESKTOP-ABC   SHARING ..."
+                if parts and parts[0] == ip and len(parts) >= 2:
+                    nm = parts[1]
+                    if "\\" in nm:
+                        nm = nm.split("\\", 1)[1]
+                    if nm and nm != "<unknown>":
+                        return nm
+        except Exception:
+            pass
+    return None
+
+
+def _mdns(ip: str) -> str | None:
+    """mDNS 名稱探測：avahi-resolve -a <ip> 取 .local 主機名。"""
+    av = shutil.which("avahi-resolve")
+    if av:
+        try:
+            r = subprocess.run([av, "-a", ip], capture_output=True, text=True, timeout=5)
+            out = (r.stdout or "").strip()
+            if out:
+                # 例： "192.168.1.10\tdesktop.local"
+                parts = out.split()
+                if len(parts) >= 2:
+                    name = parts[-1].strip().rstrip(".")
+                    if name and name != ip:
+                        return name
+        except Exception:
+            pass
+    return None
 
 
 _ARP_RE = re.compile(r"^(\d+\.\d+\.\d+\.\d+)\s+\S+\s+\S+\s+([0-9a-f:]{17})", re.I)
@@ -405,11 +458,21 @@ def scan_once() -> None:
                     merged = set(item.get("open_ports") or []) | set(np["open_ports"])
                     item["open_ports"] = sorted(merged)
 
-            # snmp / netbios / mdns 目前為 Phase B，能力清單未含時不會進到 due；
-            # 萬一進來也只記錄已嘗試但不產生欄位（graceful skip）。
-            for ph in ("snmp", "netbios", "mdns"):
-                if ph in host_probes:
-                    probes_run.append(ph)
+            # NetBIOS / mDNS：對 alive host 實際查名（需 nmblookup / avahi-resolve，
+            # 能力清單已先用 shutil.which 過濾，沒工具就不會進到 host_probes）。
+            if alive and "netbios" in host_probes:
+                probes_run.append("netbios")
+                nb = _netbios(ip)
+                if nb:
+                    item["netbios"] = nb
+            if alive and "mdns" in host_probes:
+                probes_run.append("mdns")
+                md = _mdns(ip)
+                if md:
+                    item["mdns"] = md
+            # snmp 仍不實作（需社群字串/憑證，違反「不做需憑證探測」原則）；列到只記錄已嘗試。
+            if "snmp" in host_probes:
+                probes_run.append("snmp")
 
             if alive:
                 item["alive"] = True

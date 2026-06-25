@@ -96,7 +96,7 @@ def _candidate_urls(instance: ProxmoxInstance) -> list[str]:
 
 async def _api_get(
     session: AsyncSession, instance: ProxmoxInstance, path: str,
-    *, base_url: str | None = None,
+    *, base_url: str | None = None, timeout: float = 20.0,
 ) -> dict[str, Any]:
     secret = await _get_secret(session, instance)
     base = (base_url or instance.api_url).rstrip("/")
@@ -104,7 +104,7 @@ async def _api_get(
     try:
         resp = await safe_request(
             "GET", url, headers=_auth_header(instance, secret),
-            timeout=20.0, verify=instance.verify_tls,
+            timeout=timeout, verify=instance.verify_tls,
         )
     except UnsafeOutboundURL as exc:
         raise ProxmoxError(f"SSRF guard rejected URL: {exc}") from exc
@@ -591,11 +591,11 @@ async def sync_instance(
                         session, instance,
                         f"/api2/json/nodes/{node_name}/qemu/{vmid}"
                         "/agent/network-get-interfaces",
-                        base_url=base,
+                        base_url=base, timeout=6.0,
                     )).get("data") or {}
                     agent_ips = _agent_ipv4_by_mac(agent)
                 except ProxmoxError:
-                    pass  # agent 沒裝 / VM 沒開 → 略過
+                    pass  # agent 沒裝 / VM 沒開 / 無回應逾時 → 略過（best-effort，不拖垮整批同步）
 
             # cloud-init ipconfigN → 對應 netN 的靜態 IP（qemu 無 agent 時的後援）
             ipcfg: dict[str, str] = {}

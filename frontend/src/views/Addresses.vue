@@ -474,6 +474,7 @@ onMounted(() => {
         itemCount: total,
         showSizePicker: true,
         pageSizes: [50, 100, 200, 500],
+        prefix: ({ itemCount }) => t('common.total_rows', { n: itemCount ?? 0 }),
         onUpdatePage: (p) => { page = p; void refresh(); },
         onUpdatePageSize: (ps) => { pageSize = ps; page = 1; void refresh(); },
       }"

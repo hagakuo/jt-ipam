@@ -346,6 +346,7 @@ onUnmounted(() => {
               itemCount: historyTotal,
               showSizePicker: true,
               pageSizes: [20, 50, 100, 200],
+              prefix: ({ itemCount }) => t('common.total_rows', { n: itemCount ?? 0 }),
               onUpdatePage: (p) => { historyPage = p; void fetchHistory(); },
               onUpdatePageSize: (ps) => { historyPageSize = ps; historyPage = 1; void fetchHistory(); },
             }"

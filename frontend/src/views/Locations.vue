@@ -3,6 +3,7 @@ import { useAuthStore } from "@/stores/auth";
 const _authBtn = useAuthStore();
 import { computed, h, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { useTablePagination } from "@/composables/useTablePagination";
 import {
   NCard, NDataTable, NSpace, NIcon, NButton, NModal, NForm, NFormItem,
   NInput, NPopconfirm, NInputNumber, NTooltip,
@@ -49,6 +50,7 @@ async function removeFp() {
 }
 
 const { t } = useI18n();
+const pg = useTablePagination();
 const { options: customerOptions, ensureLoaded: ensureCustomerOptsLoaded } = useCustomers();
 const msg = useMessage();
 const rows = ref<Location[]>([]);
@@ -247,7 +249,7 @@ onMounted(() => {
     <locations-map v-if="mapPoints.length" :points="mapPoints" style="margin-bottom: 12px" @select="onMapSelect" />
     <n-data-table
       :columns="cols" :data="displayRows" :loading="loading" :bordered="false"
-      :scroll-x="1048"
+      :scroll-x="1048" :pagination="pg"
       :row-key="(row: Location) => row.id"
       :checked-row-keys="checkedKeys"
       @update:checked-row-keys="(keys: DataTableRowKey[]) => checkedKeys = keys"

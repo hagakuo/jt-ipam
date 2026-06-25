@@ -9,6 +9,24 @@ const routes: RouteRecordRaw[] = [
     meta: { public: true },
   },
   {
+    // 另開視窗的全頁 SSH 終端機（不套 MainLayout 側欄；仍需登入）
+    path: "/ssh/:id",
+    name: "ssh-console",
+    component: () => import("@/views/SshConsole.vue"),
+  },
+  {
+    // 另開視窗的全頁 RDP 畫面（不套 MainLayout 側欄；仍需登入）
+    path: "/rdp/:id",
+    name: "rdp-console",
+    component: () => import("@/views/RdpConsole.vue"),
+  },
+  {
+    // 另開視窗的全頁 VNC 畫面（不套 MainLayout 側欄；仍需登入）
+    path: "/vnc/:id",
+    name: "vnc-console",
+    component: () => import("@/views/VncConsole.vue"),
+  },
+  {
     path: "/",
     component: () => import("@/components/layout/MainLayout.vue"),
     children: [
@@ -71,6 +89,7 @@ const routes: RouteRecordRaw[] = [
       { path: "advanced/circuits", name: "adv-circuits", component: () => import("@/views/Advanced.vue"), props: { mode: "circuits" } },
       { path: "advanced/contacts", name: "adv-contacts", component: () => import("@/views/Advanced.vue"), props: { mode: "contacts" } },
       { path: "advanced/wireless", name: "adv-wireless", component: () => import("@/views/Advanced.vue"), props: { mode: "wireless" } },
+      { path: "advanced/connections", name: "adv-connections", component: () => import("@/views/Connections.vue") },
       { path: "advanced/dns-records", name: "adv-dns-records", component: () => import("@/views/DnsRecords.vue") },
       { path: "advanced/cert-status", name: "adv-cert-status", component: () => import("@/views/CertStatus.vue") },
       { path: "virt", name: "virt", component: () => import("@/views/Virtualization.vue") },

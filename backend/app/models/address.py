@@ -82,6 +82,21 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     last_seen_dns: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     effective_status: Mapped[str | None] = mapped_column(String(32))
 
+    # SSH 連線管理：是否對此 IP 啟用 SSH 終端機（控制詳情頁 SSH 按鈕是否出現）。
+    ssh_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
+    # TOFU 信任後釘選的 host key（單行 known_host 格式；非機密，僅防 MITM）。
+    ssh_host_key: Mapped[str | None] = mapped_column(Text)
+    # RDP 連線管理：是否對此 IP 啟用 RDP（控制詳情頁 RDP 按鈕是否出現）。
+    rdp_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
+    # VNC 連線管理：是否對此 IP 啟用 VNC（控制詳情頁 VNC 按鈕是否出現）。
+    vnc_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
+
     __table_args__ = (
         UniqueConstraint("subnet_id", "ip", name="ip_subnet_ip_uq"),
         CheckConstraint(

@@ -44,6 +44,9 @@ export interface IPAddressUpdate {
   note?: string | null;
   customer_id?: string | null;
   hostname_source_pin?: string | null;
+  ssh_enabled?: boolean | null;
+  rdp_enabled?: boolean | null;
+  vnc_enabled?: boolean | null;
 }
 
 export async function updateAddress(id: string, payload: IPAddressUpdate): Promise<IPAddress> {

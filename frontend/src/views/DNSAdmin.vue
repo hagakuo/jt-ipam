@@ -307,9 +307,11 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
           <n-input-number v-model:value="form.sync_interval_seconds" :min="60" :max="86400" />
         </n-form-item>
         <n-form-item :label="t('dns_admin.scope_subnets')">
-          <n-select v-model:value="form.scope_subnet_ids" :options="subnetOptions"
-                    multiple filterable clearable :placeholder="t('dns_admin.scope_all')" />
-          <ScopeOverlapWarning :scope-empty="!form.scope_subnet_ids?.length" />
+          <div style="width: 100%">
+            <n-select v-model:value="form.scope_subnet_ids" :options="subnetOptions"
+                      multiple filterable clearable :placeholder="t('dns_admin.scope_all')" />
+            <ScopeOverlapWarning :scope-empty="!form.scope_subnet_ids?.length" />
+          </div>
         </n-form-item>
         <div style="margin: -8px 0 4px">
           <span style="font-size: 11px; opacity: .7">{{ t("dns_admin.scope_hint") }}</span>

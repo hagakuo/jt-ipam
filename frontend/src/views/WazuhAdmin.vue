@@ -94,15 +94,26 @@ function openEdit(r: WazuhInstance) {
   showInst.value = true;
 }
 
+async function fetchAllAgents() {
+  // 逐頁抓完整 agent 清單（後端 limit 上限 500）→ 超過 500 台也不會被截斷
+  const all: typeof agents.value = [];
+  for (let offset = 0; offset < 200_000; offset += 500) {
+    const r = await listWazuhAgents(undefined, undefined, 500, offset);
+    all.push(...r.items);
+    if (r.items.length < 500 || all.length >= r.total) break;
+  }
+  return all;
+}
+
 async function refresh() {
   loading.value = true;
   try {
     const [i, a, m] = await Promise.all([
-      listWazuh(50, 0), listWazuhAgents(undefined, undefined, 200, 0),
+      listWazuh(50, 0), fetchAllAgents(),
       listMissingAgents(),
     ]);
     insts.value = i.items;
-    agents.value = a.items;
+    agents.value = a;
     missing.value = m;
   } catch { msg.error(t("errors.network")); }
   finally { loading.value = false; }
@@ -326,9 +337,11 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         </n-form-item>
         <n-form-item label="Verify TLS"><n-switch v-model:value="newInst.verify_tls" /></n-form-item>
         <n-form-item :label="t('wazuh_admin.scope_subnets')">
-          <n-select v-model:value="newInst.scope_subnet_ids" :options="subnetOptions"
-                    multiple filterable clearable :placeholder="t('wazuh_admin.scope_all')" />
-          <ScopeOverlapWarning :scope-empty="!newInst.scope_subnet_ids?.length" />
+          <div style="width: 100%">
+            <n-select v-model:value="newInst.scope_subnet_ids" :options="subnetOptions"
+                      multiple filterable clearable :placeholder="t('wazuh_admin.scope_all')" />
+            <ScopeOverlapWarning :scope-empty="!newInst.scope_subnet_ids?.length" />
+          </div>
         </n-form-item>
         <div style="margin: -8px 0 4px">
           <span style="font-size: 11px; opacity: .7">{{ t("wazuh_admin.scope_hint") }}</span>

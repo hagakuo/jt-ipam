@@ -140,7 +140,8 @@ const columns = computed<DataTableColumns<IPChangeLog>>(() => [
       :scroll-x="1000"
     />
 
-    <div style="display: flex; justify-content: flex-end; margin-top: 12px">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px">
+      <span style="font-size: 13px; opacity: 0.7">{{ t("common.total_rows", { n: total }) }}</span>
       <n-pagination
         v-model:page="page"
         v-model:page-size="pageSize"

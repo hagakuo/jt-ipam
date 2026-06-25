@@ -29,6 +29,37 @@ class LLMConfig:
     embedding_model: str
     chat_model: str
     timeout: float
+    # 對話模型的上下文長度（Ollama num_ctx）。None＝沿用模型／Ollama 預設（通常 4096）。
+    # 工具多、注入資料量大的對話容易超過預設而被截斷，可在此調高（耗更多記憶體/VRAM）。
+    num_ctx: int | None = None
+    # 對外提供 MCP（讓其它系統以 HTTP 呼叫 /api/mcp）：預設關閉，打開才接受外部 MCP 呼叫。
+    mcp_external_enabled: bool = False
+    mcp_api_key: str | None = None          # 明文（已解密）；僅程序內使用，不外傳
+    mcp_principal_user_id: str | None = None  # MCP 金鑰所代表的管理員身份（唯讀，僅供 RBAC 可見範圍）
+
+
+_MCP_AAD = b"llm:mcp_api_key"
+
+
+def _enc_mcp(plain: str) -> str:
+    import base64 as _b64
+
+    from app.core.security import encrypt_secret
+    ct, nonce = encrypt_secret(plain, aad=_MCP_AAD)
+    return "v1:" + _b64.b64encode(nonce).decode() + ":" + _b64.b64encode(ct).decode()
+
+
+def _dec_mcp(blob: str) -> str | None:
+    import base64 as _b64
+
+    from app.core.security import decrypt_secret
+    try:
+        _ver, b_nonce, b_ct = blob.split(":", 2)
+        return decrypt_secret(
+            _b64.b64decode(b_ct), _b64.b64decode(b_nonce), aad=_MCP_AAD,
+        ).decode("utf-8")
+    except Exception:
+        return None
 
 
 _cache: dict[str, tuple[float, LLMConfig]] = {}
@@ -69,6 +100,18 @@ async def get_llm_config(session: AsyncSession) -> LLMConfig:
                 cfg.timeout = float(v["timeout"])
             except (ValueError, TypeError):
                 pass
+        if v.get("num_ctx") is not None:
+            try:
+                n = int(v["num_ctx"])
+                cfg.num_ctx = n if n > 0 else None
+            except (ValueError, TypeError):
+                pass
+        if isinstance(v.get("mcp_external_enabled"), bool):
+            cfg.mcp_external_enabled = v["mcp_external_enabled"]
+        if v.get("mcp_api_key_enc"):
+            cfg.mcp_api_key = _dec_mcp(str(v["mcp_api_key_enc"]))
+        if v.get("mcp_principal_user_id"):
+            cfg.mcp_principal_user_id = str(v["mcp_principal_user_id"])
 
     _cache[LLM_KEY] = (now, cfg)
     return cfg
@@ -82,6 +125,8 @@ async def set_llm_config(
     embedding_model: str | None = None,
     chat_model: str | None = None,
     timeout: float | None = None,
+    num_ctx: int | None = None,
+    mcp_external_enabled: bool | None = None,
     updated_by_user_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     row = await session.get(SystemSetting, LLM_KEY)
@@ -94,6 +139,8 @@ async def set_llm_config(
     if embedding_model is not None: current["embedding_model"] = embedding_model.strip()
     if chat_model is not None: current["chat_model"] = chat_model.strip()
     if timeout is not None: current["timeout"] = float(timeout)
+    if num_ctx is not None: current["num_ctx"] = int(num_ctx) if int(num_ctx) > 0 else None
+    if mcp_external_enabled is not None: current["mcp_external_enabled"] = bool(mcp_external_enabled)
     row.value = current
     row.updated_by = updated_by_user_id
     # JSONB 變更 SQLAlchemy 對 dict in-place 不會偵測 — flag_modified 保險
@@ -102,6 +149,32 @@ async def set_llm_config(
     await session.commit()
     _bust()
     return current
+
+
+async def rotate_mcp_api_key(
+    session: AsyncSession,
+    *,
+    principal_user_id: uuid.UUID,
+    updated_by_user_id: uuid.UUID | None = None,
+) -> str:
+    """產生一把新的對外 MCP 金鑰（唯讀），加密保存並綁定代表身份；回傳明文（僅此一次完整顯示）。"""
+    import secrets
+
+    key = "jtmcp_" + secrets.token_urlsafe(32)
+    row = await session.get(SystemSetting, LLM_KEY)
+    if row is None:
+        row = SystemSetting(key=LLM_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    current: dict[str, Any] = dict(row.value or {})
+    current["mcp_api_key_enc"] = _enc_mcp(key)
+    current["mcp_principal_user_id"] = str(principal_user_id)
+    row.value = current
+    row.updated_by = updated_by_user_id
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(row, "value")
+    await session.commit()
+    _bust()
+    return key
 
 
 # ─────────────────── AI chat 歷程保留設定 ───────────────────

@@ -64,6 +64,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# RDP 連線管理（選用）：純瀏覽器 RDP，後端用 aardwolf 橋接。
+# pin 0.2.13 — PyPI 有 cp311/312/313 manylinux x86_64 wheel（內含已編譯的 librlers
+# Rust 擴充）→ 安裝免 Rust 工具鏈。最新 0.2.14 只有 sdist（要 Rust）故不可用 latest。
+# 安裝腳本以 `pip install --only-binary=:all: -e ".[rdp]"` best-effort 裝；沒 wheel 即快速
+# 失敗、不觸發 Rust 編譯，RDP 功能自動停用、不影響主安裝。
+rdp = [
+    "aardwolf==0.2.13",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",

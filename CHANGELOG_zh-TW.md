@@ -4,6 +4,403 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.4] — 2026-06-24
+
+### 修正
+- **背景作業重啟後會永遠卡在「進行中」（issue #9）。** 作業是用 `asyncio.create_task` 跑在 worker 程序內，
+  後端一重啟（部署 / 升級 / 當機）在跑的作業就消失了、但 DB 狀態還停在 running，於是「作業」頁永遠殘留
+  「執行中」清不掉。啟動時改為把殘留的 pending/running 作業標成 `failed`（中斷：後端已重啟）。
+- **LibreNMS 同步中途因裝置埠重複而中斷（issue #12）。** 埠同步改用 upsert（`ON CONFLICT (device_id, name)`）
+  取代直接 INSERT，所以埠已存在時（例如多台 LibreNMS 裝置對映到同一台 jt-ipam 裝置、或同一介面被重複處理）
+  不會再以 `device_port_unique_name` 的 `UniqueViolationError` 炸掉整批同步。
+
+
+## [0.5.3] — 2026-06-24
+
+### 修正
+- **聯絡人群組無法新增 / 編輯 / 刪除——「Method Not Allowed」（issue #11）。** 後端原本只有
+  `GET /contact-groups`，補上 `POST` / `PATCH` / `DELETE`。
+- 補上 **Provider、電路、無線 SSID、無線連線** 原本缺少的 `DELETE` 端點——這些刪除鈕先前會回 405
+  （同一類問題）。
+
+
+## [0.5.2] — 2026-06-24
+
+### 修正
+- **Proxmox VM 清單只顯示 500 台（issue #9）。** 清單改為逐頁抓完整，所有 VM 都會顯示（例如 592 台而非
+  500）；同一個「逐頁抓完」修正也涵蓋其他進階資源清單。
+- **Proxmox 同步很慢 / 卡在「進行中」（issue #9）。** 每台 VM 的 guest-agent 取 IP 查詢（best-effort）
+  改用 6 秒短逾時，避免執行中 VM 的 agent 無回應時，用共用的 20 秒逾時拖垮整批同步。
+- **Wazuh agent 只顯示 200 台（issue #10）。** Agent 其實都有同步入庫；管理頁改為逐頁抓完，不再只抓前 200。
+- **一併檢查其他整合是否有相同上限。** LibreNMS `/devices`、AdGuard 本來就會回全部；OPNsense 別名 /
+  規則 / IPsec 搜尋不再卡在 1000 / 500（`rowCount = -1` ＝ 全部）。
+
+### 變更
+- 所有表格的分頁列最左側顯示總筆數（例如「共 592 筆」）。
+- 右下角 AI 對話浮動按鈕平常半透明、移過去才變實心顏色。
+
+
+## [0.5.1] — 2026-06-24
+
+### 新增
+- **RDP / VNC「送出按鍵」。** 連線中可送出被瀏覽器或作業系統攔截的特殊組合鍵（Esc、Tab、F1～F12、
+  Ctrl + Alt + Del、⊞ Win、Alt + Tab；VNC 另含 macOS ⌘ 組合），選單以鍵帽樣式呈現並依平台帶 icon。
+- **RDP「重新調整大小」。** 連線中按一下即以目前視窗大小重新連線、取得原生清晰畫面（aardwolf 無法
+  連線中熱改解析度，故改以重連取得相符解析度）。
+- **版本資訊頁強化。** 新增 asyncssh / aardwolf / Pillow 等套件版本、本機環境（作業系統 / 核心 /
+  nginx / Node.js / PostgreSQL）與前端框架（Vue / Naive UI / Vite…）版本，並重整版面分區。
+- **對外提供 MCP（唯讀）。** 管理 → LLM / AI 新增開關，打開後其它系統才能以 HTTP 呼叫本站 MCP
+  （`/api/mcp`，Streamable HTTP / JSON-RPC）；可產生 / 重新產生**唯讀** API 金鑰（加密保存），頁面以
+  「名稱 → 值」顯示連線網址與認證標頭。唯讀金鑰一律擋下 6 個會異動資料的工具、工具清單也隱藏它們。
+  預設關閉（deny by default）；既有 per-user API 權杖認證仍可用，且同受此開關控管。
+- 新增 MCP 工具 `list_connection_targets`（唯讀）：列出已啟用瀏覽器遠端連線（SSH / RDP / VNC）且呼叫者
+  可連線的 IP / 裝置——絕不回帳密。
+
+### 變更
+- 連線主控工具列：主機名稱右側加協定標籤（SSH / RDP / VNC）；按鈕改精簡且更明顯可按、中斷連線改紅色外框。
+  進階→連線管理 與 IP 詳細資料的連線按鈕，只在欄寬不足時才收成 icon（門檻隨該列連線種類數放大）。
+- 主機為 Proxmox VM 客體時，關係圖會畫出它所在的 PVE 節點（及該節點的機櫃/機房）——IP 與裝置詳情頁皆是。
+
+### 修正
+- **Proxmox 同一叢集內同名 VM 無法匯入（issue #8）。** VM 唯一鍵由 `(叢集, 名稱)` 改為 `(叢集, VMID)`
+  （migration 0085）——Proxmox 允許同名不同 VMID 的 VM，原本會撞 `vm_cluster_name_uq` 而匯入失敗。
+- **AI 對話：還原被當成文字吐出的工具呼叫。** 支援工具呼叫的模型偶發把呼叫寫成文字（而非結構化
+  `tool_calls`）→ 改為解析並執行（不再把那段亂碼當答案顯示）；無法還原時顯示中性的重試提示。
+- 對外 MCP 子應用不再提供 FastAPI 自動產生的 `/openapi.json`、`/docs`（MCP 以 JSON-RPC `tools/list`
+  探索工具，非 OpenAPI；該 schema 對 MCP client 無意義且未經認證）。
+- 稽核明細的 `switch_port` 顯示為 `device@port`（與其他頁一致）；憑證目標解析為 label 而非原始 UUID。
+
+
+## [0.5.0] — 2026-06-22
+
+### 新增
+- **瀏覽器內 RDP 連線管理（Beta）。** 直接從 IP 詳細資料頁開 Windows RDP 桌面 —— 已對「強制 NLA 的
+  Windows 11」實機驗證。
+  - 每 IP `rdp_enabled` 開關（migration 0083）；權限 `can_use_rdp`（deny-by-default，沿用 `can_ssh`
+    能力）；詳情頁分割按鈕 + 進階→連線管理 的「RDP」篩選/操作。
+  - 後端 `endpoints/rdp_console.py`：單次 ticket → WebSocket 橋接遠端桌面（NLA / CredSSP+NTLM）；
+    畫面以 PNG tile 串流到 `<canvas>`，鍵盤/滑鼠/滾輪回送；目標 host 鎖死為編目 IP（防 SSRF）；
+    連線開/關稽核（絕不記密碼）；並發上限 `rdp_max_sessions`。
+  - 原生 `<canvas>` 繪製，**前端零新增相依**。解析度選單含「自動縮放」。
+- **瀏覽器內 VNC 連線管理（Beta）。** 同一套模式套用於 VNC（RFB）目標 —— 已對真實 VNC 伺服器驗證。
+  - 每 IP `vnc_enabled` 開關（migration 0084）；權限 `can_use_vnc`；詳情頁分割按鈕 + 連線管理「VNC」。
+  - 桌面尺寸由伺服器決定；畫面提供 **自動縮放 / 原始解析度** 切換（縮放時滑鼠座標正確換算）。
+  - **VNC 認證僅支援 RFB security type None 與 VncAuth（密碼）。** 帳號型（UltraVNC MS-Logon、
+    VeNCrypt、RealVNC RA2/RA2ne）不支援；連線畫面已標示。
+- **選用相依、對基礎安裝零影響。** RDP/VNC 使用 `aardwolf`（pin 到有預編譯 manylinux wheel 的版本
+  → 免 Rust 工具鏈）。install/upgrade 以 **best-effort** 安裝（`pip install --only-binary=:all: -e
+  ".[rdp]"`）；無 wheel 即快速失敗、功能自動停用。後端偵測可用性，未安裝時前端隱藏入口。
+- 共用的**個人加密憑證金庫**現可保管 SSH / RDP / VNC 帳密（`protocol` + 選填 `domain`）；憑證稽核
+  記錄帶協定（如 `rdp_credential`）。
+
+### 變更
+- 進階→連線管理 一併列出 SSH/RDP/VNC 目標；OS 欄改用與詳情頁相同的來源優先序解析。
+- nginx WebSocket upgrade location 拓寬涵蓋 SSH/RDP/VNC 主控路徑；升級會就地修補既有站台設定。
+
+### 修正
+- 稽核明細的 `switch_port` 顯示為 `device@port`（與其他頁一致）；憑證目標解析為 label 而非原始 UUID。
+
+## [0.4.210] — 2026-06-21
+
+### 新增
+- **SSH 連線帳密「記住」功能（by-user 個別保管）。** 每位使用者可儲存自己的密碼／私鑰，
+  下次直接選用，不必重打：
+  - 後端 `ssh_credentials`（migration 0082）：密碼／私鑰／passphrase 各自**信封加密**
+    （per-field 隨機 DEK，DEK 由主 KEK（ENCRYPTION_KEY）包覆，AAD 綁 owner+欄位）；明文絕不落 DB／log／回前端。
+  - `GET/POST/DELETE /api/v1/ssh-credentials`：一律 owner-only、僅回遮罩（不含明文）。
+  - 連線改以 **reference（credential_id）**：前端只送 id，後端在連線當下記憶體解密、用完即丟；
+    仍須通過 `can_use_ssh(target)` 授權，scope 支援「綁定目標」與「個人預設（任一可連 IP）」。
+  - 稽核：連線記錄 `credential_id`（永不記明文），接現有 SIEM 轉送；停用使用者即無法使用其帳密。
+  - 前端連線表單加「已存帳密」下拉（選用即連）＋「記住此帳密」開關。
+
+### 範圍外（roadmap）
+- PTY session 錄製、敏感目標 MFA 二次驗證、外部 Vault/KMS 收 KEK、SSH CA 短效憑證。
+
+## [0.4.209] — 2026-06-21
+
+### 新增
+- **進階 → 連線管理頁**：表格列出所有已啟用 SSH 且本人可連線的目標（後端 `GET /addresses/ssh/targets`，與 `can_use_ssh` 同樣 deny-by-default 過濾），支援排序 / 即時篩選 / 選欄位 / 匯出，每列可「SSH 連線」（新分頁）或下拉「另開視窗」。
+
+### 變更
+- IP 詳情頁的「SSH 連線」改為**點主鍵開新分頁**、**下拉開新視窗**（移除頁內嵌入式終端機）。
+- SSH 連線表單欄位順序調整：認證方式移到最上、密碼緊接帳號下方。
+- 連線狀態改成有色圓點藥丸徽章（已連線綠色脈動）、中斷 / 重新連線 / 另開視窗都加上圖示。
+
+### 修正
+- 啟用「SSH 連線管理」存檔後，SSH 按鈕需重新整理才出現 —— PATCH `/addresses/{id}` 回應未計算 `ssh_available`，已比照 GET 補上。
+
+## [0.4.208] — 2026-06-21
+
+### 新增
+- **IP 位址 SSH 連線管理（嵌入式 / 另開視窗終端機）。** 在 IP 編輯視窗可開關「啟用 SSH 連線管理」；
+  啟用後，具權限者會在詳情頁右上（編輯鈕左側）看到「SSH 連線」分割按鈕：主鍵在本頁開啟 xterm.js 終端機，
+  右側下箭頭可選「另開視窗」開獨立全頁終端機。
+- **連線安全：** 先以 JWT 換取 60 秒單次 ticket，再以 `?ticket=` 開 WebSocket（後端 asyncssh 橋接）。
+  帳密／私鑰**只在連線時送出、不落地儲存、不記錄**；目標主機固定為該 IP 記錄的位址（防被當成通用 SSH proxy）；
+  主機金鑰採 TOFU 信任後釘選（日後不符即警告）；連線開／關都寫稽核。
+- **權限：** 新增獨立的「連線管理權限」(`users.can_ssh`)。admin、對該 IP 有寫入權者、或具連線管理權限且
+  至少可檢視該 IP 者，方可使用（deny-by-default）。使用者管理頁可逐人開關。
+
+### 變更
+- nginx 站台設定（含外部反向代理範本）新增 WebSocket upgrade 標頭與 SSH 終端機長連線逾時（`deploy/nginx/*.conf`）。
+  ⚠️ prod 實機 nginx 需同步套用此設定。
+- 前端新增相依 `@xterm/xterm` / `@xterm/addon-fit`（純前端、build 時打包，安裝／升級的 pnpm 安裝會自動帶入）。
+
+## [0.4.207] — 2026-06-19
+
+### 變更
+- **Docker Compose 的管理員密碼自動產生。** `gen-env.sh` 現在會連 `admin` 密碼一起隨機產（印在輸出、存進
+  `.env` 的 `JT_IPAM_ADMIN_PASSWORD`，0600），backend 首次啟動就用它建好 admin，可直接登入（比照 systemd 安裝的「自動建 admin」體驗）。
+- **首頁部署區改成兩區塊：**「主力：systemd + apt」與「選用：Docker Compose」，各自有框 / 標籤 / 淡底，
+  並各自列出安裝 / 首次密碼 / 升級指令。Docker 區明確標出升版是 `./update.sh`（**別用 `jt-ipam.sh upgrade`**）。
+- docs/INSTALL §2.7 與 deploy/docker README（中英）的「第一個管理員」同步更新成上述自動產密碼行為。
+
+## [0.4.206] — 2026-06-19
+
+### 變更
+- **Graylog DSV 設定頁的「格式」與「權杖」改成左右兩張卡片**（各自有框 / 淡底 / 圓角），視覺上明顯分開、
+  窄螢幕自動換行，取代原本上下堆疊的排版。
+
+## [0.4.205] — 2026-06-19
+
+### 修正
+- **Docker Compose 部署兩個啟動問題**（用 docker compose 完整實跑後抓到）：
+  1. **`.env.example` 的 `BACKEND_BIND_HOST=0.0.0.0` 會被安全檢核擋下**（nginx 模式要求綁 loopback）→ 改成
+     `127.0.0.1`；容器內 uvicorn 仍以 `0.0.0.0` 綁（由映像 CMD 控制、只在 compose 網路內、不對主機開埠）。
+  2. **`sync` / `web` 在資料庫遷移完成前就啟動**（`depends_on: service_started` 只等容器起來）→ `backend`
+     加 healthcheck（uvicorn 開始監聽＝遷移已跑完才算 healthy），`sync` / `web` 改 `depends_on: service_healthy`，
+     不再出現首次啟動 `relation "opnsense_firewalls" does not exist`。
+- 已用 `docker compose up` 完整實跑驗證：5 個服務健康、HTTP→HTTPS 轉址、前端與 `/api` 反代皆 200、admin 自動建立、
+  管理員登入回 access_token、`sync` 迴圈 0 錯誤。
+
+## [0.4.204] — 2026-06-19
+
+### 新增
+- **選用的 Docker Compose 部署**（`deploy/docker/`）。次要 / 選用方式（主力仍是 systemd + apt）：
+  一組 compose 起 `postgres`(pgvector) / `redis` / `backend` / `sync`（背景同步迴圈取代 systemd timer）/
+  `web`(nginx，服務前端 + 反代 `/api` + 自簽 HTTPS)。附 `gen-env.sh`（產生隨機密鑰）與 `update.sh`
+  （`git pull` → 重建 → 重啟）。**升版只要 `./update.sh`**——backend 容器啟動時自動跑 `alembic upgrade head`，
+  不需手動遷移。已實測：映像可建置、fresh pgvector 跑完 0001→0080 全部遷移、自動建管理員、uvicorn 正常啟動。
+
+## [0.4.203] — 2026-06-18
+
+### 變更
+- **Proxmox VE VM DSV 改為每叢集一個（支援多個 PVE 叢集 / 獨立節點）。** 因為 vmid 在不同叢集間會重複，
+  全域單一 DSV 會混淆。新增每叢集端點 `GET /api/v1/lookup/proxmox/{cluster_id}/vms`；Graylog DSV 設定頁
+  的來源表格會**每個叢集各列一筆**（比照 OPNsense 多防火牆），各自獨立網址 / Lookup Table。
+  全域 `…/proxmox/vms`（所有叢集、去重）仍保留，單叢集環境可直接用。
+
+## [0.4.202] — 2026-06-18
+
+### 新增
+- **Graylog DSV 新增 Proxmox VE VM 來源（vmid → VM 名稱）。** 端點 `GET /api/v1/lookup/proxmox/vms`
+  （沿用 Graylog DSV token），key = Proxmox VMID、value = 已同步的 VM 名稱，讓 Graylog 把記錄裡的
+  vmid 補上可讀的 VM 名稱。跨叢集 vmid 若重複，每個 vmid 只輸出第一筆。Graylog DSV 設定頁的來源表格
+  自動帶出這筆（全域、與「IP → 主機名稱」並列）。
+
+### 修正
+- **防火牆 DSV 提示文字的欄位索引也修正**為 key 欄=0、value 欄=1（0 起算；前一版只改了主教學表格、漏了這段提示）。
+
+## [0.4.201] — 2026-06-18
+
+### 變更
+- **子網路詳情頁工具列加「刪除」按鈕**（帶確認框）。原本只能回「全部子網路」清單頁、用操作欄垃圾桶或批次刪除，
+  而操作欄常被擠到表格最右邊不好按；現在打開某個子網路就能直接刪，刪除後刷新側邊子網路樹並回到清單頁。
+
+## [0.4.200] — 2026-06-18
+
+### 修正
+- **版本檢查把舊版誤判成新版。** 「檢查 GitHub 最新版」原本用字串比較（`!=`），會把 `0.4.79` 當成新過
+  `0.4.199`（字串 `'7' > '1'`）；且發佈是 push 到 main、不一定建 release/tag，原本退回讀到舊 tag。
+  改成**主要讀 main 分支的 `version.py`**（反映真正已發佈的版本），比較一律用**數字序**，tags 退路也取數字序最大者。
+
+### 變更
+- **版本資訊頁版面：**「檢查 GitHub 最新版」移到上排第三格（與「現行版本 / Python」同一排），不再獨佔整列。
+- **LibreNMS 自動建立 IP 的子網路選擇加固，避免建錯單位。** 落點子網路改為「唯一且最精確（最長首碼）」者：
+  多層巢狀取最精確；**重疊網段、多個相同最長首碼都包含時 → 不猜、直接略過**（寧可不建也不要建到別的單位）；
+  沒有任何既有子網路包含則不建。要消除歧義就在該 LibreNMS 實例設「限定子網路範圍」。
+
+## [0.4.199] — 2026-06-18
+
+### 修正
+- **Graylog DSV 教學的 Key／Value column 索引寫錯。** Graylog「DSV File from HTTP」配接器的欄位索引是
+  **從 0 起算**，正確值是 **Key column = 0、Value column = 1**；教學頁與 README 原本誤寫成 1／2。
+
+## [0.4.198] — 2026-06-18
+
+### 修正
+- **防火牆規則 DSV（`rid → alias`）漏抓 UUID 格式的規則。** filterlog 的 `rid`（pf 規則 label）有兩種格式：
+  32 碼 md5（純 hex）與 UUID（含「-」）。原 `_RL_LABEL` 正規式 `[0-9A-Za-z]+` 不含「-」，導致 UUID label
+  的規則整條比對失敗、被漏掉，只剩 md5 那幾條（某台防火牆實測只抓到 10 條、應為 59 條 / 涵蓋 44 個別名）。
+  改成抓引號內全部內容（label 內容即 `rid`），md5／UUID／自訂 label 都涵蓋。
+  ＞ 註：`rid → alias` 本質上只會涵蓋「被有 label 的規則引用到」的別名；沒有被任何規則用到的別名不會有 `rid`
+  （也不會出現在 filterlog），屬正常。
+
+## [0.4.197] — 2026-06-18
+
+### 新增
+- **憑證派送代理可對應到裝置。** 編輯派送代理時可選擇「對應裝置」（`cert_agents.device_id`，migration 0080，
+  裝置刪除→SET NULL）。對應後：①「派送代理」清單與「進階 → 憑證派送現況」頁的**代理名稱可點**，直接進入該裝置詳情；
+  ②**來源 IP 欄可點**——後端把代理回報的來源 IP 解析到 IPAM 對應的位址（重疊網段時優先取掛在該對應裝置上的同 IP），
+  前端連到該位址詳情。未對應裝置或來源 IP 在 IPAM 查無對應時，維持純文字。
+
+### 變更
+- **Graylog DSV 串接教學調整：**「格式」（輸出設定）與「重新產生權杖」（金鑰）是兩回事，不再並排同列。
+  Extractor 與 Pipeline 是**擇一**的兩種做法（不是先後步驟），改成步驟 2 底下的「做法 A／做法 B」、
+  共用同一個「要查的 log 欄位」輸入，不再各編號為步驟 2、3。點值複製的提示改為「已複製到剪貼簿」。
+
+## [0.4.196] — 2026-06-18
+
+### 新增
+- **LibreNMS 同步可自動建立探索到的 IP。** 每個 LibreNMS 實例新增「自動建立探索到的 IP」開關
+  （預設開啟）：同步裝置時，會把受監控裝置的**主 IP**自動建進對應的既有子網路
+  （標 `discovery_source=librenms`）。只建裝置主 IP、不含 ARP 鄰居；若該實例設了限定子網路範圍，
+  只在範圍內建立；子網路若尚未在 IPAM 建立則略過。解決「只接 LibreNMS、未佈掃描代理」時，子網路內
+  0 個 IP、即時狀態與使用率全 0 的困惑（LibreNMS 進來的是裝置，原本只 stamp 既有 IP、不建立）。
+
+### 修正
+- **儀表板「即時狀態」把掃描代理／LibreNMS 判定的上線誤算成「未知」。** 計數時比對的是大小寫不符的
+  固定字串（`Online (scanner)` 等），但實際寫入值是小寫帶來源後綴（`online (scanner)`／
+  `online (librenms)`）→ 改用 `startswith("online")` 比對（比照 `recompute_effective_status`）。
+
+### 變更
+- **預設對話模型改為 `gemma4:26b`**（原 `gpt-oss:120b`）——與 README 既有建議一致；未在 LLM 設定頁
+  覆寫的環境（含全新安裝）即以此為預設。已覆寫者不受影響。
+- **文件：** 本地 AI 加值區塊加註「本套件無內建 LLM Server，請在有 GPU 算力的主機安裝好 LLM Server
+  後再提供給 jt-ipam 接取使用」。
+
+## [0.4.195] — 2026-06-18
+
+### 變更
+- **Graylog DSV 頁面收尾。** DSV 來源表格的操作欄移除多餘的「複製」鈕（值的複製已在下方教學提供，點即複製）；
+  「詳細資料」鈕更名為「網址 / 設定」，更貼切其顯示的查表網址與設定內容。
+- **「要查的 log 欄位」輸入框移進步驟 2（Extractor）。** 原本孤立在步驟 1 與步驟 2 之間、沒有步驟編號；
+  現在放在它第一個被用到的地方（Extractor 的 Source field 上方），步驟 3（Pipeline）的說明也改成指向「步驟 2 設定的 log 欄位」。
+
+## [0.4.194] — 2026-06-18
+
+### 變更
+- **Graylog DSV 串接教學再優化。** 步驟改用明顯的數字圓圈（比照憑證安裝說明），每個來源——包含防火牆規則／
+  別名 DSV——都同時提供 **Extractor 與 Pipeline 兩種**做法（各自帶該來源的實際欄位／Lookup Table／輸出欄位）。
+  設定表格左欄（欄位名）加上淡底與值區分；每個要貼進 Graylog 的值都**點一下即複製**（點任何灰底的值）。
+
+## [0.4.193] — 2026-06-18
+
+### 變更
+- **Graylog DSV 頁面：端點清單改成真正的資料表格，並驅動下方教學。** DSV 來源表格加上排序、欄位選擇、
+  篩選框與重新整理；點某一列即選取該來源，下方 Graylog 串接教學會重繪成那個來源的版本（正確的查表網址、
+  Lookup Table 名稱、key／value 欄位與對應的 pipeline rule——IP→主機名稱保留 LAN cidr_match 判斷、防火牆
+  規則／別名則用單純的 rid／alias 查表），切換時帶淡入淡出過場。頁面也移除固定寬度限制、改用全寬。
+  用詞：「詳情」→「詳細資料」。
+
+## [0.4.192] — 2026-06-18
+
+### 變更
+- **Graylog DSV 頁面改成一張可擴充的端點表格 ＋ 詳情抽屜。** 原本每個 DSV 來源各攤一張卡片、兩個網址框，
+  防火牆一多就很亂；現在所有 DSV 端點（IP→主機名稱、每台防火牆的規則與別名查表）統一列在一張表
+  （名稱／對照／狀態／操作），點「詳情」開抽屜顯示 HTTPS ＋ 內網 HTTP 網址、複製鈕與該來源設定
+  （IP→主機名稱的開關／路徑放在抽屜內）。共用的格式與權杖放在表格上方。日後新增 DSV 類型只要多一列，版面自動容納。
+
+## [0.4.191] — 2026-06-18
+
+### 新增
+- **OPNsense 防火牆 Graylog DSV（規則 label→alias、alias→成員）。** 除了既有的 IP→主機名稱 DSV，每台
+  OPNsense 防火牆可再對外提供兩支 token 保護的查表給 Graylog 補實防火牆 log：
+  `/api/v1/lookup/firewall/{id}/rule-aliases`（key=filterlog `rid`／pf 規則 label，value=該規則引用的
+  alias 名）與 `/api/v1/lookup/firewall/{id}/aliases`（key=alias 名，value=成員清單）。規則對照每輪同步從
+  `/api/diagnostics/firewall/pf_statistics/rules` 解析（涵蓋使用者／外掛／自動規則）；別名 DSV 用已同步的
+  alias 內容。每台防火牆用新的「提供防火牆 DSV」開關啟用（整合 → OPNsense），各自的查表網址（不同 path）
+  顯示在 Graylog DSV 設定頁。Migration 0078（opnsense_rule_labels ＋ opnsense_firewalls.expose_dsv）。
+
+## [0.4.190] — 2026-06-17
+
+### 變更
+- **電路表格新增「速率 / 固定 IP / 閘道」欄位。** 這些欄位電路本來就有（編輯表單也有），只是清單沒顯示；
+  補上易讀的速率欄（↓下載 / ↑上傳，自動換算 Gbps/Mbps/kbps）以及固定 IP/CIDR、閘道欄（都可在欄位選擇器開關）。
+
+## [0.4.189] — 2026-06-17
+
+### 安全性
+- **清掉 Dependabot 開啟中的警示**（前端建置工具鏈），用 `pnpm.overrides` 釘到修補版：`form-data` ≥4.0.6
+  （CRLF 注入，GHSA-hmw2-7cc7-3qxx——經 axios/jsdom 引入）、`vite` ≥6.4.3（Windows `server.fs.deny` 繞過，
+  GHSA-fx2h-pf6j-xcff——同時修掉內含的 launch-editor NTLMv2 警示）、`js-yaml` ≥4.2.0（merge key 二次方
+  複雜度 DoS）。`pnpm audit` 已乾淨、建置不變（vite 仍在 6.x）。這些都是建置／開發相依，不在前端正式 bundle 內。
+
+## [0.4.188] — 2026-06-17
+
+### 變更
+- **掃描代理 installer 預設不再安裝 avahi（mDNS）。** `avahi-utils` 相依 `avahi-daemon`，裝了會起一個常駐
+  服務、監聽 UDP 5353 並對外廣播主機 mDNS——對多數伺服器是不必要的副作用。installer 現在預設只裝 `nmap`
+  （OS）與 `samba-common-bin`（NetBIOS），兩者都不起 daemon；mDNS 改用 `JT_IPAM_ENABLE_MDNS=1` 才裝。
+  （主伺服器安裝/升級從來不碰這些。）安裝說明也標明 avahi-utils 會一併啟動 avahi-daemon。
+
+## [0.4.187] — 2026-06-17
+
+### 變更
+- **NetBIOS / mDNS 主機名稱來源在 IP 詳情顯示在地化標籤**（來源標籤與「釘選主機名稱來源」下拉），與來源優先序頁
+  一致。新增回歸測試：驗證掃描代理回報的 NetBIOS / mDNS 名稱會各自記成獨立的 `netbios` / `mdns` 觀測來源。
+
+## [0.4.186] — 2026-06-17
+
+### 修正
+- **IP 位址編輯視窗的「儲存」按鈕沒反應／改動遺失（issue #6，感謝 @lin-junyou）。** 條件渲染的操作按鈕
+  （儲存／編輯／新增／取消／返回）與刪除確認框以 `v-if`/`v-else` 共用同一位置、且沒有唯一 `:key`，導致 Vue 在
+  檢視↔編輯切換時重用 vnode、保留了**上一個分支的** `@click` —— 按「儲存」實際觸發的是返回/編輯，改動就被默默
+  丟掉。已為每個條件按鈕／確認框補上穩定 `key`（行內 `#header-extra` 與視窗 `#footer` 都修）。
+- **Ubuntu 26 安裝失敗「requires a different Python: 3.14 not in '<3.14,>=3.11'」（issue #5，感謝 @Ghucos）。**
+  Ubuntu 26.04 預設 Python 3.14，但後端 `requires-python` 把上限卡在 3.14 以下，pip 直接拒裝。放寬為
+  `>=3.11,<3.15` 以允許 3.14。
+
+## [0.4.185] — 2026-06-16
+
+### 新增
+- **掃描代理的 NetBIOS 與 mDNS 名稱探測真正實作了**（先前這兩個探測可勾選、但其實是 Phase B 空殼、不會產生
+  任何名稱）。代理現在會對「有勾選且存活」的主機實際執行 `nmblookup -A <ip>`（或 `nbtscan`）查 NetBIOS 名、
+  `avahi-resolve -a <ip>` 查 mDNS（.local）名，並回報結果。兩者各自記為**獨立的主機名稱來源**（`netbios` /
+  `mdns`），可在 **名稱 / ARP 來源順序** 頁分別排序或停用。代理升到 v1.4.0（會自我更新）。SNMP 仍刻意不實作
+  （需社群字串/憑證）。無 migration（觀測表 source 欄無 CHECK 限制）。
+
+## [0.4.184] — 2026-06-16
+
+### 變更
+- **登入頁語言切換改為點開下拉再選**（列出兩種語言），不再是一按就切。
+- **來源順序頁的「儲存順序」按鈕加上儲存 icon**（五個區塊都加）。
+
+## [0.4.183] — 2026-06-16
+
+### 變更
+- **登入頁加上語言切換**（繁體中文 ⇄ English）於卡片標題列，登入前就能切換語言。
+- **通知鈴鐺整理：**「通知」標題前與「全部標為已讀」按鈕都加了 icon；通知很多時改為在彈窗內捲動（限制高度），
+  不再往下長過畫面。
+- **IP 申請通知改為中文**（「IP 申請已核准」／「IP 申請已拒絕」），取代原本寫死的英文「IP request approved/rejected」
+  （與其他站內通知一致）。
+- **掃描代理表格欄寬：** 來源 IP 欄不再換行，多餘寬度由名稱與最後錯誤兩欄分攤，名稱欄不再過寬留白。
+
+## [0.4.182] — 2026-06-16
+
+### 變更
+- **登入：SSO 按鈕只在該供應商已設定時才顯示。** `/auth/realms` 會一併回報 OIDC / SAML 是否啟用，登入頁
+  只在該供應商真的設定好時才顯示對應按鈕——點「用 SAML 單一登入」不會再跳出原始的
+  `{"detail":"SAML is disabled"}` 錯誤頁；兩者都沒啟用時整個「或使用 SSO」區塊隱藏。
+- **登入：標題前方加上 jt-ipam logo。**
+- **Webhook：事件改成附說明的勾選清單**，不再是自由輸入標籤。清單就是後端實際會發送的事件
+  （`subnet.created`、`ip_request.created`／`.fulfilled`／`.rejected`、`anomaly.detected`）加上 `*`（全部），
+  每項都有一行說明。
+- **整合限定子網路範圍：版面更整齊。** 六個整合設定頁的子網路下拉與重疊警告改為整列堆疊，不再左右擠在一起。
+- **RIPE／TWNIC 匯入：欄位不再太擠**——Handle／CIDR／目標 section 各列之間加了適當間距，提示文字不再緊貼下一個標籤。
+
+### 新增
+- **LLM 設定：可選的「對話上下文長度」(`num_ctx`)。** 讓管理員調高對話模型的上下文視窗，避免工具多、注入資料量
+  大的 MCP 對話超過 Ollama 預設（約 4096）而被默默截斷。留空／0＝沿用模型/Ollama 預設；只帶進對話的 Ollama
+  `options.num_ctx`（不影響嵌入模型）。
+
+## [0.4.181] — 2026-06-16
+
+### 變更
+- **憑證詳細資訊排版更整齊。** 憑證「檔案」視窗裡各版本的詳細資訊（網域／主體／簽發者／序號／有效期／
+  指紋／上傳時間）改成兩欄對齊的格線（定義清單），所有值對齊到同一欄，序號與指紋改用等寬字型。原本是
+  參差不齊的「標籤：值」逐行清單。
+
 ## [0.4.180] — 2026-06-16
 
 ### 修正

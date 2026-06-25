@@ -16,12 +16,12 @@ from app.models.ip_request import IPRequest, IPRequestEvent
 from app.models.subnet import Subnet
 from app.schemas.base import Paginated
 from app.schemas.ip_request import (
+    IPApprove,
     IPRequestCreate,
     IPRequestDetail,
     IPRequestEventRead,
-    IPRequestRead,
-    IPApprove,
     IPRequestPolicyModel,
+    IPRequestRead,
     IPRequestReject,
 )
 from app.services.ip_request import (
@@ -34,14 +34,14 @@ from app.services.ip_request import (
     reject_request,
 )
 from app.services.ip_request_policy import (
-    can_approve as _can_approve,
-)
-from app.services.ip_request_policy import (
     actionable_steps,
     get_policy,
     is_global_approver,
     set_policy,
     stage_progress,
+)
+from app.services.ip_request_policy import (
+    can_approve as _can_approve,
 )
 from app.services.permission import (
     get_object_permission,

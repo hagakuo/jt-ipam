@@ -257,6 +257,11 @@ async def get_address(
     await _require_subnet_perm(session, user, obj.subnet_id, "read")
     out = IPAddressRead.model_validate(obj)
     out.mac_vendor = await vendor_for_mac(session, obj.mac)
+    # SSH 連線管理：是否可對此 IP 開終端機（依權限算好給前端顯示按鈕）
+    from app.services.permission import can_use_rdp, can_use_ssh, can_use_vnc
+    out.ssh_available = await can_use_ssh(session, user=user, ip=obj)
+    out.rdp_available = await can_use_rdp(session, user=user, ip=obj)
+    out.vnc_available = await can_use_vnc(session, user=user, ip=obj)
     # 算出此 IP 實際會被執行的探測（子網路要跑 − IP 略過 ∩ 代理能力）給詳情頁顯示
     out.effective_probes = await _effective_probes_for(session, obj)
     # OS 依來源優先序（scanner/librenms/wazuh）解析有效值 + 來源
@@ -295,9 +300,9 @@ async def get_address_relations(
     chain.append({"type": "ip", "id": str(obj.id),
                   "label": str(obj.ip).split("/")[0], "sub": obj.hostname})
 
-    async def _device_tail(dev: Device, *, sub: str | None = None) -> None:
-        """把 device → rack → 機房 接到鏈尾。"""
-        chain.append({"type": "device", "id": str(dev.id), "label": dev.name, "sub": sub})
+    async def _device_tail(dev: Device, *, sub: str | None = None, node_type: str = "device") -> None:
+        """把 device → rack → 機房 接到鏈尾（node_type=vmnode 時該裝置代表 PVE 節點）。"""
+        chain.append({"type": node_type, "id": str(dev.id), "label": dev.name, "sub": sub})
         if dev.rack_id:
             rk = await session.get(Rack, dev.rack_id)
             if rk is not None:
@@ -307,55 +312,65 @@ async def get_address_relations(
             if loc is not None:
                 chain.append({"type": "location", "id": str(loc.id), "label": loc.name})
 
-    if obj.device_id:
-        dev = await session.get(Device, obj.device_id)
-        if dev is not None:
-            await _device_tail(dev)
-    else:
-        # 沒有直接關聯裝置 → 若這個 IP 是某台 VM（Proxmox 整合）的位址，就補上
-        # 「虛擬機」這一層；再透過 VM 的 PVE node 串到實體裝置 → 機櫃 → 機房。
-        # 不是 VM 就沒有這一層。
-        from app.models.virt import VirtualMachine, VMInterface
+    async def _find_vm(device_name: str | None):
+        """這個 IP 對應到的 Proxmox VM：主要 IP → 介面 IP → 名稱（主機名稱 / 裝置名稱）。"""
+        from app.models.virt import VirtCluster, VirtualMachine, VMInterface
         ipstr = str(obj.ip).split("/")[0]
-        # 多重比對找出這個 IP 屬於哪台 VM（Proxmox 同步未必會設 primary_ip_id）：
-        # 1) VM 主要 IP 直接指向 → 2) VM 介面 IP 相符 → 3) VM 名稱 = 主機名稱
         vm = (await session.execute(
             select(VirtualMachine).where(VirtualMachine.primary_ip_id == obj.id).limit(1)
         )).scalar_one_or_none()
         if vm is None:
             vm = (await session.execute(
-                select(VirtualMachine)
-                .join(VMInterface, VMInterface.vm_id == VirtualMachine.id)
+                select(VirtualMachine).join(VMInterface, VMInterface.vm_id == VirtualMachine.id)
                 .where(func.host(VMInterface.primary_ip) == ipstr).limit(1)
             )).scalar_one_or_none()
-        if vm is None and obj.hostname:
-            vm = (await session.execute(
-                select(VirtualMachine)
-                .where(func.lower(VirtualMachine.name) == obj.hostname.lower()).limit(1)
-            )).scalar_one_or_none()
+        if vm is None:
+            names = {n.lower() for n in (obj.hostname, device_name) if n}
+            if names:
+                vm = (await session.execute(
+                    select(VirtualMachine).where(func.lower(VirtualMachine.name).in_(names)).limit(1)
+                )).scalar_one_or_none()
         # 只連「同單位」的 VM：IP 所屬單位（取自子網路）與 VM 叢集所屬單位都有設定且不同 → 不連
         if vm is not None and subnet is not None and subnet.customer_id is not None:
-            from app.models.virt import VirtCluster
             cluster = await session.get(VirtCluster, vm.cluster_id)
             if cluster is not None and cluster.customer_id is not None \
                     and cluster.customer_id != subnet.customer_id:
-                vm = None
-        if vm is not None:
-            chain.append({"type": "vm", "id": str(vm.id), "label": vm.name, "sub": vm.node})
-            node_dev: Device | None = None
-            if vm.device_id:
-                node_dev = await session.get(Device, vm.device_id)
-            elif vm.node:
-                # PVE node host 名稱 → 對到 jt-ipam 的實體裝置（比對 name，再比對 fqdn）
+                return None
+        return vm
+
+    async def _append_pve_node(vm, *, skip_id: uuid.UUID | None = None) -> None:
+        """把 VM 所在的 PVE 節點接到鏈尾：對得到實體裝置就連裝置（含其機櫃/機房），否則只顯示節點名稱。"""
+        from app.models.virt import VirtCluster
+        cluster = await session.get(VirtCluster, vm.cluster_id) if vm.cluster_id else None
+        csub = cluster.name if cluster is not None else None
+        node_dev: Device | None = await session.get(Device, vm.device_id) if vm.device_id else None
+        if node_dev is None and vm.node:
+            # PVE node host 名稱 → 對到 jt-ipam 的實體裝置（比對 name，再比對 fqdn）
+            node_dev = (await session.execute(
+                select(Device).where(func.lower(Device.name) == vm.node.lower()).limit(1)
+            )).scalar_one_or_none()
+            if node_dev is None:
                 node_dev = (await session.execute(
-                    select(Device).where(func.lower(Device.name) == vm.node.lower()).limit(1)
+                    select(Device).where(func.lower(Device.fqdn) == vm.node.lower()).limit(1)
                 )).scalar_one_or_none()
-                if node_dev is None:
-                    node_dev = (await session.execute(
-                        select(Device).where(func.lower(Device.fqdn) == vm.node.lower()).limit(1)
-                    )).scalar_one_or_none()
-            if node_dev is not None:
-                await _device_tail(node_dev, sub="PVE node")
+        if node_dev is not None and node_dev.id != skip_id:
+            await _device_tail(node_dev, sub=csub, node_type="vmnode")
+        elif vm.node:
+            chain.append({"type": "vmnode", "id": "pve:" + vm.node, "label": vm.node, "sub": csub})
+
+    # 直接關聯的裝置（這台主機本身）；無論是否為 VM 都先接上
+    dev_name: str | None = None
+    if obj.device_id:
+        dev = await session.get(Device, obj.device_id)
+        if dev is not None:
+            dev_name = dev.name
+            await _device_tail(dev)
+    # 若這個 IP 屬於某台 Proxmox VM，補上它所在的 PVE 節點（即使已關聯裝置也要畫出落在哪台 node）
+    vm = await _find_vm(dev_name)
+    if vm is not None:
+        if not obj.device_id:
+            chain.append({"type": "vm", "id": str(vm.id), "label": vm.name, "sub": None})
+        await _append_pve_node(vm, skip_id=obj.device_id)
     return {"chain": chain}
 
 
@@ -685,7 +700,13 @@ async def update_address(
     )
     await session.commit()
     await session.refresh(obj)
-    out = IPAddressRead.model_validate(obj); out.mac_vendor = await vendor_for_mac(session, obj.mac); return out
+    out = IPAddressRead.model_validate(obj); out.mac_vendor = await vendor_for_mac(session, obj.mac)
+    # 與 get_address 一致：算 ssh/rdp/vnc_available，否則存檔後前端拿不到、按鈕要等重整才出現
+    from app.services.permission import can_use_rdp, can_use_ssh, can_use_vnc
+    out.ssh_available = await can_use_ssh(session, user=user, ip=obj)
+    out.rdp_available = await can_use_rdp(session, user=user, ip=obj)
+    out.vnc_available = await can_use_vnc(session, user=user, ip=obj)
+    return out
 
 
 @router.delete("/{address_id}", status_code=status.HTTP_204_NO_CONTENT)

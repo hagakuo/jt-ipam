@@ -68,7 +68,7 @@ const PROBE_INSTALL: Record<string, string> = {
   os: `${SUDO} apt install nmap`,
   ports: `${SUDO} apt install nmap`,
   netbios: `${SUDO} apt install samba-common-bin   # 提供 nmblookup`,
-  mdns: `${SUDO} apt install avahi-utils   # 提供 avahi-resolve`,
+  mdns: `${SUDO} apt install avahi-utils   # 提供 avahi-resolve（會一併啟動 avahi-daemon，監聽 UDP 5353）`,
 };
 function probeInstall(key: string): string {
   return (
@@ -246,9 +246,9 @@ const allCols = computed<DataTableColumns<ScanAgent>>(() => autoSort([
     },
   },
   {
-    title: t("cols.source_ip"), key: "source_ip", width: 128,
+    title: t("cols.source_ip"), key: "source_ip", width: 150,
     render: (r) => r.last_source_ip
-      ? h("span", { style: "font-family:monospace" }, r.last_source_ip) : "—",
+      ? h("span", { style: "font-family:monospace;white-space:nowrap" }, r.last_source_ip) : "—",
   },
   {
     title: t("scanAgentHelp.col_subnets"), key: "subnet_count", width: 64,
@@ -256,7 +256,7 @@ const allCols = computed<DataTableColumns<ScanAgent>>(() => autoSort([
   },
   { title: t("scanAgentHelp.col_last_seen"), key: "last_seen_at", width: 168,
     render: (r) => h("span", { style: "white-space:nowrap" }, fmtDateTime(r.last_seen_at)) },
-  { title: t("scanAgentHelp.col_last_error"), key: "last_error", width: 150, ellipsis: { tooltip: true }, render: (r) => r.last_error ?? "—" },
+  { title: t("scanAgentHelp.col_last_error"), key: "last_error", minWidth: 150, ellipsis: { tooltip: true }, render: (r) => r.last_error ?? "—" },
   {
     title: t("common.actions"), key: "actions", className: "col-actions", width: 140,
     render: (r) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
@@ -306,7 +306,7 @@ onMounted(() => { void refresh(); });
                     @update:visible="saSet" @reset="saReset" />
       <ExportButton :columns="cols" :rows="rows" filename="scan-agents" :title="t('nav.scan_agents')" />
     </n-space>
-    <n-data-table :columns="cols" :data="filteredRows" :loading="loading" :bordered="false" :scroll-x="1058" :pagination="pg" />
+    <n-data-table :columns="cols" :data="filteredRows" :loading="loading" :bordered="false" :scroll-x="1080" :pagination="pg" />
 
     <!-- 建立 / 編輯 -->
     <n-modal v-model:show="show" preset="card" style="width: 460px">

@@ -4,6 +4,492 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.4] — 2026-06-24
+
+### Fixed
+- **Background tasks could stay "in progress" forever after a restart (issue #9).** Tasks run via
+  `asyncio.create_task` inside the worker process, so a backend restart (deploy / upgrade / crash) orphaned
+  any in-flight task with no terminal status, leaving it stuck "running" in Operations. On startup, lingering
+  pending/running tasks are now reconciled to `failed` ("interrupted: backend restarted").
+- **LibreNMS sync aborted midway with a duplicate device-port error (issue #12).** Port sync now upserts
+  (`ON CONFLICT (device_id, name)`) instead of a plain insert, so an existing port (e.g. two LibreNMS
+  devices mapped to one jt-ipam device, or a re-processed interface) no longer breaks the whole sync with
+  `UniqueViolationError` on `device_port_unique_name`.
+
+
+## [0.5.3] — 2026-06-24
+
+### Fixed
+- **Contact groups could not be created / edited / deleted — "Method Not Allowed" (issue #11).** The
+  backend only had `GET /contact-groups`; added `POST` / `PATCH` / `DELETE`.
+- Added the missing `DELETE` endpoints for **providers, circuits, wireless SSIDs and wireless links** —
+  their delete buttons previously returned 405 (same class of bug).
+
+
+## [0.5.2] — 2026-06-24
+
+### Fixed
+- **Proxmox VM list capped at 500 (issue #9).** The list now fetches every page, so all VMs show
+  (e.g. 592, not 500). The same paginate-all fix covers other advanced-resource lists.
+- **Proxmox sync slow / stuck "in progress" (issue #9).** The best-effort per-VM guest-agent IP query
+  now uses a short 6 s timeout, so unresponsive guest agents on running VMs no longer stall the whole
+  sync (previously each could hold the shared 20 s timeout).
+- **Wazuh agent list showed only 200 (issue #10).** All agents were stored; the admin page now fetches
+  every page instead of just the first 200.
+- **Other integrations audited for the same cap.** LibreNMS `/devices` and AdGuard already return
+  everything; OPNsense alias / rule / IPsec searches no longer cap at 1000 / 500 (`rowCount = -1` = all).
+
+### Changed
+- Table footers now show the total row count on the left (e.g. "Total: 592").
+- The floating AI-chat button is semi-transparent at rest and turns solid on hover.
+
+
+## [0.5.1] — 2026-06-24
+
+### Added
+- **RDP / VNC "send keys".** Send special key combos the browser/OS would otherwise intercept (Esc, Tab,
+  F1–F12, Ctrl + Alt + Del, ⊞ Win, Alt + Tab; VNC adds macOS ⌘ combos) from a keycap-styled menu with
+  per-platform icons.
+- **RDP "refit".** One click reconnects at the current window size for a crisp native picture (aardwolf
+  cannot hot-resize a live session, so it rebuilds the session to match).
+- **Richer version page.** Adds asyncssh / aardwolf / Pillow package versions, a host-environment section
+  (OS / kernel / nginx / Node.js / PostgreSQL) and frontend-framework versions (Vue / Naive UI / Vite…),
+  with a reorganized layout.
+- **Expose MCP to external systems (read-only).** New toggle under Admin → LLM / AI; only when on does
+  jt-ipam accept external HTTP MCP calls (`/api/mcp`, Streamable HTTP / JSON-RPC). Generate/regenerate a
+  **read-only** API key (stored encrypted); the page shows the endpoint URL and auth header (name → value).
+  The read-only key always blocks the 6 data-changing tools (and hides them from the tool list). Off by
+  default (deny-by-default); existing per-user API-token auth still works and is also gated by the toggle.
+- New MCP tool `list_connection_targets` (read-only): lists IPs/devices with a browser remote console
+  enabled (SSH / RDP / VNC) that the caller may reach — never returns credentials.
+
+### Changed
+- Console toolbar: a protocol label (SSH / RDP / VNC) sits next to the hostname; buttons are more compact
+  and clearly clickable, with a red-outline disconnect. In Advanced → Connections and on IP detail, the
+  console action buttons collapse to icon-only only when too narrow (threshold scales with the protocols
+  per row).
+- The relationship graph now shows the PVE node a VM runs on (and that node's rack/room) when a host is a
+  Proxmox VM guest — on both the IP and device detail pages.
+
+### Fixed
+- **Proxmox VMs with the same name in one cluster could not be imported (issue #8).** The VM uniqueness
+  key changed from `(cluster, name)` to `(cluster, VMID)` (migration 0085) — Proxmox allows same-named VMs
+  with different VMIDs, which previously collided with `vm_cluster_name_uq`.
+- **AI chat: recover tool calls emitted as text.** A (tool-capable) model occasionally returns a tool call
+  as inline text instead of structured `tool_calls`; these are now parsed and executed instead of leaking
+  into the answer, with a neutral retry notice when unrecoverable.
+- The external MCP sub-app no longer serves FastAPI's auto-generated `/openapi.json` and `/docs` (MCP is
+  discovered via JSON-RPC `tools/list`, not OpenAPI; that schema was meaningless to MCP clients and
+  unauthenticated).
+- Audit detail shows `switch_port` as `device@port` (consistent with other pages) and resolves credential
+  targets to a label instead of a raw UUID.
+
+
+## [0.5.0] — 2026-06-22
+
+### Added
+- **In-browser RDP connection management (Beta).** Open a Windows RDP desktop straight from an IP's
+  detail page — verified against NLA-enforced Windows 11.
+  - Per-IP `rdp_enabled` toggle (migration 0083); permission `can_use_rdp` (deny-by-default, reuses the
+    `can_ssh` capability); detail-page split button + an "RDP" filter/action in Advanced → Connections.
+  - Backend `endpoints/rdp_console.py`: single-use ticket → WebSocket bridge to the remote desktop
+    (NLA / CredSSP+NTLM); framebuffer streamed as PNG tiles to a `<canvas>`, keyboard/mouse/wheel sent
+    back; target host locked to the catalogued IP (anti-SSRF); session open/close audited (never the
+    password); a concurrency cap (`rdp_max_sessions`).
+  - Native `<canvas>` rendering — **no new frontend dependency**. Resolution picker incl. "auto-fit".
+- **In-browser VNC connection management (Beta).** Same pattern for VNC (RFB) targets — verified against
+  a real VNC server.
+  - Per-IP `vnc_enabled` toggle (migration 0084); permission `can_use_vnc`; detail-page split button +
+    "VNC" in Advanced → Connections.
+  - Desktop size is server-decided; the screen has a **Fit / 1:1 scale toggle** (with correct
+    mouse-coordinate mapping when scaled).
+  - **VNC auth support: RFB security types None and VNC Authentication (password) only.** Account-based
+    schemes (UltraVNC MS-Logon, VeNCrypt, RealVNC RA2/RA2ne) are not supported; the connect screen
+    states this.
+- **Optional dependency, zero impact on the base install.** RDP/VNC use `aardwolf` (pinned to a version
+  with prebuilt manylinux wheels → no Rust toolchain needed). Install/upgrade attempt it **best-effort**
+  (`pip install --only-binary=:all: -e ".[rdp]"`); if no wheel exists it fails fast and the feature is
+  simply disabled. The backend detects availability and the UI hides the entry points when absent.
+- The shared **per-user encrypted credential vault** now stores SSH / RDP / VNC credentials
+  (`protocol` + optional `domain`); credential audit records carry the protocol (e.g. `rdp_credential`).
+
+### Changed
+- Advanced → Connections lists SSH/RDP/VNC targets together; the OS column resolves through the same
+  source-precedence as the detail page.
+- nginx WebSocket-upgrade location widened to cover the SSH/RDP/VNC console paths; the upgrade path
+  patches existing sites in place.
+
+### Fixed
+- Audit detail shows `switch_port` as `device@port` (consistent with other pages) and resolves credential
+  targets to a label instead of a raw UUID.
+
+## [0.4.210] — 2026-06-21
+
+### Added
+- **"Remember" SSH credentials (per-user, individually owned).** Each user can store their own
+  password / private key and reuse it next time without retyping:
+  - Backend `ssh_credentials` (migration 0082): password / private key / passphrase are each
+    **envelope-encrypted** (per-field random DEK wrapped by the master KEK = ENCRYPTION_KEY, AAD bound to
+    owner+field); plaintext never hits the DB, logs, or the frontend.
+  - `GET/POST/DELETE /api/v1/ssh-credentials`: owner-only, masked reads (never plaintext).
+  - Connecting now uses a **reference (credential_id)**: the frontend sends only the id; the backend
+    decrypts in-memory at connect time and discards it. `can_use_ssh(target)` is still enforced; scope
+    supports both target-bound and personal-default (any IP the user may reach).
+  - Audit logs the `credential_id` (never plaintext) and flows to the existing SIEM forwarder; disabling a
+    user makes their credentials unusable immediately.
+  - Connect form gains a "Saved credential" dropdown (pick to connect) and a "Remember" toggle.
+
+### Out of scope (roadmap)
+- PTY session recording, MFA re-auth for sensitive targets, external Vault/KMS-backed KEK, SSH CA short-lived certs.
+
+## [0.4.209] — 2026-06-21
+
+### Added
+- **Advanced → Connections page**: a table of all SSH-enabled targets you're allowed to connect to (backend `GET /addresses/ssh/targets`, same deny-by-default filtering as `can_use_ssh`), with sort / live filter / column picker / export, and per-row "SSH" (new tab) or dropdown "open in new window".
+
+### Changed
+- The IP detail "SSH" button now **opens a new tab** (main click) and **a new window** (dropdown); the in-page embedded terminal was removed.
+- SSH connect form reordered: auth method first, password directly under username.
+- Connection status is now a colored-dot pill badge (connected pulses green); disconnect / reconnect / open-in-new-window all have icons.
+
+### Fixed
+- After enabling "SSH management" and saving, the SSH button required a refresh to appear — the PATCH `/addresses/{id}` response didn't compute `ssh_available`; now it does (matching GET).
+
+## [0.4.208] — 2026-06-21
+
+### Added
+- **SSH connection management for IP addresses (embedded / pop-out terminal).** A new "Enable SSH management"
+  toggle in the IP edit dialog; once enabled, authorized users see an "SSH" split button at the top-right of the
+  detail page (left of Edit): the main button opens an xterm.js terminal inline, and the dropdown arrow offers
+  "Open in new window" for a standalone full-page terminal.
+- **Connection security:** the client first exchanges its JWT for a single-use 60-second ticket, then opens a
+  WebSocket with `?ticket=` (bridged to SSH via asyncssh on the backend). Credentials (password / private key)
+  are **sent only at connect time, never stored, never logged**; the target host is fixed to the IP record's
+  address (so it can't be abused as a generic SSH proxy); host keys use trust-on-first-use pinning (mismatch warns);
+  session open/close are audited.
+- **Permission:** a new standalone "SSH access" capability (`users.can_ssh`). Usage is allowed for admins, users
+  with write on the IP, or users with the SSH-access capability who can at least view the IP (deny-by-default).
+  Toggle per user in the Users admin page.
+
+### Changed
+- nginx site config (incl. the external reverse-proxy template) now sets WebSocket upgrade headers and a long
+  read timeout for the SSH terminal (`deploy/nginx/*.conf`). ⚠️ Apply this to the production nginx as well.
+- New frontend deps `@xterm/xterm` / `@xterm/addon-fit` (pure frontend, bundled at build time; picked up
+  automatically by the install/upgrade pnpm install).
+
+## [0.4.207] — 2026-06-19
+
+### Changed
+- **Docker Compose now auto-generates the admin password.** `gen-env.sh` also generates a random `admin`
+  password (printed in its output, stored as `JT_IPAM_ADMIN_PASSWORD` in `.env`, mode 0600); the backend
+  creates the admin on first boot using it, so you can log in straight away — matching the systemd installer's
+  "auto-create admin" experience.
+- **The site's Deployment section is now split into two zones:** "Primary: systemd + apt" and "Optional:
+  Docker Compose", each boxed/badged with its own install / first-password / upgrade commands. The Docker
+  zone spells out that upgrading is `./update.sh` (**not** `jt-ipam.sh upgrade`).
+- docs/INSTALL §2.7 and the deploy/docker README (EN + zh) "first admin" notes updated to match.
+
+## [0.4.206] — 2026-06-19
+
+### Changed
+- **Graylog DSV settings: "Format" and "Token" are now two side-by-side cards** (each bordered / tinted /
+  rounded) for a clear, tidy separation, wrapping on narrow screens — replacing the stacked layout.
+
+## [0.4.205] — 2026-06-19
+
+### Fixed
+- **Two Docker Compose startup issues** (caught by actually running `docker compose` end-to-end):
+  1. **`.env.example` had `BACKEND_BIND_HOST=0.0.0.0`, which the security check rejects** in nginx mode (it
+     requires a loopback bind) → changed to `127.0.0.1`; the container's uvicorn still binds `0.0.0.0` (via the
+     image CMD, only on the compose network, not published to the host).
+  2. **`sync` / `web` started before DB migrations finished** (`depends_on: service_started` only waits for the
+     container to start) → `backend` now has a healthcheck (healthy once uvicorn is listening = after
+     migrations), and `sync` / `web` use `depends_on: service_healthy`, eliminating the first-boot
+     `relation "opnsense_firewalls" does not exist` error.
+- Verified by a full `docker compose up`: all 5 services healthy, HTTP→HTTPS redirect, frontend and `/api`
+  proxy both return 200, admin auto-created, admin login returns an access token, and the `sync` loop runs
+  with zero errors.
+
+## [0.4.204] — 2026-06-19
+
+### Added
+- **Optional Docker Compose deployment** (`deploy/docker/`). A secondary / optional path (systemd + apt
+  remains the primary one): one compose file brings up `postgres` (pgvector) / `redis` / `backend` / `sync`
+  (a background sync loop replacing the systemd timer) / `web` (nginx serving the frontend + reverse-proxying
+  `/api` + self-signed HTTPS). Ships `gen-env.sh` (random secrets) and `update.sh` (`git pull` → rebuild →
+  restart). **Upgrading is just `./update.sh`** — the backend container runs `alembic upgrade head` on start,
+  so there's no manual migration step. Verified end-to-end: images build, a fresh pgvector runs all
+  migrations 0001→0080, the admin is auto-created, and uvicorn boots.
+
+## [0.4.203] — 2026-06-18
+
+### Changed
+- **Proxmox VE VM DSV is now per-cluster (supports multiple PVE clusters / standalone nodes).** Since vmids
+  repeat across clusters, a single global DSV would conflate them. Added a per-cluster endpoint
+  `GET /api/v1/lookup/proxmox/{cluster_id}/vms`; the Graylog DSV settings page lists **one row per cluster**
+  (mirroring OPNsense's multiple firewalls), each with its own URL / lookup table. The global
+  `…/proxmox/vms` (all clusters, de-duplicated) is kept for single-cluster setups.
+
+## [0.4.202] — 2026-06-18
+
+### Added
+- **New Graylog DSV source for Proxmox VE VMs (vmid → VM name).** Endpoint
+  `GET /api/v1/lookup/proxmox/vms` (reusing the Graylog DSV token) maps key = Proxmox VMID to value = the
+  synced VM name, so Graylog can enrich a log's vmid with a readable VM name. If vmids collide across
+  clusters, only the first per vmid is emitted. The Graylog DSV settings page lists it automatically
+  (global, alongside "IP → hostname").
+
+### Fixed
+- **Firewall DSV hint text column indices** also corrected to key = 0, value = 1 (0-based; the previous
+  release only fixed the main guide table and missed this hint string).
+
+## [0.4.201] — 2026-06-18
+
+### Changed
+- **Added a "Delete" button to the subnet detail page toolbar** (with a confirm prompt). Previously you had to
+  go back to the "All subnets" list and use the row trash icon or batch delete — and the actions column is
+  often pushed off the right edge. Now you can delete a subnet straight from its detail page; it refreshes the
+  sidebar subnet tree and returns to the list.
+
+## [0.4.200] — 2026-06-18
+
+### Fixed
+- **Version check flagged an older version as newer.** "Check GitHub latest" compared version strings with
+  `!=`, so `0.4.79` looked newer than `0.4.199` (string-wise `'7' > '1'`); and since releases are pushed to
+  main without a release/tag, it fell back to a stale tag. It now reads `version.py` from the **main branch**
+  (reflecting what's actually published) and compares **numerically** (the tags fallback also picks the
+  numerically-highest).
+
+### Changed
+- **Version Info page layout:** "Check GitHub latest" now sits in the third cell of the top row (next to
+  Current version / Python) instead of spanning its own full-width row.
+- **Hardened LibreNMS auto-create subnet selection to avoid wrong placement.** The target subnet is now the
+  *single most-specific* (longest-prefix) match: nested ranges pick the most specific; under **overlapping
+  subnets where two+ share the longest prefix, it skips rather than guessing** (better to not create than
+  create in the wrong unit); no creation if no existing subnet contains the IP. Set the instance's subnet
+  scope to disambiguate.
+
+## [0.4.199] — 2026-06-18
+
+### Fixed
+- **Graylog DSV guide had the wrong Key/Value column indices.** Graylog's "DSV File from HTTP" adapter uses
+  **0-based** column indices, so the correct values are **Key column = 0, Value column = 1**; the guide page
+  and README previously said 1/2.
+
+## [0.4.198] — 2026-06-18
+
+### Fixed
+- **Firewall rule DSV (`rid → alias`) dropped UUID-format rules.** A filterlog `rid` (the pf rule label) comes
+  in two formats: a 32-char md5 (pure hex) and a UUID (with hyphens). The old `_RL_LABEL` regex `[0-9A-Za-z]+`
+  excluded hyphens, so rules with a UUID label failed to match entirely and were skipped — only the md5-labeled
+  ones survived (one firewall captured 10 rules when it should have been 59, covering 44 aliases). The pattern
+  now captures the full quoted label content (which *is* the `rid`), covering md5 / UUID / custom labels.
+  > Note: `rid → alias` only ever covers aliases referenced by a labeled rule; aliases not used in any rule have
+  > no `rid` (and never appear in filterlog), which is expected.
+
+## [0.4.197] — 2026-06-18
+
+### Added
+- **Cert-distribution agents can link to a device.** The agent edit dialog gains a "Linked device" picker
+  (`cert_agents.device_id`, migration 0080, SET NULL on device delete). Once linked: ① the agent **name**
+  in the distribution-agents list and the **Advanced → Cert distribution status** page becomes a clickable
+  link to that device's detail; ② the **source-IP column** becomes clickable — the backend resolves the
+  agent's reported source IP to its IPAM address (preferring the one attached to the linked device under
+  overlapping ranges) and links to it. Falls back to plain text when there is no linked device or the
+  source IP has no matching address.
+
+### Changed
+- **Graylog DSV guide tweaks.** "Format" (output setting) and "Regenerate token" (the key) are unrelated and
+  no longer share a row. The Extractor and Pipeline are **alternatives** (pick one), not sequential steps —
+  they are now "Method A / Method B" under Step 2 sharing one "log field" input, instead of being numbered
+  Steps 2 and 3. The click-to-copy toast now says "Copied to clipboard".
+
+## [0.4.196] — 2026-06-18
+
+### Added
+- **LibreNMS sync can auto-create discovered IPs.** Each LibreNMS instance gains an "Auto-create
+  discovered IPs" toggle (default on): on sync, each monitored device's **primary IP** is auto-created
+  as an IPAddress inside the matching existing subnet (tagged `discovery_source=librenms`). Device
+  primary IPs only — not ARP neighbours; if the instance has a subnet scope, only within that scope; and
+  skipped if the subnet does not exist in IPAM yet. Fixes the confusing "0 used / live status all zero"
+  state when only LibreNMS is connected (no scan agent): LibreNMS imports devices and previously only
+  stamped liveness onto pre-existing IPs, never creating them.
+
+### Fixed
+- **Dashboard "live status" miscounted scanner/LibreNMS-confirmed online IPs as "unknown".** The counter
+  matched against case-mismatched literals (`Online (scanner)` etc.), but the values actually written are
+  lowercase with a source suffix (`online (scanner)` / `online (librenms)`) → now uses
+  `startswith("online")` (matching `recompute_effective_status`).
+
+### Changed
+- **Default chat model is now `gemma4:26b`** (was `gpt-oss:120b`) — aligning the compiled default with
+  the README's existing recommendation; applies to anything that hasn't overridden it in LLM settings
+  (including fresh installs). Existing overrides are unaffected.
+- **Docs:** the Local AI section now notes that no LLM Server is bundled — set one up on a GPU-capable
+  host and point jt-ipam at it.
+
+## [0.4.195] — 2026-06-18
+
+### Changed
+- **Graylog DSV page cleanup.** The DSV sources table loses the redundant "Copy" button in the actions
+  column (value copying already lives in the guide below — click any value to copy); the "Details" button
+  is renamed to "URLs / settings" to better describe the lookup URLs and settings it shows.
+- **"Log field to query" input moved into Step 2 (Extractor).** It used to sit orphaned between Step 1 and
+  Step 2 with no step number; it now lives where it is first used (above the Extractor's Source field), and
+  the Step 3 (Pipeline) text now points at "the log field configured in Step 2".
+
+## [0.4.194] — 2026-06-18
+
+### Changed
+- **Graylog DSV guide polish.** The setup steps now use prominent numbered circles (matching the cert
+  install help), and every source — including the firewall rule/alias DSVs — shows **both** the Extractor
+  and the Pipeline method (each with the concrete field / Lookup Table / output for that source). The
+  config tables now tint the left (field-name) column to separate it from the values, and every value you
+  paste into Graylog is **click-to-copy** (click any highlighted value).
+
+## [0.4.193] — 2026-06-18
+
+### Changed
+- **Graylog DSV page: the endpoint list is now a real data table and drives the guide.** The DSV sources
+  table gains sorting, a column picker, a quick-filter box and a refresh button; clicking a row selects
+  that source and the Graylog setup guide below re-renders for it (correct lookup URL, Lookup Table
+  names, key/value columns and a matching pipeline rule — IP→hostname keeps the LAN cidr_match guard,
+  firewall rule/alias sources use a plain rid/alias lookup), with a fade/slide transition when switching.
+  The page also drops its fixed max-width and uses the full width. Term: "詳情" → "詳細資料".
+
+## [0.4.192] — 2026-06-18
+
+### Changed
+- **Graylog DSV page reworked into one extensible endpoint table + detail drawer.** Instead of stacking a
+  separate card with two URL boxes per DSV source (which got cluttered as firewalls were added), all DSV
+  endpoints (IP→hostname plus each firewall's rule and alias lookups) now appear in a single table
+  (name / mapping / status / actions); clicking "Details" opens a drawer with the HTTPS + intranet-HTTP
+  URLs, copy buttons, and per-source settings (the IP→hostname enable/path live there). The shared format
+  and token sit above the table. New DSV types only need a row in the source list, so the layout scales.
+
+## [0.4.191] — 2026-06-18
+
+### Added
+- **OPNsense firewall Graylog DSV (rule label → alias, and alias → members).** In addition to the existing
+  IP→hostname DSV, each OPNsense firewall can now expose two token-protected lookup tables for Graylog to
+  enrich firewall logs: `/api/v1/lookup/firewall/{id}/rule-aliases` (key = filterlog `rid` / pf rule
+  label, value = the alias names that rule references) and `/api/v1/lookup/firewall/{id}/aliases`
+  (key = alias name, value = member list). The rule-label map is parsed each sync cycle from
+  `/api/diagnostics/firewall/pf_statistics/rules` (covers user + plugin + auto rules); the alias DSV uses
+  the already-synced alias content. Enable per firewall with the new "Expose firewall DSV" toggle
+  (Integrations → OPNsense); the lookup URLs (per firewall, distinct paths) appear on the Graylog DSV
+  settings page. Migration 0078 (opnsense_rule_labels + opnsense_firewalls.expose_dsv).
+
+## [0.4.190] — 2026-06-17
+
+### Changed
+- **Circuits table now shows bandwidth, static IP and gateway columns.** These fields already existed on
+  the circuit (and in the edit form) but weren't surfaced in the list; added a human-readable bandwidth
+  column (↓down / ↑up, formatted as Gbps/Mbps/kbps) plus the static IP/CIDR and gateway columns (all
+  toggleable in the column picker).
+
+## [0.4.189] — 2026-06-17
+
+### Security
+- **Cleared the open Dependabot alerts** (frontend build toolchain) by pinning patched versions via
+  `pnpm.overrides`: `form-data` ≥4.0.6 (CRLF injection, GHSA-hmw2-7cc7-3qxx — reached via axios/jsdom),
+  `vite` ≥6.4.3 (`server.fs.deny` bypass on Windows, GHSA-fx2h-pf6j-xcff — also fixes the bundled
+  launch-editor NTLMv2 advisory), and `js-yaml` ≥4.2.0 (quadratic-complexity DoS in merge keys). `pnpm
+  audit` is now clean and the build is unchanged (vite stays in 6.x). These are build/dev dependencies and
+  are not part of the shipped browser bundle.
+
+## [0.4.188] — 2026-06-17
+
+### Changed
+- **The scan-agent installer no longer installs avahi (mDNS) by default.** `avahi-utils` depends on
+  `avahi-daemon`, so installing it brings up a resident service that listens on UDP 5353 and announces
+  the host over mDNS — an unwanted side effect on most servers. The installer now installs only `nmap`
+  (OS) and `samba-common-bin` (NetBIOS), neither of which starts a daemon; mDNS is opt-in via
+  `JT_IPAM_ENABLE_MDNS=1`. (The main server install/upgrade never touched these.) The agent
+  install-help note now flags that avahi-utils brings up avahi-daemon.
+
+## [0.4.187] — 2026-06-17
+
+### Changed
+- **NetBIOS / mDNS hostname sources now show localized labels** in the IP detail panel (the source tags
+  and the "pin hostname source" dropdown), matching the source-precedence page. Added a regression test
+  asserting NetBIOS / mDNS names from a scan-agent report are recorded as distinct `netbios` / `mdns`
+  observation sources.
+
+## [0.4.186] — 2026-06-17
+
+### Fixed
+- **Save button in the IP address edit modal did nothing / lost edits (issue #6, thanks @lin-junyou).**
+  The conditionally-rendered action buttons (Save / Edit / Create / Cancel / Back) and the delete
+  popconfirm shared a slot via `v-if`/`v-else` with no unique `:key`, so Vue reused the vnode across the
+  view↔edit switch and kept the *previous* branch's `@click` — clicking Save fired Back/Edit and the edit
+  was silently dropped. Gave each conditional button/popconfirm a stable `key` (both the inline
+  `#header-extra` and the modal `#footer`).
+- **Install on Ubuntu 26 failed with "requires a different Python: 3.14 not in '<3.14,>=3.11'" (issue #5,
+  thanks @Ghucos).** Ubuntu 26.04 ships Python 3.14; the backend's `requires-python` capped it below 3.14,
+  so pip refused to install. Widened to `>=3.11,<3.15` to allow 3.14.
+
+## [0.4.185] — 2026-06-16
+
+### Added
+- **NetBIOS and mDNS name probes are now actually implemented** in the scan agent (previously they were
+  advertised as selectable probes but were no-op Phase-B stubs that produced no name). The agent now runs
+  `nmblookup -A <ip>` (or `nbtscan`) for NetBIOS and `avahi-resolve -a <ip>` for mDNS against alive hosts
+  that have those probes enabled, and reports the resolved names. They are recorded as **distinct hostname
+  sources** (`netbios` / `mdns`) so you can order or disable them independently in **Name / ARP source
+  precedence**. Agent bumped to v1.4.0 (self-updates). SNMP remains intentionally unimplemented
+  (credential-based). No migration (the observation `source` column is unconstrained).
+
+## [0.4.184] — 2026-06-16
+
+### Changed
+- **Login language switcher is now a click-to-open dropdown** listing both languages, instead of a button
+  that toggled immediately.
+- **"Save order" buttons on the source-precedence page now have a save icon** (all five sections).
+
+## [0.4.183] — 2026-06-16
+
+### Changed
+- **Login page now has a language switcher** (zh-TW ⇄ en-US) in the card header, so you can switch
+  language before signing in.
+- **Notification bell tidy-ups:** an icon before the "Notifications" title and on the "mark all read"
+  button, and the list now scrolls inside the popover (capped height) instead of growing past the screen
+  when there are many notifications.
+- **IP-request notifications are now Chinese** ("IP 申請已核准" / "IP 申請已拒絕") instead of the
+  hardcoded English "IP request approved/rejected" (matching the other in-app notifications).
+- **Scan-agents table column widths:** the source-IP column no longer wraps, and the spare width is
+  shared between the name and last-error columns instead of leaving the name column overly wide.
+
+## [0.4.182] — 2026-06-16
+
+### Changed
+- **Login: SSO buttons only show for configured providers.** `/auth/realms` now also reports which SSO
+  providers (OIDC / SAML) are enabled, and the login page renders a provider's button only when it is
+  actually configured — so clicking e.g. "Sign in with SAML" no longer dumps a raw `{"detail":"SAML is
+  disabled"}` page. The whole "or SSO" section is hidden when neither is enabled.
+- **Login: the jt-ipam logo now appears before the title** on the login card.
+- **Webhooks: events are now a checkbox list with descriptions** instead of a free-text tag input. The
+  catalogue lists exactly the events the backend emits (`subnet.created`, `ip_request.created` /
+  `.fulfilled` / `.rejected`, `anomaly.detected`) plus `*` (all), each with a one-line explanation.
+- **Integration scope: tidier layout.** On the six integration settings forms the scope-subnet dropdown
+  and the overlap warning now stack in a full-width block instead of being squeezed side-by-side.
+- **RIPE / TWNIC import: less cramped fields** — added comfortable spacing between the Handle / CIDR /
+  target-section rows so the hints no longer touch the next label.
+
+### Added
+- **LLM settings: optional chat context length (`num_ctx`).** Lets an admin raise the chat model's
+  context window so tool-heavy MCP chats with large injected data don't overflow Ollama's default (~4096)
+  and get silently truncated. Blank / 0 = use the model/Ollama default; flows into Ollama `options.num_ctx`
+  for chat only (not embeddings).
+
+## [0.4.181] — 2026-06-16
+
+### Changed
+- **Tidier certificate detail panel.** The per-version detail in the certificate Files modal (domains /
+  subject / issuer / serial / validity / fingerprint / uploaded-at) is now a two-column aligned grid
+  (definition list) so every value lines up in a single column, with serial and fingerprint in a
+  monospace font. Previously it was a ragged list of `label：value` lines.
+
 ## [0.4.180] — 2026-06-16
 
 ### Fixed

@@ -115,6 +115,12 @@ class IPAddressUpdate(StrictModel):
     custom_fields: dict[str, Any] | None = None
     # feature A：固定以某來源 hostname 為準（"" / null = 跟全域優先序）
     hostname_source_pin: Annotated[str | None, Field(max_length=16)] = None
+    # SSH 連線管理開關（沿用 IP 編輯權限）
+    ssh_enabled: bool | None = None
+    # RDP 連線管理開關（沿用 IP 編輯權限）
+    rdp_enabled: bool | None = None
+    # VNC 連線管理開關（沿用 IP 編輯權限）
+    vnc_enabled: bool | None = None
     # ip / subnet_id 不允許更新；如要搬移走專用 endpoint
 
 
@@ -136,6 +142,15 @@ class IPAddressRead(IPAddressBase):
     effective_status: str | None
     # 所屬 subnet 是否啟用掃描；前端用來判定「沒掃描的網段不該標離線紅燈」
     subnet_scan_enabled: bool | None = None
+    # SSH 連線管理：是否已啟用 + 目前使用者是否可用（後端依權限算好給前端顯示按鈕）
+    ssh_enabled: bool = False
+    ssh_available: bool = False
+    # RDP 連線管理：是否已啟用 + 目前使用者是否可用
+    rdp_enabled: bool = False
+    rdp_available: bool = False
+    # VNC 連線管理：是否已啟用 + 目前使用者是否可用
+    vnc_enabled: bool = False
+    vnc_available: bool = False
     # 後端從 oui_vendors 表 lookup 帶上來；前端不用自己查
     mac_vendor: str | None = None
     # 關聯裝置名稱（清單顯示用，前端不用再查）

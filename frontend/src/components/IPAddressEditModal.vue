@@ -5,20 +5,20 @@
  *
  * 預設 read-only 顯示完整欄位；按「編輯」進 edit 模式才能改。
  */
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NModal, NCard, NSpace, NButton, NDescriptions, NDescriptionsItem,
   NForm, NFormItem, NInput, NSelect, NSwitch, NPopconfirm, NTag, NIcon,
   NCollapse, NCollapseItem, NTimeline, NTimelineItem, NText, NEmpty, NSpin,
-  NTooltip, NCheckbox, NCheckboxGroup,
+  NTooltip, NCheckbox, NCheckboxGroup, NButtonGroup, NDropdown, NDivider,
   useMessage,
 } from "naive-ui";
 import type { IPAddress } from "@/types";
 import { updateAddress, deleteAddress, createAddress, type IPAddressUpdate } from "@/api/addresses";
 import { getAddressHistory, getAddressSwitchPort, type IPChangeLog, type SwitchPortInfo } from "@/api/ip_history";
 import { getHostnameSources, clearHostnameSource, type HostnameSources } from "@/api/hostname";
-import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon } from "@/icons";
+import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon, TerminalIcon, DisplayIcon, VncIcon, ChevronDownIcon, OpenNewWindowIcon, renderIcon } from "@/icons";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useCustomers } from "@/composables/useCustomers";
@@ -174,6 +174,12 @@ const emit = defineEmits<{
   (e: "deleted", id: string): void;
   (e: "created", v: IPAddress): void;
   (e: "back"): void;
+  (e: "ssh-open"): void;
+  (e: "ssh-popout"): void;
+  (e: "rdp-open"): void;
+  (e: "rdp-popout"): void;
+  (e: "vnc-open"): void;
+  (e: "vnc-popout"): void;
 }>();
 
 const { t, locale } = useI18n();
@@ -186,6 +192,41 @@ const excludedProbes = ref<string[]>([]);
 const editMode = ref(false);
 const saving = ref(false);
 const deleting = ref(false);
+
+// 卡片寬度不足時，SSH/RDP/VNC 連線按鈕收成只有 icon（inline 詳情頁用）
+const rootEl = ref<any>(null);
+const consoleCompact = ref(false);
+let cro: ResizeObserver | null = null;
+onMounted(() => {
+  const el = (rootEl.value?.$el ?? rootEl.value) as HTMLElement | undefined;
+  if (el instanceof HTMLElement) {
+    cro = new ResizeObserver(() => { consoleCompact.value = el.clientWidth < 900; });
+    cro.observe(el);
+  }
+});
+onBeforeUnmount(() => { cro?.disconnect(); cro = null; });
+
+// SSH 連線分割按鈕的下拉選單（另開視窗）
+const sshMenuOptions = computed(() => [
+  { label: t("ssh.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) },
+]);
+function onSshMenu(key: string) {
+  if (key === "popout") emit("ssh-popout");
+}
+// RDP 連線分割按鈕的下拉選單（另開視窗）
+const rdpMenuOptions = computed(() => [
+  { label: t("rdp.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) },
+]);
+function onRdpMenu(key: string) {
+  if (key === "popout") emit("rdp-popout");
+}
+// VNC 連線分割按鈕的下拉選單（另開視窗）
+const vncMenuOptions = computed(() => [
+  { label: t("vnc.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) },
+]);
+function onVncMenu(key: string) {
+  if (key === "popout") emit("vnc-popout");
+}
 
 const isCreate = computed(() => !props.address && !!props.createContext);
 
@@ -201,6 +242,9 @@ interface FormState {
   customer_id: string | null;
   device_id: string | null;
   hostname_source_pin: string;  // "" = 自動 (跟全域優先序)
+  ssh_enabled: boolean;
+  rdp_enabled: boolean;
+  vnc_enabled: boolean;
 }
 
 const form = ref<FormState>(emptyForm());
@@ -213,6 +257,9 @@ function emptyForm(): FormState {
     customer_id: null,
     device_id: null,
     hostname_source_pin: "",
+    ssh_enabled: false,
+    rdp_enabled: false,
+    vnc_enabled: false,
   };
 }
 
@@ -254,6 +301,9 @@ function fromAddress(a: IPAddress): FormState {
     customer_id: a.customer_id ?? null,
     device_id: (a as any).device_id ?? null,
     hostname_source_pin: a.hostname_source_pin ?? "",
+    ssh_enabled: !!a.ssh_enabled,
+    rdp_enabled: !!a.rdp_enabled,
+    vnc_enabled: !!a.vnc_enabled,
   };
 }
 
@@ -369,7 +419,7 @@ const pinOptions = computed(() => {
     { label: t("hostnameSrc.auto"), value: "" },
   ];
   for (const o of hostnameSources.value?.observations ?? []) {
-    opts.push({ label: `${o.source} — ${o.hostname}`, value: o.source });
+    opts.push({ label: `${labelSource(o.source)} — ${o.hostname}`, value: o.source });
   }
   return opts;
 });
@@ -442,6 +492,9 @@ async function save() {
       customer_id: form.value.customer_id ?? null,
       device_id: form.value.device_id ?? null,
       hostname_source_pin: form.value.hostname_source_pin || null,
+      ssh_enabled: form.value.ssh_enabled,
+      rdp_enabled: form.value.rdp_enabled,
+      vnc_enabled: form.value.vnc_enabled,
     };
     const updated = await updateAddress(props.address?.id, payload);
     hostnameSourcesLoaded.value = false;  // 重新整理來源/有效 hostname
@@ -473,7 +526,7 @@ async function remove() {
 </script>
 
 <template>
-  <component :is="inline ? 'div' : NModal" v-bind="inline ? {} : { show: props.show, 'onUpdate:show': (v: boolean) => emit('update:show', v) }">
+  <component :is="inline ? 'div' : NModal" ref="rootEl" v-bind="inline ? {} : { show: props.show, 'onUpdate:show': (v: boolean) => emit('update:show', v) }">
     <n-card
       :style="inline ? 'width: 100%' : 'width: 880px; max-width: 95vw'"
       :bordered="false"
@@ -505,10 +558,57 @@ async function remove() {
       <template v-if="inline && !isCreate" #header-extra>
         <n-space align="center" :size="8" :wrap-item="false">
           <template v-if="!editMode">
-            <n-button type="primary" size="small" @click="editMode = true">
+            <!-- SSH 連線分割按鈕：主鍵嵌入終端機、下箭頭可另開視窗（僅在啟用且有權限時顯示） -->
+            <template v-if="props.address?.ssh_available">
+              <n-button-group key="hx-ssh">
+                <n-button type="info" size="small" :title="t('ssh.connect')" @click="emit('ssh-open')">
+                  <template #icon><n-icon><TerminalIcon /></n-icon></template>
+                  <span v-if="!consoleCompact">{{ t("ssh.connect") }}</span>
+                </n-button>
+                <n-dropdown trigger="click" :options="sshMenuOptions" @select="onSshMenu">
+                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
+                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
+                  </n-button>
+                </n-dropdown>
+              </n-button-group>
+            </template>
+            <!-- RDP 連線分割按鈕：主鍵新分頁、下箭頭另開視窗（僅在啟用且有權限時顯示） -->
+            <span v-if="props.address?.rdp_available" key="hx-rdp" class="conn-beta-wrap">
+              <n-button-group>
+                <n-button type="info" size="small" :title="t('rdp.connect')" @click="emit('rdp-open')">
+                  <template #icon><n-icon><DisplayIcon /></n-icon></template>
+                  <span v-if="!consoleCompact">{{ t("rdp.connect") }}</span>
+                </n-button>
+                <n-dropdown trigger="click" :options="rdpMenuOptions" @select="onRdpMenu">
+                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
+                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
+                  </n-button>
+                </n-dropdown>
+              </n-button-group>
+              <span class="conn-beta-badge">{{ t("rdp.beta") }}</span>
+            </span>
+            <!-- VNC 連線分割按鈕：主鍵新分頁、下箭頭另開視窗（僅在啟用且有權限時顯示） -->
+            <span v-if="props.address?.vnc_available" key="hx-vnc" class="conn-beta-wrap">
+              <n-button-group>
+                <n-button type="info" size="small" :title="t('vnc.connect')" @click="emit('vnc-open')">
+                  <template #icon><n-icon><VncIcon /></n-icon></template>
+                  <span v-if="!consoleCompact">{{ t("vnc.connect") }}</span>
+                </n-button>
+                <n-dropdown trigger="click" :options="vncMenuOptions" @select="onVncMenu">
+                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
+                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
+                  </n-button>
+                </n-dropdown>
+              </n-button-group>
+              <span class="conn-beta-badge">{{ t("vnc.beta") }}</span>
+            </span>
+            <!-- 連線鈕（SSH/RDP/VNC）與編輯/刪除間只留一條分隔線 -->
+            <n-divider v-if="props.address?.ssh_available || props.address?.rdp_available || props.address?.vnc_available"
+                       key="hx-conn-div" vertical />
+            <n-button key="hx-edit" type="primary" size="small" @click="editMode = true">
               <template #icon><n-icon><EditIcon /></n-icon></template>{{ t("common.edit") }}
             </n-button>
-            <n-popconfirm @positive-click="remove">
+            <n-popconfirm key="hx-del-view" @positive-click="remove">
               <template #trigger>
                 <n-button type="error" ghost size="small" :loading="deleting">
                   <template #icon><n-icon><DeleteIcon /></n-icon></template>{{ t("common.delete") }}
@@ -516,12 +616,12 @@ async function remove() {
               </template>
               {{ t("common.confirm_delete") }}
             </n-popconfirm>
-            <n-button size="small" @click="emit('back')">
+            <n-button key="hx-back" size="small" @click="emit('back')">
               <template #icon><n-icon><ArrowLeftIcon /></n-icon></template>{{ t("common.back") }}
             </n-button>
           </template>
           <template v-else>
-            <n-popconfirm @positive-click="remove">
+            <n-popconfirm key="hx-del-edit" @positive-click="remove">
               <template #trigger>
                 <n-button type="error" ghost size="small" :loading="deleting">
                   <template #icon><n-icon><DeleteIcon /></n-icon></template>{{ t("common.delete") }}
@@ -529,10 +629,10 @@ async function remove() {
               </template>
               {{ t("common.confirm_delete") }}
             </n-popconfirm>
-            <n-button size="small" @click="close">
+            <n-button key="hx-cancel" size="small" @click="close">
               <template #icon><n-icon><CancelIcon /></n-icon></template>{{ t("common.cancel") }}
             </n-button>
-            <n-button type="success" size="small" :loading="saving" @click="save">
+            <n-button key="hx-save" type="success" size="small" :loading="saving" @click="save">
               <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
             </n-button>
           </template>
@@ -767,12 +867,30 @@ async function remove() {
           <n-form-item :label="t('addresses.ptr_ignore')">
             <n-switch v-model:value="form.ptr_ignore" />
           </n-form-item>
+          <n-form-item :label="t('ssh.enable_label')">
+            <n-space vertical :size="2" style="width:100%">
+              <n-switch v-model:value="form.ssh_enabled" />
+              <span style="font-size: 11px; opacity: .7">{{ t("ssh.enable_hint") }}</span>
+            </n-space>
+          </n-form-item>
+          <n-form-item :label="t('rdp.enable_label')">
+            <n-space vertical :size="2" style="width:100%">
+              <n-switch v-model:value="form.rdp_enabled" />
+              <span style="font-size: 11px; opacity: .7">{{ t("rdp.enable_hint") }}</span>
+            </n-space>
+          </n-form-item>
+          <n-form-item :label="t('vnc.enable_label')">
+            <n-space vertical :size="2" style="width:100%">
+              <n-switch v-model:value="form.vnc_enabled" />
+              <span style="font-size: 11px; opacity: .7">{{ t("vnc.enable_hint") }}</span>
+            </n-space>
+          </n-form-item>
         </n-form>
       </div>
 
       <template v-if="!inline" #footer>
         <n-space justify="space-between">
-          <n-popconfirm v-if="!isCreate && (!inline || editMode)" @positive-click="remove">
+          <n-popconfirm v-if="!isCreate && (!inline || editMode)" key="ft-del" @positive-click="remove">
             <template #trigger>
               <n-button type="error" ghost size="small" :loading="deleting" :disabled="!props.address">
                 <template #icon><n-icon><DeleteIcon /></n-icon></template>
@@ -783,19 +901,19 @@ async function remove() {
           </n-popconfirm>
           <span v-else></span>
           <n-space>
-            <n-button v-if="!inline || editMode || isCreate" @click="close">
+            <n-button v-if="!inline || editMode || isCreate" key="ft-cancel" @click="close">
               <template #icon><n-icon><CancelIcon /></n-icon></template>
               {{ t("common.cancel") }}
             </n-button>
-            <n-button v-if="isCreate" type="primary" :loading="saving" @click="save">
+            <n-button v-if="isCreate" key="ft-create" type="primary" :loading="saving" @click="save">
               <template #icon><n-icon><PlusIcon /></n-icon></template>
               {{ t("common.create") }}
             </n-button>
-            <n-button v-else-if="!editMode" type="primary" @click="editMode = true">
+            <n-button v-else-if="!editMode" key="ft-edit" type="primary" @click="editMode = true">
               <template #icon><n-icon><EditIcon /></n-icon></template>
               {{ t("common.edit") }}
             </n-button>
-            <n-button v-else type="success" :loading="saving" @click="save">
+            <n-button v-else key="ft-save" type="success" :loading="saving" @click="save">
               <template #icon><n-icon><SaveIcon /></n-icon></template>
               {{ t("common.save") }}
             </n-button>
@@ -816,4 +934,12 @@ async function remove() {
 .nat-ref:hover { background: rgba(24, 160, 88, 0.12); }
 .nat-ref-name { font-weight: 500; }
 .nat-ref-meta { font-size: 12px; opacity: 0.6; font-family: monospace; }
+/* RDP/VNC Beta 角落小標：疊在按鈕右上角，不佔橫向空間 */
+.conn-beta-wrap { position: relative; display: inline-flex; }
+.conn-beta-badge {
+  position: absolute; top: -7px; right: -6px; z-index: 2; pointer-events: none;
+  font-size: 9px; font-weight: 700; line-height: 1; letter-spacing: .2px;
+  padding: 1px 4px; border-radius: 999px;
+  color: #fff; background: #d99812; box-shadow: 0 0 0 1.5px var(--n-color, #fff);
+}
 </style>

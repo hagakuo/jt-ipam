@@ -2,8 +2,9 @@
 
 > 繁體中文版：[INSTALL_zh-TW.md](INSTALL_zh-TW.md)
 
-For **Proxmox LXC, bare metal, and VMs** (Ubuntu 22.04+/Debian 12+). This project
-**does not use Docker**; it installs directly with systemd + apt.
+For **Proxmox LXC, bare metal, and VMs** (Ubuntu 22.04+/Debian 12+). The **primary, recommended** install
+uses **systemd + apt** directly (no Docker). A Docker Compose path exists but is **optional / secondary, not
+the preferred mode** — see [§2.7](#27-optional-docker-compose-not-the-preferred-mode).
 
 > Security is a day-one requirement: HTTPS is enforced in all environments; the cert can be
 > served via an nginx reverse proxy or a self-signed cert served directly by uvicorn. If SSL
@@ -162,6 +163,47 @@ openssl s_client -connect ipam.example.com:443 -servername ipam.example.com </de
 
 > To regenerate a self-signed cert yourself: `sudo bash /opt/jt-ipam/scripts/generate-self-signed-cert.sh` then `systemctl restart jt-ipam-backend`.
 > To move from direct to an nginx reverse proxy: set `BACKEND_TLS_MODE=nginx` in `/etc/jt-ipam/backend.env`, install the nginx site, then restart the backend + reload nginx.
+
+### 2.7 Optional: Docker Compose (NOT the preferred mode)
+
+> ⚠️ **Docker Compose is a secondary / optional path — it is NOT the project's preferred or primary
+> deployment mode.** The supported, recommended install is **systemd + apt** (sections above). Use Compose
+> only for a quick evaluation or a container-first environment; the systemd path gets the most testing.
+
+The files live in [`deploy/docker/`](https://github.com/jasoncheng7115/jt-ipam/tree/main/deploy/docker). One
+compose file brings up `postgres` (pgvector), `redis`, `backend` (FastAPI/uvicorn), `sync` (a background sync
+loop that replaces the systemd timer), and `web` (nginx serving the frontend + reverse-proxying `/api`, with a
+self-signed HTTPS cert on first run).
+
+```bash
+# clone the repo first — gen-env.sh / docker-compose.yml live inside it under deploy/docker/
+git clone https://github.com/jasoncheng7115/jt-ipam.git
+cd jt-ipam/deploy/docker
+./gen-env.sh                   # create .env with random secrets (once)
+docker compose up -d --build   # build images and start the stack
+# then open https://localhost  (self-signed cert on first run — trust the warning)
+```
+
+- **First admin:** `gen-env.sh` generates a random `admin` password (printed in its output, stored as
+  `JT_IPAM_ADMIN_PASSWORD` in `.env`, mode 0600) and the backend creates the admin on first boot — change it
+  after the first login. Prefer your own? Set `JT_IPAM_ADMIN_PASSWORD` in `.env` before the first `up`; or
+  leave it empty and create one later with
+  `docker compose exec backend python -m app.cli.bootstrap create-admin --username admin --email admin@example.com --password-stdin`.
+- **Real TLS cert:** drop `server.crt` / `server.key` into `deploy/docker/certs/` to override the self-signed one.
+- **Ports / domain:** edit `HTTP_PORT` / `HTTPS_PORT` / `JT_IPAM_SERVER_NAME` and the matching `APP_PUBLIC_URL` / `CORS_ORIGINS` in `.env`.
+
+**Updating to a newer version** is one command:
+
+```bash
+./update.sh    # git pull  ->  docker compose build  ->  docker compose up -d
+```
+
+Database migrations run **automatically** when the backend container starts (its entrypoint runs
+`alembic upgrade head`), so there is no separate migration step.
+
+> Not bundled in the Compose setup: the plaintext Graylog DSV port 8088, and the GeoIP / OUI scheduled
+> refreshes. See [`deploy/docker/README.md`](https://github.com/jasoncheng7115/jt-ipam/blob/main/deploy/docker/README.md)
+> for full details.
 
 ---
 

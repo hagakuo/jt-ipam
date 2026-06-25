@@ -26,12 +26,22 @@ command -v ping >/dev/null || { echo "ping is required (iputils-ping)" >&2; exit
 # Optional probe tooling — unlocks extra probes the agent can run (capability auto-detected):
 #   nmap            → OS detection      | samba-common-bin → NetBIOS (nmblookup)
 #   avahi-utils     → mDNS (avahi-resolve)
+# nmap and samba-common-bin do NOT start any daemon. avahi-utils is DIFFERENT: it depends on
+# avahi-daemon, so installing it brings up a resident service that listens on UDP 5353 and
+# announces this host over mDNS — therefore it is NOT installed by default. Set
+# JT_IPAM_ENABLE_MDNS=1 to opt in to mDNS probing. JT_IPAM_SKIP_PROBE_TOOLS=1 skips all of them.
 # Best-effort: skipped if apt-get is unavailable or offline; install manually otherwise.
 if [[ -z "${JT_IPAM_SKIP_PROBE_TOOLS:-}" ]] && command -v apt-get >/dev/null; then
-  echo "==> Installing optional probe tools (nmap / samba-common-bin / avahi-utils)…"
+  PROBE_PKGS=(nmap samba-common-bin)
+  if [[ -n "${JT_IPAM_ENABLE_MDNS:-}" ]]; then
+    PROBE_PKGS+=(avahi-utils)   # pulls in avahi-daemon (UDP 5353, mDNS announce) — opt-in only
+  fi
+  echo "==> Installing optional probe tools (${PROBE_PKGS[*]})…"
   DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nmap samba-common-bin avahi-utils || \
-    echo "    (some probe tools failed to install; NetBIOS/mDNS/OS probes may stay unavailable)"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${PROBE_PKGS[@]}" || \
+    echo "    (some probe tools failed to install; NetBIOS/OS probes may stay unavailable)"
+  [[ -z "${JT_IPAM_ENABLE_MDNS:-}" ]] && \
+    echo "    (mDNS probe skipped — set JT_IPAM_ENABLE_MDNS=1 to also install avahi-utils + avahi-daemon)"
 fi
 
 echo "==> Installing agent program to ${DEST}"

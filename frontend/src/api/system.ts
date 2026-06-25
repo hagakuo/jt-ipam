@@ -135,6 +135,9 @@ export interface LLMConfig {
   embedding_model: string;
   chat_model: string;
   timeout: number;
+  num_ctx?: number | null;
+  mcp_external_enabled: boolean;
+  mcp_api_key_set: boolean;
 }
 
 export interface LLMConfigPatch {
@@ -143,6 +146,8 @@ export interface LLMConfigPatch {
   embedding_model?: string;
   chat_model?: string;
   timeout?: number;
+  num_ctx?: number | null;
+  mcp_external_enabled?: boolean;
 }
 
 export async function getLLMConfig(): Promise<LLMConfig> {
@@ -153,6 +158,17 @@ export async function getLLMConfig(): Promise<LLMConfig> {
 export async function patchLLMConfig(payload: LLMConfigPatch): Promise<LLMConfig> {
   const { data } = await apiClient.patch<LLMConfig>("/api/v1/system/llm", payload);
   return data;
+}
+
+// 對外 MCP 金鑰（唯讀）：檢視目前明文 / 重新產生
+export async function revealMcpKey(): Promise<string | null> {
+  const { data } = await apiClient.get<{ api_key: string | null }>("/api/v1/system/llm/mcp-key");
+  return data.api_key;
+}
+
+export async function rotateMcpKey(): Promise<string> {
+  const { data } = await apiClient.post<{ api_key: string }>("/api/v1/system/llm/mcp-key/rotate");
+  return data.api_key;
 }
 
 export interface OllamaModel {
@@ -174,6 +190,14 @@ export interface VersionInfo {
   current: string;
   python: string;
   packages: Record<string, string | null>;
+  frontend?: Record<string, string | null>;
+  host?: {
+    os: string | null;
+    kernel: string | null;
+    nginx: string | null;
+    node: string | null;
+    postgres: string | null;
+  };
 }
 
 export interface LatestVersion {

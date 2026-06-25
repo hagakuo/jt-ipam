@@ -16,6 +16,7 @@ export interface UserMe {
   has_visibility?: boolean;
   has_global_read?: boolean;
   can_edit?: boolean;
+  can_ssh?: boolean;
   last_login_at: string | null;
   created_at: string;
 }
@@ -108,6 +109,12 @@ export interface IPAddress {
   last_seen_dns: string | null;
   effective_status: string | null;
   subnet_scan_enabled: boolean | null;
+  ssh_enabled?: boolean;
+  ssh_available?: boolean;
+  rdp_enabled?: boolean;
+  rdp_available?: boolean;
+  vnc_enabled?: boolean;
+  vnc_available?: boolean;
   mac_vendor: string | null;
   device_name: string | null;
   created_at: string;

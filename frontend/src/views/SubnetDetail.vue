@@ -77,13 +77,14 @@ const ipColumnPickerItems = [
   { key: "stale_days", label: t("stale.col_stale") },
   { key: "note", label: t("cols.note") },
 ];
-import { SubnetsIcon, RefreshIcon, UsageIcon, GridIcon, ListIcon, PinIcon, PlusIcon, MissingIcon, SearchIcon, AddressesIcon } from "@/icons";
+import { SubnetsIcon, RefreshIcon, UsageIcon, GridIcon, ListIcon, PinIcon, PlusIcon, MissingIcon, SearchIcon, AddressesIcon, DeleteIcon } from "@/icons";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
 import { apiClient } from "@/api/client";
 import { listAddresses } from "@/api/addresses";
 import { listDhcpRanges } from "@/api/integrations";
-import { getSubnetUsage } from "@/api/subnets";
+import { getSubnetUsage, deleteSubnet } from "@/api/subnets";
 import { getSection } from "@/api/sections";
+import { useSubnetTree } from "@/composables/useSubnetTree";
 import { listVLANs, listVRFs, type VLAN, type VRF } from "@/api/basic";
 import SubnetGrid from "@/components/SubnetGrid.vue";
 import IPAddressEditModal from "@/components/IPAddressEditModal.vue";
@@ -93,6 +94,24 @@ import type { IPAddress, Section, Subnet, SubnetUsage } from "@/types";
 const route = useRoute();
 const router = useRouter();
 const msg = useMessage();
+const { bump: bumpSubnetTree } = useSubnetTree();
+
+// 刪除此子網路（詳情頁工具列，帶確認框；刪除後刷新側邊樹並回子網路清單）
+const deleting = ref(false);
+async function delThisSubnet() {
+  if (!subnet.value) return;
+  deleting.value = true;
+  try {
+    await deleteSubnet(subnet.value.id);
+    bumpSubnetTree();
+    msg.success(t("common.deleted"));
+    void router.push({ name: "subnets" });
+  } catch (e: any) {
+    msg.error(e?.response?.data?.detail ?? t("common.delete_failed"));
+  } finally {
+    deleting.value = false;
+  }
+}
 
 const subnet = ref<Subnet | null>(null);
 const usage = ref<SubnetUsage | null>(null);
@@ -675,6 +694,15 @@ onMounted(() => {
               </n-space>
             </n-popover>
             <n-button size="small" @click="handleExport">{{ t("csv_import.export_button") }}</n-button>
+            <n-popconfirm v-if="subnet" @positive-click="delThisSubnet">
+              <template #trigger>
+                <n-button size="small" type="error" :loading="deleting">
+                  <template #icon><n-icon><DeleteIcon /></n-icon></template>
+                  {{ t("common.delete") }}
+                </n-button>
+              </template>
+              {{ t("subnet_detail.delete_confirm") }}
+            </n-popconfirm>
           </n-space>
         </template>
         <n-descriptions bordered :column="3" size="small" label-placement="left">

@@ -26,7 +26,9 @@ from app.api.v1.dependencies import CurrentUser, require_admin, require_global_r
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.security import decrypt_secret, encrypt_secret
+from app.models.address import IPAddress
 from app.models.certificate import CertAgent, Certificate, CertVersion
+from app.models.device import Device
 from app.models.encrypted_secret import EncryptedSecret
 from app.schemas.base import Paginated
 from app.schemas.certificate import (
@@ -146,6 +148,52 @@ def _to_read(obj: CertAgent) -> CertAgentRead:
     return m
 
 
+async def _resolve_links(
+    session: AsyncSession, agents: list[CertAgent],
+) -> tuple[dict[str, str], dict[str, uuid.UUID]]:
+    """批次解析代理的關聯：device_id → 裝置名稱、last_source_ip → 對應 IPAddress.id。
+    回 (device_names{device_id字串: name}, source_ip_ids{agent_id字串: ip uuid})。
+    重疊網段同 IP 多筆時，優先取「掛在該代理對應裝置上」的那筆，否則取第一筆。"""
+    dev_ids = {a.device_id for a in agents if a.device_id}
+    device_names: dict[str, str] = {}
+    if dev_ids:
+        rows = (await session.execute(
+            select(Device.id, Device.name).where(Device.id.in_(dev_ids))
+        )).all()
+        device_names = {str(i): n for i, n in rows}
+
+    src_ips = {a.last_source_ip for a in agents if a.last_source_ip}
+    by_ip: dict[str, list[tuple[uuid.UUID, Any]]] = {}
+    if src_ips:
+        rows = (await session.execute(
+            select(IPAddress.id, IPAddress.ip, IPAddress.device_id)
+            .where(func.host(IPAddress.ip).in_(list(src_ips)))
+        )).all()
+        for ip_id, ip_val, did in rows:
+            by_ip.setdefault(str(ip_val), []).append((ip_id, did))
+
+    source_ip_ids: dict[str, uuid.UUID] = {}
+    for a in agents:
+        cands = by_ip.get(a.last_source_ip or "", [])
+        if not cands:
+            continue
+        chosen = next(
+            (iid for iid, did in cands if a.device_id and did == a.device_id), None,
+        ) or cands[0][0]
+        source_ip_ids[str(a.id)] = chosen
+    return device_names, source_ip_ids
+
+
+async def _to_reads(session: AsyncSession, agents: list[CertAgent]) -> list[CertAgentRead]:
+    """list/詳情用：_to_read + 補 device_name / source_ip_id。"""
+    items = [_to_read(a) for a in agents]
+    device_names, source_ip_ids = await _resolve_links(session, agents)
+    for it, a in zip(items, agents, strict=True):
+        it.device_name = device_names.get(str(a.device_id)) if a.device_id else None
+        it.source_ip_id = source_ip_ids.get(str(a.id))
+    return items
+
+
 def _key_aad(certificate_id: uuid.UUID, fingerprint: str) -> bytes:
     return f"cert_version:{certificate_id}:{fingerprint}".encode()
 
@@ -205,6 +253,7 @@ async def agents_status(
     now = datetime.now(UTC)
     server_ver = _server_agent_version()
     agents = (await session.execute(select(CertAgent).order_by(CertAgent.name))).scalars().all()
+    device_names, source_ip_ids = await _resolve_links(session, list(agents))
 
     out: list[dict[str, Any]] = []
     for a in agents:
@@ -227,6 +276,9 @@ async def agents_status(
         recent_ips = _recent_source_ips(a)
         out.append({
             "agent": a.name, "enabled": a.enabled,
+            "device_id": str(a.device_id) if a.device_id else None,
+            "device_name": device_names.get(str(a.device_id)) if a.device_id else None,
+            "source_ip_id": str(source_ip_ids[str(a.id)]) if str(a.id) in source_ip_ids else None,
             "last_seen_at": a.last_seen_at.isoformat() if a.last_seen_at else None,
             "last_source_ip": a.last_source_ip,
             "recent_source_ips": recent_ips,
@@ -250,7 +302,7 @@ async def list_agents(
         select(CertAgent).order_by(CertAgent.name).offset((page - 1) * page_size).limit(page_size)
     )).scalars().all()
     return Paginated[CertAgentRead](
-        items=[_to_read(r) for r in rows], total=total, page=page, page_size=page_size,
+        items=await _to_reads(session, list(rows)), total=total, page=page, page_size=page_size,
     )
 
 
@@ -271,6 +323,7 @@ async def create_agent(
         name=payload.name, description=payload.description, enabled=payload.enabled,
         enroll_key_hash=_key_hash(raw_key),
         scope_cert_ids=[str(c) for c in payload.scope_cert_ids],
+        device_id=payload.device_id,
     )
     session.add(obj)
     await session.flush()

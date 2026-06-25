@@ -295,10 +295,19 @@ export interface WirelessSSID { id: string; name: string; description: string | 
 export interface WirelessLink { id: string; ssid_id: string; description: string | null; created_at: string; updated_at: string; }
 
 async function getList<T>(url: string): Promise<T[]> {
-  const { data } = await apiClient.get<Paginated<T> | { items: T[] }>(url, {
-    params: { page: 1, page_size: 500 },
-  });
-  return ("items" in data && Array.isArray(data.items)) ? data.items : [];
+  // 逐頁抓完整清單（後端 page_size 上限 500）→ 超過 500 筆（如 592 台 VM）也不會被截斷
+  const PAGE = 500;
+  const out: T[] = [];
+  for (let page = 1; page <= 1000; page++) {
+    const { data } = await apiClient.get<Paginated<T> | { items: T[]; total?: number }>(url, {
+      params: { page, page_size: PAGE },
+    });
+    const items = ("items" in data && Array.isArray(data.items)) ? data.items : [];
+    out.push(...items);
+    const total = (data as { total?: number }).total;
+    if (items.length < PAGE || (typeof total === "number" && out.length >= total)) break;
+  }
+  return out;
 }
 
 export const Advanced = {
