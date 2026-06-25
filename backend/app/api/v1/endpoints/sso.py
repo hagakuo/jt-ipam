@@ -14,7 +14,6 @@ SAML flow：
 
 from __future__ import annotations
 
-import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
@@ -288,29 +287,22 @@ async def oidc_callback(
     if not access_token:
         raise HTTPException(502, detail="OIDC: no access_token returned")
 
-    # 用 userinfo 取代 id_token 解析（簡化；id_token 簽章驗證由 IdP 之後 phase 3.5 補）
+    id_token_raw = token_data.get("id_token") or ""
+    if not id_token_raw:
+        raise HTTPException(401, detail="OIDC: id_token required")
+    try:
+        id_claims = await oidc_service.verify_id_token(
+            cfg, id_token_raw, nonce=payload.get("nonce"),
+        )
+    except oidc_service.OIDCError as exc:
+        raise HTTPException(401, detail="OIDC ID Token verification failed") from exc
+
+    # userinfo 可補充 profile 欄位，但 signed ID Token claims 必須保有 precedence。
     try:
         claims = await oidc_service.fetch_userinfo(cfg, access_token)
     except oidc_service.OIDCError as exc:
         raise HTTPException(502, detail=str(exc)) from exc
-
-    # 合併 ID Token 的 claims，補 userinfo 沒有的欄位 —— 例如 Microsoft Entra ID 的
-    # graph userinfo 不含 groups，groups 只在 ID Token 裡。userinfo 已有的鍵不覆蓋。
-    # 安全性（OWASP A07）：ID Token 的 claims（尤其 groups → admin 提權）必須先用 JWKS
-    # 驗簽 + 檢 aud/iss/nonce 才可信任；驗證失敗則只用 userinfo（不合併未驗 claims），
-    # 既擋掉偽造 groups 的提權，又不因 IdP 偶發問題把使用者鎖在登入頁外。
-    id_token_raw = token_data.get("id_token") or ""
-    if id_token_raw:
-        try:
-            id_claims = await oidc_service.verify_id_token(
-                cfg, id_token_raw, nonce=payload.get("nonce"),
-            )
-            for k, v in id_claims.items():
-                claims.setdefault(k, v)
-        except oidc_service.OIDCError as exc:
-            logging.getLogger("sso").warning(
-                "OIDC ID Token verification failed, using userinfo only: %s", exc,
-            )
+    claims.update(id_claims)
 
     try:
         user = await oidc_service.upsert_user_from_oidc(

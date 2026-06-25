@@ -66,6 +66,8 @@ async def resolve_token(token: str):  # type: ignore[no-untyped-def]
         user = await session.get(User, api_token.user_id)
         if user is None or not user.is_active:
             return None
+        user._api_token_scopes = list(api_token.scopes or [])  # type: ignore[attr-defined]
+        user._api_token_object_filters = api_token.object_filters  # type: ignore[attr-defined]
         return user
 
 

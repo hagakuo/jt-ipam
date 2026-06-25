@@ -2555,6 +2555,16 @@ async def authorize_tool(session: AsyncSession, user: User, name: str) -> str | 
     - 全域基礎設施工具：需 admin 或萬用讀取
     - 其餘（逐物件資料）：需至少有可見範圍；工具內部再依 visible_ids 過濾
     """
+    token_scopes = set(getattr(user, "_api_token_scopes", []) or [])
+    token_filters = getattr(user, "_api_token_object_filters", None)
+    if token_scopes and not (
+        "mcp:*" in token_scopes
+        or "mcp:read" in token_scopes
+        or f"mcp:tool:{name}" in token_scopes
+    ):
+        return "permission_denied: MCP token scope does not allow this tool"
+    if token_filters and name not in UTILITY_TOOLS:
+        return "permission_denied: MCP does not support token object_filters yet"
     if name in UTILITY_TOOLS:
         return None
     if name in MUTATING_TOOLS and not getattr(user, "is_admin", False):

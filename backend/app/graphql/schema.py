@@ -188,12 +188,19 @@ class Query:
         if limit > 1000:
             limit = 1000
         session: AsyncSession = info.context["session"]
+        user: User = info.context["user"]
         stmt = select(DeviceModel)
         if type is not None:
             stmt = stmt.where(DeviceModel.type == type)
         stmt = stmt.order_by(DeviceModel.name).limit(limit)
         rows = list((await session.execute(stmt)).scalars().all())
-        return [gqltypes.Device(**_dict_device(r)) for r in rows]
+        visible = set(
+            await filter_visible(
+                session, user=user, object_type="device",
+                object_ids=[r.id for r in rows], required="read",
+            )
+        )
+        return [gqltypes.Device(**_dict_device(r)) for r in rows if r.id in visible]
 
     @strawberry.field(
         description="ARP-derived IP→MAC→Switch+Port lookup (LibreNMS Phase 2)."
@@ -202,6 +209,25 @@ class Query:
         self, info: strawberry.Info, ip: str,
     ) -> gqltypes.ARPLookup:
         session: AsyncSession = info.context["session"]
+        user: User = info.context["user"]
+        ip_row = (
+            await session.execute(
+                select(IPAddressModel).where(IPAddressModel.ip == ip).limit(1)
+            )
+        ).scalar_one_or_none()
+        if ip_row is None:
+            return gqltypes.ARPLookup(
+                ip=ip, mac=None, interface=None,
+                switch_device_id=None, switch_port=None, vlan=None,
+            )
+        ip_level = await get_object_permission(
+            session, user=user, object_type="ip", object_id=ip_row.id
+        )
+        if not has_permission(ip_level, "read"):
+            return gqltypes.ARPLookup(
+                ip=ip, mac=None, interface=None,
+                switch_device_id=None, switch_port=None, vlan=None,
+            )
         arp = (
             await session.execute(
                 select(ARPEntry)
@@ -223,6 +249,12 @@ class Query:
                 .limit(1)
             )
         ).scalar_one_or_none()
+        if fdb is not None and fdb.device_id is not None:
+            device_level = await get_object_permission(
+                session, user=user, object_type="device", object_id=fdb.device_id
+            )
+            if not has_permission(device_level, "read"):
+                fdb = None
         return gqltypes.ARPLookup(
             ip=ip,
             mac=arp.mac,

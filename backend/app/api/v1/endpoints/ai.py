@@ -30,13 +30,13 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 
 @router.get("/semantic-search")
 async def semantic_search(
-    _user: CurrentUser,
+    user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
     q: Annotated[str, Query(min_length=2, max_length=512)],
     limit: int = Query(20, ge=1, le=100),
 ) -> dict[str, Any]:
     try:
-        return await ai_service.semantic_search(session, query=q, limit=limit)
+        return await ai_service.semantic_search(session, user=user, query=q, limit=limit)
     except ai_service.AINotConfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ai_service.AIError as exc:

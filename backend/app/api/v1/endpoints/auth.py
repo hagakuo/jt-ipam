@@ -27,6 +27,7 @@ from app.services.auth import (
     decode_token,
     issue_access_token,
     issue_refresh_token,
+    refresh_token_is_revoked,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -253,6 +254,8 @@ async def refresh(
     user = await session.get(User, user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Account inactive")
+    if refresh_token_is_revoked(user, claims):
+        raise HTTPException(status_code=401, detail="Refresh token revoked")
 
     settings = get_settings()
     return TokenResponse(
@@ -263,12 +266,15 @@ async def refresh(
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-async def logout(_user: CurrentUser) -> None:
-    """JWT 無狀態；client 端自行清除即可。
+async def logout(
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    """Revoke all refresh tokens issued before this logout."""
+    from datetime import UTC, datetime
 
-    若日後需要伺服器端撤銷，改用 token blacklist + Redis（A07）。
-    """
-    return None
+    user.refresh_token_revoked_after = datetime.now(UTC)
+    await session.commit()
 
 
 @router.get("/me", response_model=UserMe)

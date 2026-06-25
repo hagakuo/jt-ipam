@@ -139,6 +139,12 @@ def _maybe_self_update(server_sha: str | None) -> None:
     """If the server's agent.py differs from this copy, update self and re-exec."""
     if not AUTO_UPDATE or not server_sha:
         return
+    if INSECURE or not SERVER.startswith("https://"):
+        print(
+            "[update] self-update disabled because the update channel is not authenticated",
+            flush=True,
+        )
+        return
     if server_sha == _self_sha():
         return
     print("[update] server agent differs from local; downloading new version", flush=True)

@@ -259,3 +259,14 @@ def decode_token(token: str, *, expected_type: str) -> dict[str, object]:
     if payload.get("type") != expected_type:
         raise TokenInvalid
     return payload
+
+
+def refresh_token_is_revoked(user: User, claims: dict[str, object]) -> bool:
+    revoked_after = user.refresh_token_revoked_after
+    if revoked_after is None:
+        return False
+    iat = claims.get("iat")
+    if not isinstance(iat, int | float):
+        return True
+    issued_at = datetime.fromtimestamp(float(iat), UTC)
+    return issued_at <= revoked_after

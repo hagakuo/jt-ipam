@@ -407,6 +407,10 @@ self_update() {
   local server_sha="$1" force="${2:-0}"
   [ "$force" != 1 ] && [ "$AUTO_UPDATE" = "false" ] && return 0
   [ -z "$server_sha" ] && return 0
+  if [ "$VERIFY_TLS" = "false" ] || [[ "$SERVER" != https://* ]]; then
+    log "[update] self-update disabled because the update channel is not authenticated"
+    return 0
+  fi
   command -v sha256sum >/dev/null 2>&1 || return 0
   local self_sha; self_sha="$(sha256sum "$SELF" | cut -d' ' -f1)"
   [ "$server_sha" = "$self_sha" ] && return 0

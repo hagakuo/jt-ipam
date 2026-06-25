@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -148,6 +149,7 @@ async def index_device(session: AsyncSession, device_id: str, description: str |
 async def semantic_search(
     session: AsyncSession,
     *,
+    user: Any,
     query: str,
     limit: int = 20,
 ) -> dict[str, Any]:
@@ -204,22 +206,43 @@ async def semantic_search(
         )
     ).all()
 
+    from app.services.permission import filter_visible
+
+    subnet_ids = [uuid.UUID(r.id) for r in sub_rows]
+    ip_ids = [uuid.UUID(r.id) for r in ip_rows]
+    device_ids = [uuid.UUID(r.id) for r in dev_rows]
+    visible_subnet_ids = set(await filter_visible(
+        session, user=user, object_type="subnet",
+        object_ids=subnet_ids, required="read",
+    ))
+    visible_ip_ids = set(await filter_visible(
+        session, user=user, object_type="ip",
+        object_ids=ip_ids, required="read",
+    ))
+    visible_device_ids = set(await filter_visible(
+        session, user=user, object_type="device",
+        object_ids=device_ids, required="read",
+    ))
+
     return {
         "query": query,
         "subnets": [
             {"id": r.id, "label": r.label, "description": r.description,
              "score": round(1 - float(r.distance), 4)}
             for r in sub_rows
+            if uuid.UUID(r.id) in visible_subnet_ids
         ],
         "ip_addresses": [
             {"id": r.id, "label": r.label, "hostname": r.hostname,
              "description": r.description, "score": round(1 - float(r.distance), 4)}
             for r in ip_rows
+            if uuid.UUID(r.id) in visible_ip_ids
         ],
         "devices": [
             {"id": r.id, "label": r.label, "description": r.description,
              "score": round(1 - float(r.distance), 4)}
             for r in dev_rows
+            if uuid.UUID(r.id) in visible_device_ids
         ],
     }
 
