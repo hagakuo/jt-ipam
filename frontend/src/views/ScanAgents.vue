@@ -16,6 +16,7 @@ import {
   listScanAgents, createScanAgent, updateScanAgent, deleteScanAgent, rotateScanAgentKey, scanNowAgent,
   getAgentSubnets, setAgentSubnets,
   type ScanAgent,
+  type ScanAgentTool,
 } from "@/api/phase3";
 import { listSubnets } from "@/api/subnets";
 import { useScanProbes, probeLabel } from "@/api/scanProbes";
@@ -262,13 +263,14 @@ const allCols = computed<DataTableColumns<ScanAgent>>(() => autoSort([
     render: (r) => {
       const ts = r.tools ?? [];
       if (!ts.length) return h("span", { style: "opacity:.5" }, "—");
-      const ok = ts.filter((x) => x.installed).length;
-      const all = ts.length;
+      // 以「可用」為準：已裝 + 替代可略 都算 OK；只有真正缺工具的探測才算問題
+      const missing = ts.filter((x) => toolState(r, x) === "missing").length;
+      const ok = ts.length - missing;
       return h(NTag, {
         size: "small", round: true, style: "cursor:pointer",
-        type: ok >= all ? "success" : "warning",
+        type: missing ? "warning" : "success",
         onClick: () => openTools(r),
-      }, () => `${ok}/${all}`);
+      }, () => `${ok}/${ts.length}`);
     },
   },
   { title: t("scanAgentHelp.col_last_seen"), key: "last_seen_at", width: 168,
@@ -298,6 +300,26 @@ const cols = computed<DataTableColumns<ScanAgent>>(() =>
 const toolsShow = ref(false);
 const toolsRow = ref<ScanAgent | null>(null);
 function openTools(r: ScanAgent) { toolsRow.value = r; toolsShow.value = true; }
+
+// 工具狀態（以「探測是否可用」為準）：
+//  installed＝已裝；redundant＝沒裝但它負責的探測已被同類工具滿足（如有 nmblookup 時的 nbtscan）→ 可略；
+//  missing＝沒裝且該探測還缺工具 → 真正要裝。available_probes 已是 server 端「任一工具即可」的判定結果。
+type ToolState = "installed" | "redundant" | "missing";
+function toolState(agent: ScanAgent | null, tdep: ScanAgentTool): ToolState {
+  if (tdep.installed) return "installed";
+  const probes = tdep.probes ?? [];
+  const avail = agent?.available_probes ?? [];
+  if (probes.length && probes.every((p: string) => avail.includes(p))) return "redundant";
+  return "missing";
+}
+const TOOL_STATE_TYPE: Record<ToolState, "success" | "default" | "error"> = {
+  installed: "success", redundant: "default", missing: "error",
+};
+function toolStateLabel(s: ToolState): string {
+  return s === "installed" ? t("scan_agent.dep_installed")
+    : s === "redundant" ? t("scan_agent.dep_redundant")
+      : t("scan_agent.dep_missing");
+}
 
 onMounted(() => { void refresh(); });
 </script>
@@ -347,14 +369,14 @@ onMounted(() => { void refresh(); });
           <tr v-for="tdep in (toolsRow?.tools ?? [])" :key="tdep.name">
             <td><code>{{ tdep.name }}</code></td>
             <td>
-              <n-tag size="tiny" :bordered="false" :type="tdep.installed ? 'success' : 'error'">
-                {{ tdep.installed ? t("scan_agent.dep_installed") : t("scan_agent.dep_missing") }}
+              <n-tag size="tiny" :bordered="false" :type="TOOL_STATE_TYPE[toolState(toolsRow, tdep)]">
+                {{ toolStateLabel(toolState(toolsRow, tdep)) }}
               </n-tag>
             </td>
             <td>{{ tdep.version || "—" }}</td>
             <td>{{ tdep.probes.length ? tdep.probes.join(", ") : "—" }}</td>
             <td>
-              <code v-if="!tdep.installed && tdep.package">sudo apt install {{ tdep.package }}</code>
+              <code v-if="toolState(toolsRow, tdep) === 'missing' && tdep.package">sudo apt install {{ tdep.package }}</code>
               <span v-else style="opacity:.4">—</span>
             </td>
           </tr>

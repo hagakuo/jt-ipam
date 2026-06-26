@@ -379,6 +379,7 @@
     "dep_install": "Install (Debian/Ubuntu)",
     "dep_installed": "Installed",
     "dep_missing": "Missing",
+    "dep_redundant": "alternative (optional)",
     "deps_note": "Probes whose tool is missing won't run. On Debian/Ubuntu install with the command above (the agent unlocks it on its next report); on other distros install the equivalent package (e.g. RHEL: samba-common-tools).",
     "scan_now_done": "Queued; the agent will run a scan within {n}s.",
     "scan_now_confirm": "Run a scan now on this agent's scan-enabled subnets (with their enabled probes)?"
