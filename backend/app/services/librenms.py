@@ -437,7 +437,7 @@ async def sync_devices(
 async def sync_arp(
     session: AsyncSession, instance: LibreNMSInstance,
 ) -> tuple[int, int, int, int]:
-    """逐 device 抓 ARP；回傳 (seen, inserted, updated, ip_mac_filled)。"""
+    """抓 ARP；回傳 (seen, inserted, updated, ip_mac_filled)。"""
     devices = list(
         (await session.execute(
             select(LibreNMSDevice).where(
@@ -450,18 +450,48 @@ async def sync_arp(
     # 重疊網段：若 instance 設了 scope_subnet_ids，IP→IPAddress 比對限定在這些子網路內
     scope_ids = _scope_uuids(instance)
 
-    for d in devices:
-        path = f"/api/v0/devices/{d.legacy_device_id}/ip/arp/all"
+    async def _arp_batches() -> list[tuple[LibreNMSDevice, dict[str, Any]]]:
+        """LibreNMS current API exposes ARP globally; older installs may need per-device."""
+        by_legacy = {int(d.legacy_device_id): d for d in devices}
         try:
-            data = await _api_get(instance, path, timeout=20.0)
+            data = await _api_get(instance, "/api/v0/resources/ip/arp/all", timeout=30.0)
         except LibreNMSError:
-            continue   # device 可能不支援 ARP（例如非 L3）
+            batches: list[tuple[LibreNMSDevice, dict[str, Any]]] = []
+            for d in devices:
+                path = f"/api/v0/devices/{d.legacy_device_id}/ip/arp/all"
+                try:
+                    pdata = await _api_get(instance, path, timeout=20.0)
+                except LibreNMSError:
+                    continue   # device 可能不支援 ARP（例如非 L3）
+                batches.append((d, pdata))
+            return batches
+
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        seen_keys: set[tuple[int, str, str]] = set()
         for arp in data.get("arp") or []:
+            try:
+                legacy = int(arp.get("device_id"))
+            except (TypeError, ValueError):
+                continue
             ip = arp.get("ipv4_address") or arp.get("ip_address")
-            mac = arp.get("mac_address")
+            mac = _norm_mac(arp.get("mac_address"))
             if not ip or not mac:
                 continue
-            mac = mac.lower()
+            key = (legacy, str(ip), mac)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            if legacy in by_legacy:
+                arp["mac_address"] = mac
+                grouped.setdefault(legacy, []).append(arp)
+        return [(by_legacy[legacy], {"arp": rows}) for legacy, rows in grouped.items()]
+
+    for d, data in await _arp_batches():
+        for arp in data.get("arp") or []:
+            ip = arp.get("ipv4_address") or arp.get("ip_address")
+            mac = _norm_mac(arp.get("mac_address"))
+            if not ip or not mac:
+                continue
             seen += 1
             existing = (
                 await session.execute(
