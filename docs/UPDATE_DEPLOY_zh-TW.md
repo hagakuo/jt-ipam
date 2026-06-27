@@ -121,7 +121,8 @@ merge migration 內容通常只需要 `pass`，因為它只是合併 migration g
 
 - 正式站已套用：`0086_refresh_token_revocation`
 - 上游新增鏈：`0086_scan_agent_tools -> 0087_pfsense_firewall -> 0088_pfsense_rules_dsv`
-- 因此新增 merge revision：`0089_merge_refresh_and_pfsense_heads`
+- 因此新增 merge revision：`0089_merge_refresh_pfsense`
+- 注意：`alembic_version.version_num` 欄位長度是 32，revision id 必須控制在 32 字元以內。
 
 ## 5. 本機驗證
 
