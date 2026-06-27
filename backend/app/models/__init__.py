@@ -34,7 +34,6 @@ from app.models.firewall import (
     OPNsenseSyncedAlias,
 )
 from app.models.firewall_rule import OPNsenseRule
-from app.models.pfsense import PfSenseFirewall, PfSenseSyncedAlias
 from app.models.ip_change_log import IPChangeLog
 from app.models.ip_hostname import IPHostnameObservation
 from app.models.ip_request import IPRequest, IPRequestEvent, IPRequestStageApproval
@@ -45,6 +44,7 @@ from app.models.nat import NATTranslation
 from app.models.notification import Notification, WebhookSubscription
 from app.models.oui import OUIVendor
 from app.models.permission import Permission
+from app.models.pfsense import PfSenseFirewall, PfSenseSyncedAlias
 from app.models.physical import (
     Cable,
     CableTermination,
@@ -119,9 +119,9 @@ __all__ = [
     "OPNsenseFirewall",
     "OPNsenseRuleLabel",
     "OPNsenseSyncedAlias",
+    "Permission",
     "PfSenseFirewall",
     "PfSenseSyncedAlias",
-    "Permission",
     "PhpIPAMMigrationMapping",
     "PowerFeed",
     "PowerOutlet",

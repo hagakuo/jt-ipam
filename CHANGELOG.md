@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.13] — 2026-06-27
+
+### Fixed
+- **Full test suite & lint green.** Ran the complete pytest suite (412 tests) + migrations 0001→0088 on a
+  fresh DB and fixed 4 test assertions that had drifted behind earlier feature work — the new
+  `list_connection_targets` MCP tool (missing from the tool-args guard), the Proxmox guest-agent `timeout`
+  arg (test mock signature), and the external-MCP toggle now returning **403** when disabled (was asserted
+  as 401). Also removed two dead-code lint errors and sorted imports. No product behaviour change.
+
+
 ## [0.5.12] — 2026-06-27
 
 ### Added

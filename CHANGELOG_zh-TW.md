@@ -4,6 +4,15 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.13] — 2026-06-27
+
+### 修正
+- **全測試套件與 lint 收綠。** 跑完整 pytest（412 項）+ 全新 DB 套 migration 0001→0088，修掉 4 個落後於先前
+  功能異動的測試斷言——新 MCP 工具 `list_connection_targets`（漏進工具參數守門）、Proxmox guest-agent 的
+  `timeout` 參數（測試 mock 簽章）、以及對外 MCP 開關關閉時改回 **403**（測試原本斷言 401）。另移除兩個
+  無用變數 lint 錯誤、排序 import。不影響產品行為。
+
+
 ## [0.5.12] — 2026-06-27
 
 ### 新增

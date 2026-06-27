@@ -47,7 +47,7 @@ const router = useRouter();
 const route = useRoute();
 const links = useEntityLinks(router);
 
-const { t, locale } = useI18n();
+const { t } = useI18n();
 const msg = useMessage();
 // 從某單位的「子網路數」點過來時，只顯示該單位的子網路（可清除）
 const customerFilter = ref<string | null>(null);
