@@ -164,7 +164,36 @@ openssl s_client -connect ipam.example.com:443 -servername ipam.example.com </de
 > To regenerate a self-signed cert yourself: `sudo bash /opt/jt-ipam/scripts/generate-self-signed-cert.sh` then `systemctl restart jt-ipam-backend`.
 > To move from direct to an nginx reverse proxy: set `BACKEND_TLS_MODE=nginx` in `/etc/jt-ipam/backend.env`, install the nginx site, then restart the backend + reload nginx.
 
-### 2.7 Optional: Docker Compose (NOT the preferred mode)
+### 2.7 Production standard: hardened nginx reverse proxy
+
+For any internet-facing or production deployment, the **standard is to run jt-ipam behind the bundled
+hardened nginx reverse proxy** (`--tls-mode nginx`, reference config `deploy/nginx/jt-ipam.conf`). nginx
+terminates TLS, the backend stays bound to loopback, and the proxy enforces a strict security baseline so the
+app server is never exposed directly:
+
+- **TLS**: TLS 1.2/1.3 only, modern cipher suite, OCSP stapling, session tickets off.
+- **HSTS**: `max-age` 2y + `includeSubDomains` + `preload`.
+- **CSP**: `default-src 'self'`; `script-src 'self'`; `connect-src 'self'`; `frame-src 'self'`;
+  `frame-ancestors 'none'`; `base-uri 'self'`; `form-action 'self'` — no third-party script/frame origins.
+- **Headers**: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`,
+  `Permissions-Policy` (geolocation/mic/camera/payment/usb off), `Cross-Origin-Opener-Policy` and
+  `Cross-Origin-Resource-Policy: same-origin`.
+- **No banner leak**: `server_tokens off` and the upstream (uvicorn) `Server`/`X-Powered-By` headers are
+  hidden — no version or framework fingerprint.
+- Backend listens on `127.0.0.1` only; nginx is the sole public listener.
+
+> Do **not** expose uvicorn directly to the internet. `--tls-mode self-signed`/`direct` is for internal/dev,
+> or when a separate external proxy already provides these protections. If you front jt-ipam with your own
+> proxy (Mode C), replicate the same baseline — see `deploy/nginx/jt-ipam-external-proxy.conf`.
+
+Verify the baseline after install:
+
+```bash
+curl -skI https://ipam.example.com/ \
+  | grep -iE 'strict-transport|content-security|x-frame|x-content|referrer|permissions|cross-origin|^server'
+```
+
+### 2.8 Optional: Docker Compose (NOT the preferred mode)
 
 > ⚠️ **Docker Compose is a secondary / optional path — it is NOT the project's preferred or primary
 > deployment mode.** The supported, recommended install is **systemd + apt** (sections above). Use Compose

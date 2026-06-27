@@ -248,6 +248,8 @@ interface FormState {
 }
 
 const form = ref<FormState>(emptyForm());
+// create 模式要填的 IP（FormState 不含 ip；新增時用此欄，可帶入 createContext.ip 預設值）
+const createIp = ref("");
 
 function emptyForm(): FormState {
   return {
@@ -321,6 +323,7 @@ watch(
     // create 模式自動進 edit form；既有 IP 進 view
     editMode.value = isCreate.value;
     form.value = props.address ? fromAddress(props.address) : emptyForm();
+    createIp.value = (props.createContext?.ip ?? "").trim();
     // 略過探測初始化：優先用 excluded_probes；空但舊 exclude_from_ping=true → 回填 ['icmp']
     const a = props.address;
     if (a) {
@@ -460,9 +463,11 @@ async function save() {
   saving.value = true;
   try {
     if (isCreate.value && props.createContext) {
+      const ipv = createIp.value.trim();
+      if (!ipv) { msg.warning(t("addresses.ip_required")); saving.value = false; return; }
       const created = await createAddress({
         subnet_id: props.createContext.subnet_id,
-        ip: props.createContext.ip,
+        ip: ipv,
         hostname: form.value.hostname.trim() || null,
         description: form.value.description.trim() || null,
         state: form.value.state,
@@ -795,6 +800,9 @@ async function remove() {
 
         <!-- edit mode -->
         <n-form v-else label-placement="top">
+          <n-form-item v-if="isCreate" :label="t('addresses.ip')" required style="margin-bottom: 12px">
+            <n-input v-model:value="createIp" placeholder="192.168.1.10" />
+          </n-form-item>
           <n-space :size="12" :wrap-item="false" style="flex-wrap: wrap">
             <n-form-item :label="t('addresses.hostname')" style="flex: 1 1 300px">
               <n-input v-model:value="form.hostname" placeholder="host.example.com" />

@@ -97,6 +97,7 @@ const PROFILE_OPTIONS = [
   "nginx", "apache", "caddy", "traefik", "lighttpd", "haproxy", "zoraxy", "jetty",
   "postfix", "dovecot", "exim4", "mosquitto", "cockpit", "webmin", "wazuh-dashboard",
   "pve", "pmg", "pbs", "pdm", "zimbra",
+  "files",
 ];
 const dryRunCmd = `${SUDO} bash /usr/local/lib/jt-ipam-cert-agent/jt_ipam_cert_agent.sh --config /etc/jt-ipam-cert-agent/config --dry-run`;
 const runCmd = `${SUDO} bash /usr/local/lib/jt-ipam-cert-agent/jt_ipam_cert_agent.sh --config /etc/jt-ipam-cert-agent/config`;
@@ -137,6 +138,7 @@ function profileFiles(profile: string, cert: string): { kind: string; path: stri
     case "jitsi": return [{ kind: "cert+chain (docker restart jitsi web)", path: "/root/.jitsi-meet-cfg/web/keys/cert.crt" }, { kind: "key", path: "/root/.jitsi-meet-cfg/web/keys/cert.key" }];
     case "coturn": return [{ kind: "cert+chain (root:65534 644)", path: "/etc/coturn/certs/turn.crt" }, { kind: "key (root:65534 640)", path: "/etc/coturn/certs/turn.key" }];
     case "zimbra": return [{ kind: "zmcertmgr deploycrt comm + zmcontrol restart", path: "/opt/zimbra/ssl/zimbra/commercial/commercial.{key,crt}" }];
+    case "files": return [{ kind: "cert+chain（僅換檔，不 reload）", path: `${b}/${cert}.fullchain.pem` }, { kind: "key（僅換檔，不 reload）", path: `${b}/${cert}.key` }];
     default: return [];
   }
 }
@@ -1196,7 +1198,8 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
     <n-form-item :label="t('certGen.services')" :show-feedback="false">
       <n-checkbox-group v-model:value="genProfiles" style="width:100%">
         <div class="gen-svc-grid">
-          <n-checkbox v-for="p in PROFILE_OPTIONS" :key="p" :value="p" :label="p" />
+          <n-checkbox v-for="p in PROFILE_OPTIONS" :key="p" :value="p"
+                      :label="p === 'files' ? t('certGen.files_only') : p" />
         </div>
       </n-checkbox-group>
     </n-form-item>

@@ -179,7 +179,6 @@ function ipDetailCard(ipId: string) {
 function ipLinkCell(ipId: string | null) {
   if (!ipId) return "—";
   const label = addrOpts.value.find((o) => o.value === ipId)?.label ?? ipId.slice(0, 8) + "…";
-  const ipText = label.split(" — ")[0];
   const link = h("a", {
     href: "#",
     style: "color: var(--primary-color, #18a058); text-decoration: none;",

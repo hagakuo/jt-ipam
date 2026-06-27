@@ -4,6 +4,113 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); versions track
 `frontend/package.json` / `backend/app/version.py`.
 
+## [0.5.13] — 2026-06-27
+
+### Fixed
+- **Full test suite & lint green.** Ran the complete pytest suite (412 tests) + migrations 0001→0088 on a
+  fresh DB and fixed 4 test assertions that had drifted behind earlier feature work — the new
+  `list_connection_targets` MCP tool (missing from the tool-args guard), the Proxmox guest-agent `timeout`
+  arg (test mock signature), and the external-MCP toggle now returning **403** when disabled (was asserted
+  as 401). Also removed two dead-code lint errors and sorted imports. No product behaviour change.
+
+
+## [0.5.12] — 2026-06-27
+
+### Added
+- **pfSense integration Phase 2** — firewall **rules sync** + a read-only **Rules / NAT viewer** (eye action
+  on the pfSense page), and **Graylog DSV** endpoints for pfSense: `…/lookup/pfsense/{id}/aliases`
+  (alias → members) and `…/lookup/pfsense/{id}/rules` (filterlog `tracker` → rule description), token-gated
+  and per-instance `expose_dsv`. New per-instance toggles: sync rules, expose DSV. Verified against pfSense
+  CE 2.8.1. (migration 0088)
+- TEST_CHECKLIST: added a pfSense integration section + spot-checks for recent features.
+
+
+## [0.5.11] — 2026-06-27
+
+### Added
+- **pfSense integration (Phase 1)** — a separate integration with its own settings page (Admin →
+  pfSense), independent of OPNsense. pfSense CE has no built-in REST API, so this connects via the
+  third-party **pfSense-pkg-RESTAPI** package (pfrest.org): base path `/api/v2`, `X-API-Key` auth. It pulls
+  the **ARP table** and **DHCP leases** to stamp IP liveness / MAC / hostname within scoped subnets
+  (overlap-safe), and reads **firewall aliases**. Per-instance sync toggles (DHCP off by default to avoid
+  clashing with another DHCP server), subnet scoping, verify-TLS, test-connection and sync-now; runs in the
+  periodic sync loop. `pfsense` is registered as a hostname/ARP source. Verified end-to-end against pfSense
+  CE 2.8.1. (migration 0087; firewall rules / NAT / Graylog-DSV are planned for Phase 2.)
+
+
+## [0.5.10] — 2026-06-27
+
+### Fixed
+- **"Add address" inside a subnet's IP list had no IP input field**, so submitting failed with HTTP 422
+  (missing IP) (issue #14). The create form now shows a required **IP** field (prefilled from context when
+  one is provided), and submitting with an empty IP is blocked client-side with a clear message.
+
+
+## [0.5.9] — 2026-06-27
+
+### Added
+- **Notification matrix** (Admin → Notification settings): a per-event × per-channel grid (in-app bell /
+  email) to choose which events send notifications. Events: IP request submitted / approved / rejected,
+  certificate expiring or expired, **agent deployed a new certificate** (new), certificate drift, anomaly
+  detected. Every notification site now respects the matrix; certificate and anomaly events can now also be
+  emailed (previously in-app only).
+- **New event `cert.deployed`**: when a distribution agent successfully swaps a cert for a new version, admins
+  are notified (the agent report endpoint diffs the previous vs new fingerprint per cert/service).
+- **Certificate distribution: a `files` service profile** that only writes the cert files (fullchain + key to
+  `/etc/ssl/jt-ipam`) and does **not** test, reload or restart any service — for operators who reload
+  themselves.
+
+
+## [0.5.8] — 2026-06-26
+
+### Security
+- **Removed the embedded third-party map iframe** on the Locations page (Google Maps / OpenStreetMap); the
+  map now opens in a new tab. The embed pulled a third-party page (and its scripts) into ours — a privacy
+  leak and the source of the ZAP findings **Cross-Domain JavaScript Source File Inclusion** and **Sub
+  Resource Integrity Attribute Missing** (they came from Google's/OSM's embed page, not jt-ipam). Google/OSM
+  are now contacted only when the user clicks.
+- **Tightened CSP `frame-src` to `'self'`** (dropped the google/openstreetmap allowances now that nothing is framed).
+- **nginx reference config hardened**: hide the upstream (uvicorn) `Server` / `X-Powered-By` headers (no
+  framework fingerprint), and add `Cross-Origin-Resource-Policy: same-origin`.
+
+### Docs
+- INSTALL (EN/zh) and the landing page now document the **hardened nginx reverse proxy as the production
+  standard** (TLS 1.2/1.3, HSTS preload, strict CSP, full security-header set, hidden upstream banner,
+  backend bound to loopback).
+
+
+## [0.5.7] — 2026-06-26
+
+### Added
+- **MCP client-config generator.** On Admin → LLM/AI, the "expose MCP" card has a "Generate client config"
+  button that produces ready-to-paste MCP server snippets for Claude Desktop (via `mcp-remote`), opencode,
+  mcpo, and generic clients (Cursor / Cline / VS Code) — with the endpoint URL and API key filled in, each
+  with its own copy button.
+
+
+## [0.5.6] — 2026-06-26
+
+### Changed
+- **Anomaly detection page reorganized into tabs.** The four detectors (IP conflicts / MAC drift / ghost
+  IPs / unauthorized IPs) are now tabs instead of one long stacked page.
+- **Each anomaly table now has a column picker**, and the internal `ip_address_id` UUID column is hidden by
+  default (still selectable).
+
+### Added
+- **MAC drift now also shows the matching IP / hostname** for each drifting MAC (resolved from IPAM, with
+  ARP fallback) — so you can tell which host a roaming MAC belongs to.
+
+
+## [0.5.5] — 2026-06-26
+
+### Added
+- **Scan agents: a "Dependencies" column.** Each agent now reports its probe-tool inventory; the column
+  shows how many are installed (e.g. `4/7`) and clicking opens a detail dialog listing every tool — whether
+  it is installed and at which version, which probes it enables (nmap → OS/ports, nmblookup → NetBIOS,
+  avahi-resolve → mDNS …), and the install command for the missing ones. Helps diagnose "no machine name"
+  (NetBIOS needs `nmblookup`) at a glance. Agent self-updates to v1.5.0 to report this (migration 0086).
+
+
 ## [0.5.4] — 2026-06-24
 
 ### Fixed

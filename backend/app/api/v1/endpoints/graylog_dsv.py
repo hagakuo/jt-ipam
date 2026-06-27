@@ -5,7 +5,7 @@
 
   GET /api/v1/lookup/{name}?token=<token>   →  text/csv 或 text/tab-separated-values
        192.168.1.10,host-a.example.com
-       192.168.1.11,host-b.example.com
+       192.0.2.11,host-b.example.com
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.address import IPAddress
 from app.models.firewall import OPNsenseFirewall, OPNsenseRuleLabel, OPNsenseSyncedAlias
+from app.models.pfsense import PfSenseFirewall, PfSenseSyncedAlias
 from app.models.virt import VirtCluster, VirtualMachine
 from app.schemas.base import StrictModel
 from app.services.system_config import get_graylog_dsv, set_graylog_dsv
@@ -160,6 +161,68 @@ async def fw_aliases_dsv(
         if len(members) > _ALIAS_MEMBER_CAP:
             val += f" …(+{len(members) - _ALIAS_MEMBER_CAP})"
         pairs.append((name, val))
+    media, body = _dsv_lines(pairs, cfg["fmt"])
+    return PlainTextResponse(body, media_type=f"{media}; charset=utf-8")
+
+
+# ─────────────────── pfSense DSV（與 OPNsense 平行，獨立路徑）───────────────────
+async def _pfsense_dsv_guard(
+    firewall_id: uuid.UUID, token: str, session: AsyncSession,
+) -> tuple[PfSenseFirewall, dict[str, Any]]:
+    cfg = await get_graylog_dsv(session)
+    if not cfg["token"] or token != cfg["token"]:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    fw = await session.get(PfSenseFirewall, firewall_id)
+    if fw is None or not fw.expose_dsv:
+        raise HTTPException(status_code=404, detail="Not found")
+    return fw, cfg
+
+
+@public_router.get("/pfsense/{firewall_id}/aliases")
+async def pfsense_aliases_dsv(
+    firewall_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    token: str = Query("", description="存取權杖（沿用 Graylog DSV token）"),
+) -> PlainTextResponse:
+    """pfSense 別名 DSV：key = alias 名，value = 成員清單（空白分隔，超量截斷）。"""
+    fw, cfg = await _pfsense_dsv_guard(firewall_id, token, session)
+    rows = (await session.execute(
+        select(PfSenseSyncedAlias.name, PfSenseSyncedAlias.members)
+        .where(PfSenseSyncedAlias.firewall_id == fw.id)
+        .order_by(PfSenseSyncedAlias.name)
+    )).all()
+    pairs: list[tuple[str, str]] = []
+    for name, members in rows:
+        ms = [str(m) for m in (members or []) if m]
+        val = " ".join(ms[:_ALIAS_MEMBER_CAP])
+        if len(ms) > _ALIAS_MEMBER_CAP:
+            val += f" …(+{len(ms) - _ALIAS_MEMBER_CAP})"
+        pairs.append((name, val))
+    media, body = _dsv_lines(pairs, cfg["fmt"])
+    return PlainTextResponse(body, media_type=f"{media}; charset=utf-8")
+
+
+@public_router.get("/pfsense/{firewall_id}/rules")
+async def pfsense_rules_dsv(
+    firewall_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    token: str = Query("", description="存取權杖（沿用 Graylog DSV token）"),
+) -> PlainTextResponse:
+    """pfSense 規則 DSV：key = filterlog tracker（規則追蹤 ID），value = 規則說明。"""
+    fw, cfg = await _pfsense_dsv_guard(firewall_id, token, session)
+    pairs: list[tuple[str, str]] = []
+    for r in (fw.rules or []):
+        if not isinstance(r, dict):
+            continue
+        tracker = r.get("tracker")
+        if tracker in (None, "", 0):
+            continue
+        descr = (r.get("descr") or "").strip()
+        if not descr:
+            act = r.get("type") or ""
+            iface = r.get("interface") or ""
+            descr = f"{act} {iface}".strip() or str(tracker)
+        pairs.append((str(tracker), descr))
     media, body = _dsv_lines(pairs, cfg["fmt"])
     return PlainTextResponse(body, media_type=f"{media}; charset=utf-8")
 

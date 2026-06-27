@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 import httpx
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -995,6 +995,41 @@ async def put_notification_channels_ep(
     )
     await session.commit()
     return _channels_payload(cfg)
+
+
+@router.get("/notification-matrix")
+async def get_notification_matrix_ep(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """通知矩陣：哪些事件走哪些管道（站內 / Email）。回傳目前設定 + 事件登錄順序。"""
+    from app.services.system_config import NOTIFY_EVENTS, get_notification_matrix
+    return {
+        "matrix": await get_notification_matrix(session),
+        "events": [e[0] for e in NOTIFY_EVENTS],
+    }
+
+
+@router.put("/notification-matrix")
+async def put_notification_matrix_ep(
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    payload: Annotated[dict[str, Any], Body()],
+) -> dict[str, Any]:
+    from app.services.system_config import NOTIFY_EVENTS, set_notification_matrix
+    data = payload.get("matrix", payload) if isinstance(payload, dict) else {}
+    mx = await set_notification_matrix(session, data=data, updated_by_user_id=user.id)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system_setting", object_id=None, action="update",
+        diff={"notification_matrix": mx},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return {"matrix": mx, "events": [e[0] for e in NOTIFY_EVENTS]}
 
 
 @router.post("/notification-channels/test-email")

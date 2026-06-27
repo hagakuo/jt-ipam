@@ -3,7 +3,7 @@
 > English: [INSTALL.md](INSTALL.md)
 
 針對 **Proxmox LXC、裸機、虛擬機**（Ubuntu 22.04+/Debian 12+）。**主力且建議**的安裝方式是
-**systemd + apt** 直裝（不使用 Docker）。另有 Docker Compose 路徑，但**屬選用 / 次要、並非優先模式**——見下方 §2.7。
+**systemd + apt** 直裝（不使用 Docker）。另有 Docker Compose 路徑，但**屬選用 / 次要、並非優先模式**——見下方 §2.8。
 
 > 安全為 day-one 需求：所有環境強制 HTTPS；憑證可走 nginx 反代或
 > uvicorn 直接吃自簽。SSL 沒設好 backend **不會啟動**（A02）。
@@ -162,7 +162,34 @@ openssl s_client -connect ipam.example.com:443 -servername ipam.example.com </de
 > 想自己重新產自簽憑證：`sudo bash /opt/jt-ipam/scripts/generate-self-signed-cert.sh` 後 `systemctl restart jt-ipam-backend`。
 > 從 direct 改走 nginx 反代：把 `/etc/jt-ipam/backend.env` 的 `BACKEND_TLS_MODE` 改成 `nginx`、裝好 nginx site，再重啟 backend + reload nginx。
 
-### 2.7 選用：Docker Compose（非本專案優先使用模式）
+### 2.7 正式環境標準：高安全性 nginx 反向代理
+
+任何對外或正式環境，**標準做法都是讓 jt-ipam 跑在內建的高安全性 nginx 反向代理之後**（`--tls-mode nginx`，
+參考設定 `deploy/nginx/jt-ipam.conf`）。由 nginx 終結 TLS、後端只綁在 loopback，代理層強制套上嚴格的安全基線，
+應用伺服器絕不直接對外曝露：
+
+- **TLS**：僅 TLS 1.2/1.3、現代化加密套件、OCSP stapling、關閉 session tickets。
+- **HSTS**：`max-age` 2 年 + `includeSubDomains` + `preload`。
+- **CSP**：`default-src 'self'`、`script-src 'self'`、`connect-src 'self'`、`frame-src 'self'`、
+  `frame-ancestors 'none'`、`base-uri 'self'`、`form-action 'self'`——不含任何第三方 script／frame 來源。
+- **標頭**：`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`、
+  `Permissions-Policy`（關閉定位／麥克風／相機／付款／USB）、`Cross-Origin-Opener-Policy` 與
+  `Cross-Origin-Resource-Policy: same-origin`。
+- **不洩漏版本指紋**：`server_tokens off`，並隱藏上游（uvicorn）的 `Server`／`X-Powered-By` 標頭。
+- 後端只監聽 `127.0.0.1`，nginx 是唯一對外監聽者。
+
+> **請勿**把 uvicorn 直接對外。`--tls-mode self-signed`／`direct` 適用於內部／開發，或已有另一層外部代理
+> 提供上述防護時。若你用自己的代理擋在前面（Mode C），務必複製同一套基線——見
+> `deploy/nginx/jt-ipam-external-proxy.conf`。
+
+安裝後可驗證基線：
+
+```bash
+curl -skI https://ipam.example.com/ \
+  | grep -iE 'strict-transport|content-security|x-frame|x-content|referrer|permissions|cross-origin|^server'
+```
+
+### 2.8 選用：Docker Compose（非本專案優先使用模式）
 
 > ⚠️ **Docker Compose 是次要 / 選用的部署路徑，並非本專案優先或主力的部署模式。** 受支援且建議的安裝方式是
 > **systemd + apt**（上面各節）。Compose 適合快速試用或本來就以容器為主的環境；systemd 路徑測試最完整。

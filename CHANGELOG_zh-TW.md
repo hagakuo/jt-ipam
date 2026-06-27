@@ -4,6 +4,98 @@
 [Keep a Changelog](https://keepachangelog.com/)；版本對應
 `frontend/package.json` / `backend/app/version.py`。
 
+## [0.5.13] — 2026-06-27
+
+### 修正
+- **全測試套件與 lint 收綠。** 跑完整 pytest（412 項）+ 全新 DB 套 migration 0001→0088，修掉 4 個落後於先前
+  功能異動的測試斷言——新 MCP 工具 `list_connection_targets`（漏進工具參數守門）、Proxmox guest-agent 的
+  `timeout` 參數（測試 mock 簽章）、以及對外 MCP 開關關閉時改回 **403**（測試原本斷言 401）。另移除兩個
+  無用變數 lint 錯誤、排序 import。不影響產品行為。
+
+
+## [0.5.12] — 2026-06-27
+
+### 新增
+- **pfSense 整合 Phase 2**——防火牆**規則同步** + 唯讀的**規則 / NAT 檢視**（pfSense 頁的眼睛圖示），以及
+  pfSense 的 **Graylog DSV** 端點：`…/lookup/pfsense/{id}/aliases`（別名 → 成員）與
+  `…/lookup/pfsense/{id}/rules`（filterlog `tracker` → 規則說明），token 保護、每台可開 `expose_dsv`。新增每台
+  開關：同步規則、提供 DSV。已對 pfSense CE 2.8.1 驗證。（migration 0088）
+- TEST_CHECKLIST：新增 pfSense 整合測試段 + 近期功能抽測。
+
+
+## [0.5.11] — 2026-06-27
+
+### 新增
+- **pfSense 整合（Phase 1）**——獨立的整合、有自己的設定頁（管理 → pfSense），與 OPNsense 完全分開。pfSense CE
+  沒有內建 REST API，因此走第三方 **pfSense-pkg-RESTAPI** 套件（pfrest.org）：base path `/api/v2`、`X-API-Key`
+  認證。會拉 **ARP 表**與 **DHCP 租約**，在限定的子網路範圍內 stamp IP 存活 / MAC / 主機名稱（重疊網段安全），
+  並讀取**防火牆別名**。每台可分別開關同步（DHCP 預設關，避免與另一台 DHCP 衝突）、可限定子網路、Verify TLS、
+  測試連線與立即同步；接進每 5 分鐘的定期同步。`pfsense` 已登錄為名稱／ARP 來源。已對 pfSense CE 2.8.1 端到端
+  驗證通過。（migration 0087；防火牆規則／NAT／Graylog DSV 留待 Phase 2。）
+
+
+## [0.5.10] — 2026-06-27
+
+### 修正
+- **子網路 IP 清單裡的「新增位址」沒有 IP 欄位可填**，按下新增會以 HTTP 422（缺 IP）失敗（issue #14）。新增表單
+  現在會顯示必填的 **IP** 欄位（有帶入值時自動預填），IP 留空送出會在前端先擋下並提示。
+
+
+## [0.5.9] — 2026-06-27
+
+### 新增
+- **通知矩陣**（管理 → 通知發送設定）：以「事件 × 管道（站內鈴鐺 / Email）」的矩陣勾選哪些事件要發通知。
+  事件包含：IP 申請待審核 / 已核准 / 已拒絕、憑證即將到期或已過期、**代理成功更換新憑證**（新增）、憑證飄移、
+  異常偵測有新發現。所有發通知的地方都改為依矩陣決定；憑證與異常事件現在也能寄 Email（原本只有站內）。
+- **新事件 `cert.deployed`**：派送代理成功把某憑證換成新版時通知管理員（回報端點以「同一憑證/服務的舊指紋 vs
+  新指紋」差異判定是否真的換新）。
+- **憑證派送新增 `files`（僅換檔）服務**：只寫入憑證檔（fullchain + key 到 `/etc/ssl/jt-ipam`），**不做**設定
+  測試、不 reload／restart 任何服務——給想自己處理重載的人用。
+
+
+## [0.5.8] — 2026-06-26
+
+### 安全
+- **移除機房／地點頁內嵌的第三方地圖 iframe**（Google 地圖／OpenStreetMap），改成在新分頁開啟。原本內嵌會把
+  第三方頁面（及其 JS）載進我方頁面——既是隱私外洩，也是 ZAP 報 **Cross-Domain JavaScript Source File
+  Inclusion** 與 **Sub Resource Integrity Attribute Missing** 的來源（那些 script 是 Google／OSM 嵌入頁的，
+  不是 jt-ipam 的）。現在只有使用者點了才會連到 Google／OSM。
+- **收斂 CSP `frame-src` 為 `'self'`**（不再內嵌任何東西，拿掉 google／openstreetmap 允許來源）。
+- **強化 nginx 參考設定**：隱藏上游（uvicorn）的 `Server` / `X-Powered-By` 標頭（不洩漏框架指紋），並加上
+  `Cross-Origin-Resource-Policy: same-origin`。
+
+### 文件
+- INSTALL（中／英）與首頁現在都把**高安全性 nginx 反向代理列為正式環境標準**（TLS 1.2/1.3、HSTS preload、
+  嚴格 CSP、完整安全標頭、隱藏上游版本指紋、後端只綁 loopback）。
+
+
+## [0.5.7] — 2026-06-26
+
+### 新增
+- **MCP 用戶端設定產生器。** 管理 → LLM/AI 的「對外提供 MCP」卡片新增「產生用戶端設定」按鈕，直接產出可貼上的
+  MCP 設定片段：Claude Desktop（走 `mcp-remote`）、opencode、mcpo、通用用戶端（Cursor／Cline／VS Code）——
+  端點網址與 API 金鑰都已帶入，每段各有複製鈕。
+
+
+## [0.5.6] — 2026-06-26
+
+### 變更
+- **異常偵測頁改成頁籤。** 四種偵測（IP 衝突／MAC 漂移／失聯 IP／未授權 IP）改用頁籤呈現，不再同一頁一直往下堆疊。
+- **每個異常表格都可挑欄位**，內部用的 `ip_address_id`（UUID）欄位預設隱藏（仍可在「欄位」勾選）。
+
+### 新增
+- **MAC 漂移加上對應 IP／主機名稱**（從 IPAM 解析、ARP 補位）—— 一眼看出漂移的 MAC 是哪台主機。
+
+
+## [0.5.5] — 2026-06-26
+
+### 新增
+- **掃描代理：新增「相依套件」欄。** 代理會回報它的探測工具盤點；欄位顯示裝好幾個（例如 `4/7`），點下去
+  開詳情：每個工具裝了沒、版本多少、用於哪些探測（nmap → OS/連接埠、nmblookup → NetBIOS、avahi-resolve
+  → mDNS…）、缺的附上安裝指令。可一眼看出「查不到機器名稱」是因為缺 `nmblookup`。代理自我更新到 v1.5.0
+  才會回報（migration 0086）。
+
+
 ## [0.5.4] — 2026-06-24
 
 ### 修正

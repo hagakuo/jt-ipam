@@ -598,6 +598,11 @@ async def agent_report(
     """agent 回報各 deployment 套用結果（給後台看站台健康度 / 飄移）。接受 JSON 或 TSV(bash 代理)。"""
     agent = await _agent_from_key(session, x_agent_key)
     clean = _parse_report_body(await request.body(), request.headers.get("content-type", ""))
+    # 偵測「新憑證更換成功」：同一 (cert,profile) 的指紋由舊值換成新值且 status=ok（非首次、非未變）
+    prev_fp: dict[tuple[Any, Any], str] = {}
+    for d in (agent.reported or []):
+        if isinstance(d, dict) and d.get("status") == "ok" and d.get("fingerprint"):
+            prev_fp[(d.get("cert"), d.get("profile"))] = d.get("fingerprint")
     agent.reported = clean
     agent.last_seen_at = datetime.now(UTC)
     agent.last_source_ip = request.client.host if request.client else None
@@ -605,4 +610,28 @@ async def agent_report(
     if x_agent_version:
         agent.agent_version = x_agent_version[:32]
     await session.commit()
+
+    # 換新成功 → 通知（依通知矩陣）；每張憑證一次，best-effort 不影響回報結果
+    from app.services.notification import notify_admins_event
+    changed: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for d in clean:
+        if not isinstance(d, dict) or d.get("status") != "ok":
+            continue
+        fp, cert, profile = d.get("fingerprint"), d.get("cert"), d.get("profile")
+        if not (fp and cert):
+            continue
+        old = prev_fp.get((cert, profile))
+        if old and old != fp and cert not in seen:
+            seen.add(cert)
+            changed.append((str(cert), str(profile or "")))
+    for cert, profile in changed:
+        await notify_admins_event(
+            session, event="cert.deployed",
+            title=f"憑證已更換成功:{cert}",
+            body=f"代理「{agent.name}」已在 {profile or '目標服務'} 套用「{cert}」的新版憑證。",
+            severity="info", link="/certificates",
+        )
+    if changed:
+        await session.commit()
     return {"ok": True, "received": len(clean)}

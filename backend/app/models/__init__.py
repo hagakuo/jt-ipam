@@ -44,6 +44,7 @@ from app.models.nat import NATTranslation
 from app.models.notification import Notification, WebhookSubscription
 from app.models.oui import OUIVendor
 from app.models.permission import Permission
+from app.models.pfsense import PfSenseFirewall, PfSenseSyncedAlias
 from app.models.physical import (
     Cable,
     CableTermination,
@@ -119,6 +120,8 @@ __all__ = [
     "OPNsenseRuleLabel",
     "OPNsenseSyncedAlias",
     "Permission",
+    "PfSenseFirewall",
+    "PfSenseSyncedAlias",
     "PhpIPAMMigrationMapping",
     "PowerFeed",
     "PowerOutlet",

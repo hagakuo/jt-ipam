@@ -80,15 +80,15 @@ const bulkBusy = ref(false);
 
 // 地圖供應商：全域系統設定（在「設定 → 系統」由 admin 調整），這裡唯讀套用於地圖預覽
 const mapProvider = ref<"osm" | "google">("osm");
-const mapSrc = computed(() => {
+// 不內嵌第三方地圖 iframe（會把 Google/OSM 的頁面與其 JS 一起載進來 → 隱私外洩 + 安全掃描誤報
+// 跨網域 JS／SRI）。改成「在新分頁開啟地圖」連結，使用者點了才連到第三方。
+const mapLink = computed(() => {
   const lat = form.value.latitude, lon = form.value.longitude;
   if (lat == null || lon == null) return "";
   if (mapProvider.value === "google") {
-    return `https://maps.google.com/maps?q=${lat},${lon}&z=15&output=embed`;
+    return `https://www.google.com/maps?q=${lat},${lon}&z=15`;
   }
-  const d = 0.01;
-  return `https://www.openstreetmap.org/export/embed.html`
-    + `?bbox=${lon - d}%2C${lat - d}%2C${lon + d}%2C${lat + d}&layer=mapnik&marker=${lat}%2C${lon}`;
+  return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=15/${lat}/${lon}`;
 });
 
 async function doBulkDelete() {
@@ -278,9 +278,11 @@ onMounted(() => {
                             placeholder="120.6869" style="width: 180px" />
           </n-form-item>
         </n-space>
-        <n-form-item v-if="mapSrc" :label="t('locations.map_preview')">
-          <iframe :src="mapSrc" style="width: 100%; height: 220px; border: 1px solid var(--n-border-color, #ddd); border-radius: 6px"
-                  loading="lazy" referrerpolicy="no-referrer"></iframe>
+        <n-form-item v-if="mapLink" :label="t('locations.map_preview')">
+          <n-button tag="a" :href="mapLink" target="_blank" rel="noopener noreferrer" secondary>
+            <template #icon><n-icon :component="LocationsIcon" /></template>
+            {{ t("locations.open_in_map") }}
+          </n-button>
         </n-form-item>
         <n-form-item :label="t('sections.description')">
           <n-input v-model:value="form.description" type="textarea" :rows="2" />
