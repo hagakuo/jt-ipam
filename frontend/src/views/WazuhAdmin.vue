@@ -27,26 +27,26 @@ const { t } = useI18n();
 const wzInst = useColumnPrefs("wazuh_inst",
   ["name", "api_url", "api_user", "last_sync_at", "last_error", "actions"],
   ["name", "api_url", "api_user", "last_sync_at", "last_error", "actions"]);
-const wzInstPicker = [
+const wzInstPicker = computed(() => [
   { key: "name", label: t("cols.name") }, { key: "api_url", label: "API URL" },
   { key: "api_user", label: "User" }, { key: "last_sync_at", label: t("cols.last_sync") },
   { key: "last_error", label: t("cols.last_error") }, { key: "actions", label: t("cols.actions") },
-];
+]);
 const wzAg = useColumnPrefs("wazuh_agents",
   ["agent_id", "name", "ip", "status", "os_platform", "agent_version", "last_keep_alive"],
   ["agent_id", "name", "ip", "status", "os_platform", "agent_version", "last_keep_alive"]);
-const wzAgPicker = [
+const wzAgPicker = computed(() => [
   { key: "agent_id", label: "Agent ID" }, { key: "name", label: t("cols.name") },
   { key: "ip", label: "IP" }, { key: "status", label: t("cols.status") },
   { key: "os_platform", label: "OS" }, { key: "agent_version", label: t("cols.version") },
   { key: "last_keep_alive", label: t("cols.last_alive") },
-];
+]);
 const wzMiss = useColumnPrefs("wazuh_missing",
   ["ip", "hostname", "actions"],
   ["ip", "hostname", "actions"]);
-const wzMissPicker = [
+const wzMissPicker = computed(() => [
   { key: "ip", label: "IP" }, { key: "hostname", label: t("cols.hostname") }, { key: "actions", label: t("cols.actions") },
-];
+]);
 
 const msg = useMessage();
 const router = useRouter();
@@ -56,6 +56,7 @@ const agents = ref<WazuhAgent[]>([]);
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
 const { query: agentFilterQ, filtered: agentsFiltered } = useTableQuickFilter(agents);
 import { useTablePagination } from "@/composables/useTablePagination";
+import { apiErrMsg } from "@/api/client";
 const pg = useTablePagination();
 const missing = ref<MissingAgent[]>([]);
 const loading = ref(false);
@@ -115,7 +116,7 @@ async function refresh() {
     insts.value = i.items;
     agents.value = a;
     missing.value = m;
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 async function submit() {

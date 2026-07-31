@@ -16,6 +16,7 @@ import {
 } from "@/api/system";
 import { listMcpTools, type McpTool } from "@/api/chat";
 import { SettingsIcon, RefreshIcon, ToolsIcon, KeyIcon, CopyIcon, EyeIcon, EyeOffIcon } from "@/icons";
+import { apiErrMsg } from "@/api/client";
 
 const { t } = useI18n();
 const msg = useMessage();
@@ -69,12 +70,18 @@ async function loadModels() {
 
 async function load() {
   try { llm.value = await getLLMConfig(); }
-  catch { msg.error(t("errors.network")); }
-  void loadModels();
+  catch (e) { msg.error(apiErrMsg(e)); }
+  // 未啟用 Ollama 連接時不要自動去抓清單（否則會冒出「無法連 Ollama」錯誤）
+  if (llm.value?.enabled) void loadModels();
 }
 
-// URL 改了也重新拉 model 清單 (換 Ollama 機器時可能不同)
-watch(() => llm.value?.url, () => { if (llm.value?.url) void loadModels(); });
+// URL 改了也重新拉 model 清單 (換 Ollama 機器時可能不同)；僅在已啟用時
+watch(() => llm.value?.url, () => { if (llm.value?.url && llm.value?.enabled) void loadModels(); });
+// 啟用切換：開啟才去抓清單；關閉時清掉清單與錯誤（避免殘留「無法連」）
+watch(() => llm.value?.enabled, (en) => {
+  if (en) { if (llm.value?.url) void loadModels(); }
+  else { models.value = []; modelsError.value = null; }
+});
 
 let debounce: ReturnType<typeof setTimeout> | null = null;
 function patch(p: LLMConfigPatch) {

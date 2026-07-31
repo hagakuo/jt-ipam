@@ -63,6 +63,9 @@ async def _notify_requester(
     title: str,
     body: str | None = None,
     event: str = "ip_request.approved",
+    title_key: str | None = None,
+    body_key: str | None = None,
+    params: dict | None = None,
 ) -> None:
     from app.services.system_config import get_notification_matrix
     ch = (await get_notification_matrix(session)).get(event, {"in_app": True, "email": True})
@@ -73,6 +76,9 @@ async def _notify_requester(
             severity=severity,
             title=title,
             body=body,
+            title_key=title_key,
+            body_key=body_key,
+            params=params,
             link=f"/requests/{request.id}",
             object_type="ip_request",
             object_id=request.id,
@@ -83,11 +89,14 @@ async def _notify_requester(
         u = await session.get(_U, request.requester_user_id)
         if u and u.email:
             await email_users(session, [u.email], f"[jt-ipam] {title}", body or title)
+    from app.services.notify_channels import broadcast_channels
+    await broadcast_channels(session, subject=title, text=body)
 
 
 async def _deliver_to_approvers(
     session: AsyncSession, approvers: list[User], *,
     request: IPRequest, subnet: Subnet, title: str, body: str,
+    title_key: str | None = None, body_key: str | None = None, params: dict | None = None,
 ) -> None:
     """把一則通知送給一組審核人：站內鈴鐺 + （若 Email 管道啟用）寄信。Best-effort。"""
     import logging
@@ -112,8 +121,11 @@ async def _deliver_to_approvers(
         for u in approvers:
             await push_notification(
                 session, user_id=u.id, severity="info", title=title, body=body,
+                title_key=title_key, body_key=body_key, params=params,
                 link=link, object_type="ip_request", object_id=request.id,
             )
+    from app.services.notify_channels import broadcast_channels
+    await broadcast_channels(session, subject=title, text=body)
     if not mx.get("email"):
         return
     try:
@@ -156,11 +168,17 @@ async def notify_approvers_new_request(
     """新申請送出 → 通知目前該審核的人（單關卡=全部審核人；多關卡 stages=第一關；parallel=全部關卡）。"""
     from app.services.ip_request_policy import approver_users
     approvers = [u for u in await approver_users(session) if u.id != requester.id]
-    body = f"{requester.display_name or requester.username} 申請 {subnet.cidr} 的 IP" + (
+    _who = requester.display_name or requester.username
+    _cidr = str(subnet.cidr)
+    body = f"{_who} 申請 {_cidr} 的 IP" + (
         f"（{request.hostname}）" if request.hostname else ""
     )
     await _deliver_to_approvers(
         session, approvers, request=request, subnet=subnet, title="IP 申請待審核", body=body,
+        title_key="notif.ipreq_pending",
+        body_key="notif.ipreq_pending_body" if request.hostname else "notif.ipreq_pending_body_nohost",
+        params=({"who": _who, "cidr": _cidr, "host": request.hostname} if request.hostname
+                else {"who": _who, "cidr": _cidr}),
     )
 
 
@@ -194,6 +212,9 @@ async def _notify_stage(
     await _deliver_to_approvers(
         session, users, request=request, subnet=subnet,
         title=f"IP 申請待審核（{step['name']}）", body=body,
+        title_key="notif.ipreq_pending_stage",
+        body_key="notif.ipreq_pending_stage_body",
+        params={"stage": step["name"], "cidr": str(subnet.cidr)},
     )
 
 
@@ -285,6 +306,17 @@ async def approve_request(
     except (IPAlreadyExists, IPNotInSubnet, SubnetFull) as exc:
         raise IPRequestError(f"Allocation failed: {exc}") from exc
 
+    # 把申請填的資料寫進配發的 IP：
+    #  - 主機名稱走 manual 觀測（最高優先序），否則 create_ip 直接設的欄位會被下次同步 recompute 蓋掉
+    #  - 用途（IPAddress 無對應欄）寫進備註，保留申請脈絡
+    if request.hostname and request.hostname.strip():
+        from app.services.hostname import apply_observation
+        await apply_observation(
+            session, ip=ip_obj, source="manual", hostname=request.hostname.strip(),
+        )
+    if request.purpose and request.purpose.strip():
+        ip_obj.note = f"用途：{request.purpose.strip()}"
+
     now = datetime.now(UTC)
     request.status = "fulfilled"
     request.approver_user_id = approver.id
@@ -309,13 +341,17 @@ async def approve_request(
             "subnet_id": str(subnet.id),
         },
     )
+    _ip_str = str(ip_obj.ip).split("/")[0]
     await _notify_requester(
         session,
         request=request,
         severity="success",
         title="IP 申請已核准",
-        body=f"已配發 {str(ip_obj.ip).split('/')[0]} 給 {request.hostname or '（無主機名稱）'}",
+        body=f"已配發 {_ip_str} 給 {request.hostname or '（無主機名稱）'}",
         event="ip_request.approved",
+        title_key="notif.ipreq_approved",
+        body_key="notif.ipreq_approved_body" if request.hostname else "notif.ipreq_approved_body_nohost",
+        params={"ip": _ip_str, "host": request.hostname} if request.hostname else {"ip": _ip_str},
     )
     return request
 
@@ -408,6 +444,8 @@ async def reject_request(
         title="IP 申請已拒絕",
         body=reason,
         event="ip_request.rejected",
+        title_key="notif.ipreq_rejected",
+        params={},
     )
     return request
 

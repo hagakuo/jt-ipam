@@ -16,6 +16,7 @@ import {
 import { autoSort } from "@/composables/useTableSort";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
+import { apiErrMsg } from "@/api/client";
 const { t } = useI18n();
 
 const { visibleKeys: cfVis, setVisible: cfSet, reset: cfReset } = useColumnPrefs(
@@ -23,7 +24,7 @@ const { visibleKeys: cfVis, setVisible: cfSet, reset: cfReset } = useColumnPrefs
   ["object_type", "name", "field_type", "label_zh_tw", "required", "display_order", "actions"],
   ["object_type", "name", "field_type", "label_zh_tw", "required", "display_order", "actions"],
 );
-const cfPicker = [
+const cfPicker = computed(() => [
   { key: "object_type", label: "Object" },
   { key: "name", label: "Name" },
   { key: "field_type", label: "Type" },
@@ -31,7 +32,7 @@ const cfPicker = [
   { key: "required", label: "Required" },
   { key: "display_order", label: "Order" },
   { key: "actions", label: t("cols.actions") },
-];
+]);
 
 const msg = useMessage();
 const rows = ref<CustomField[]>([]);
@@ -88,7 +89,7 @@ function stringifyOptions(opts: Record<string, unknown> | null): string {
 async function refresh() {
   loading.value = true;
   try { rows.value = (await listCustomFields()).items; }
-  catch { msg.error(t("errors.network")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 function openCreate() {

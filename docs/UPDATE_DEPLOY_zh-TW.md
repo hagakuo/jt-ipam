@@ -86,7 +86,7 @@ git merge --no-edit upstream/main
 3. 解完衝突後跑：
 
 ```powershell
-rg -n "<<<<<<<|=======|>>>>>>>" .
+rg -n "^(<<<<<<<|=======|>>>>>>>)" .
 git diff --check
 ```
 
@@ -123,6 +123,14 @@ merge migration 內容通常只需要 `pass`，因為它只是合併 migration g
 - 上游新增鏈：`0086_scan_agent_tools -> 0087_pfsense_firewall -> 0088_pfsense_rules_dsv`
 - 因此新增 merge revision：`0089_merge_refresh_pfsense`
 - 注意：`alembic_version.version_num` 欄位長度是 32，revision id 必須控制在 32 字元以內。
+
+2026-07-31 從 `0.5.13` 更新到 `0.5.122` 時，上游 migration 已延伸至
+`0101_librenms_links`，而正式站仍帶有先前的本地 merge head。處理方式仍是不改動任何
+已套用 revision，新增第二個 graph-only merge：
+
+- 既有本地 head：`0089_merge_refresh_pfsense`
+- 最新上游 head：`0101_librenms_links`
+- 新的單一 head：`0102_merge_local_refresh`
 
 ## 5. 本機驗證
 

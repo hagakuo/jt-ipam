@@ -47,11 +47,17 @@ def _build_tool_list(allowed: set[str] | None = None) -> list[dict[str, Any]]:
 
 
 async def resolve_token(token: str):  # type: ignore[no-untyped-def]
-    """API token → User（沿用 REST 的 jt_ token 機制）。回 None 表示無效。"""
+    """API token → `(User, readonly)`（沿用 REST 的 jt_ token 機制）。
+
+    token 無效時回 `(None, False)`。`readonly` 取自該 token 的 scope（`read`）——
+    JSON-RPC 永遠是 POST，MCP 無法用 HTTP 方法判斷，所以在這裡把唯讀旗標帶出去，
+    交給既有的 readonly 模式隱藏並擋下會異動資料的工具。
+    """
     from datetime import UTC, datetime
 
     from sqlalchemy import select
 
+    from app.core.api_scope import token_is_readonly
     from app.models.user import APIToken, User
 
     async with SessionLocal() as session:
@@ -60,15 +66,13 @@ async def resolve_token(token: str):  # type: ignore[no-untyped-def]
             await session.execute(select(APIToken).where(APIToken.token_hash == digest))
         ).scalar_one_or_none()
         if api_token is None or api_token.revoked_at is not None:
-            return None
+            return None, False
         if api_token.expires_at <= datetime.now(UTC):
-            return None
+            return None, False
         user = await session.get(User, api_token.user_id)
         if user is None or not user.is_active:
-            return None
-        user._api_token_scopes = list(api_token.scopes or [])  # type: ignore[attr-defined]
-        user._api_token_object_filters = api_token.object_filters  # type: ignore[attr-defined]
-        return user
+            return None, False
+        return user, token_is_readonly(api_token.scopes)
 
 
 async def _dispatch_call(name: str, arguments: dict[str, Any], user, session, *, readonly: bool = False):  # type: ignore[no-untyped-def]
@@ -207,8 +211,8 @@ def build_mcp_app() -> FastAPI:
             user = await _load_principal(mcfg.mcp_principal_user_id)
             readonly = True
         if user is None:
-            user = await resolve_token(token)
-            readonly = False
+            # 一般 API 權杖：唯讀 scope 的 token 同樣進 readonly 模式
+            user, readonly = await resolve_token(token)
         if user is None:
             return JSONResponse({"jsonrpc": "2.0", "id": None,
                                  "error": {"code": -32001, "message": "invalid or expired token"}},

@@ -10,6 +10,7 @@ import { listDevices } from "@/api/basic";
 import { PlusIcon, EditIcon, DeleteIcon, LinkIcon, RefreshIcon, PhysicalIcon, ExportIcon } from "@/icons";
 
 import { useTablePagination } from "@/composables/useTablePagination";
+import { apiErrMsg } from "@/api/client";
 const props = defineProps<{ deviceId: string; deviceName: string; admin: boolean }>();
 const { t } = useI18n();
 const msg = useMessage();
@@ -30,7 +31,7 @@ async function refresh() {
     const list = await Physical.ports(props.deviceId);
     // 自然排序（eth1/0/2 在 eth1/0/10 前面，而非字元排序）
     ports.value = list.sort((a, b) => natCompare(a.name, b.name));
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 // 把名稱拆成「文字 / 數字」段落逐段比較，數字段以數值大小比

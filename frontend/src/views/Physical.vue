@@ -18,6 +18,7 @@ import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
 import { useTablePagination } from "@/composables/useTablePagination";
 const pg = useTablePagination();
 import { useAuthStore } from "@/stores/auth";
+import { apiErrMsg } from "@/api/client";
 const _authBtn = useAuthStore();
 const canEdit = computed(() => _authBtn.me?.can_edit !== false);
 
@@ -77,7 +78,7 @@ async function refresh() {
     } else {
       vpns.value = await Physical.vpns();
     }
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 

@@ -77,6 +77,8 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     discovery_source: Mapped[str] = mapped_column(String(16), default="manual", nullable=False)
     # 自動判定：此 IP 目前有 DHCP 租約（由 OPNsense DHCP lease 同步維護，與手動 state 分開）
     in_dhcp_lease: Mapped[bool] = mapped_column(default=False, nullable=False, server_default=text("false"))
+    # 手動標記：此 IP 是 DHCP 伺服器（清單視覺化用；另有「對應防火牆 IP」自動判定）
+    is_dhcp_server: Mapped[bool] = mapped_column(default=False, nullable=False, server_default=text("false"))
     last_seen_scanner: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_librenms: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_dns: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -94,6 +96,14 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     # VNC 連線管理：是否對此 IP 啟用 VNC（控制詳情頁 VNC 按鈕是否出現）。
     vnc_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
+    # PVE 主控台（qemu→noVNC / lxc→xterm）；僅對應到 Proxmox VM/CT 的 IP 有意義
+    novnc_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
+    # BMC OOB主控台（IPMI SOL：鍵盤 + 文字畫面）；針對 BMC 管理 IP
+    bmc_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default=text("false")
     )
 

@@ -38,6 +38,13 @@ class UniventionUCSAdapter(DNSAdapter):
 
     @property
     def _headers(self) -> dict[str, str]:
+        # UCS UDM 對空帳號/密碼會回含糊的「basic auth credentials are malformed」400；
+        # 先在這裡擋下並給可行動訊息（實際案例：帳號被清空、只剩密碼）。
+        if not self.username or not self.password:
+            raise DNSAdapterError(
+                "UCS 認證不完整（帳號或密碼為空）；basic auth 需要帳號與密碼，"
+                "請到「DNS 伺服器」設定重新輸入 UCS 帳號密碼。"
+            )
         token = base64.b64encode(f"{self.username}:{self.password}".encode()).decode("ascii")
         return {"Accept": "application/json", "Authorization": f"Basic {token}"}
 

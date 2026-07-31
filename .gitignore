@@ -101,3 +101,4 @@ images/
 
 # Docker Compose deploy: generated TLS certs
 deploy/docker/certs/
+zap-reports/

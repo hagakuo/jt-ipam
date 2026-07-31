@@ -34,6 +34,11 @@ from app.models.firewall import (
     OPNsenseSyncedAlias,
 )
 from app.models.firewall_rule import OPNsenseRule
+from app.models.fortigate import (
+    FortiGateAddressObject,
+    FortiGateFirewall,
+    FortiGatePolicy,
+)
 from app.models.ip_change_log import IPChangeLog
 from app.models.ip_hostname import IPHostnameObservation
 from app.models.ip_request import IPRequest, IPRequestEvent, IPRequestStageApproval
@@ -70,6 +75,7 @@ from app.models.virt import (
 from app.models.vlan import VLAN, DeviceVLAN, VLANDomain
 from app.models.vrf import VRF
 from app.models.wazuh import WazuhAgent, WazuhInstance
+from app.models.windows_dhcp import WindowsDhcpServer
 
 __all__ = [
     "ASN",

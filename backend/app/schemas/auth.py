@@ -30,3 +30,21 @@ class TokenResponse(StrictModel):
 
 class RefreshRequest(StrictModel):
     refresh_token: Annotated[str, Field(min_length=1, max_length=4096)]
+
+
+class TotpDisableRequest(StrictModel):
+    """停用 TOTP 需要「升級驗證」（step-up）—— 光有 session 不夠。
+
+    本機帳號給 `password`；外部認證帳號（LDAP / OIDC / SAML，本地沒有密碼雜湊）
+    改給當前的 6 位數 `code`。兩者任一驗過即可，但不能兩者都不給。
+    """
+
+    password: Annotated[str | None, Field(default=None, max_length=256)] = None
+    code: Annotated[str | None, Field(default=None, min_length=6, max_length=6)] = None
+
+
+class ChangePasswordRequest(StrictModel):
+    """本機帳號自助變更密碼（外部 IdP / LDAP 帳號不適用）。"""
+
+    current_password: Annotated[str, Field(min_length=1, max_length=256)]
+    new_password: Annotated[str, Field(min_length=12, max_length=256)]

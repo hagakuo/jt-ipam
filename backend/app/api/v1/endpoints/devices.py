@@ -519,3 +519,27 @@ async def bulk_delete_devices(
         deleted += 1
     await session.commit()
     return {"deleted": deleted, "failed": len(errors), "errors": errors[:50]}
+
+
+@router.get(
+    "/{device_id}/uptime",
+    dependencies=[Depends(require_object_perm("device", "read", path_param="device_id"))],
+)
+async def get_device_uptime(
+    device_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    days: int = Query(90, ge=7, le=365),
+) -> dict[str, Any]:
+    """裝置的每日存活狀態，由它名下所有 IP 的狀態轉換合併而成。
+
+    多個 IP 時：**當天任一 IP 曾中斷就標中斷**。與單一 IP 的每日規則一致，
+    且傾向浮現問題而非掩蓋（某個介面斷了仍然值得看見）。
+    重建規則與「沒資料不得算成正常」等原則見 `app/services/uptime.py`。
+    """
+    from app.models.address import IPAddress
+    from app.services.uptime import uptime_for_ips
+
+    ip_ids = list((await session.execute(
+        select(IPAddress.id).where(IPAddress.device_id == device_id)
+    )).scalars().all())
+    return await uptime_for_ips(session, ip_ids, days=days)

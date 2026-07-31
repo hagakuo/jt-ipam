@@ -13,6 +13,7 @@ dependencies = [
     # ── Web framework ──
     "fastapi[standard]>=0.115",
     "uvicorn[standard]>=0.32",
+    "websockets>=13",             # PVE 主控台（noVNC/xterm）後端對接 PVE vncwebsocket 的 client WS
     "starlette>=0.41",
 
     # ── Validation ──
@@ -142,7 +143,8 @@ ignore = [
 "app/api/v1/endpoints/auth.py" = ["E402"]
 "app/api/v1/endpoints/migration.py" = ["E402"]
 "app/api/v1/endpoints/notifications.py" = ["E402"]
-"app/api/v1/endpoints/system_settings.py" = ["E402"]
+# E402: 刻意的 late import；PT019: `test_notification_email` 等是 FastAPI 端點（非 pytest），`_user` 是依賴注入非 fixture
+"app/api/v1/endpoints/system_settings.py" = ["E402", "PT019"]
 
 # ─────────────────────────────────────────────────────────
 # Mypy

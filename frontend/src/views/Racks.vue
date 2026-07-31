@@ -30,7 +30,7 @@ import { exportRacksSvg, exportRacksPng, exportRacksDrawio, type RackNameAlign }
 import { getRackNameAlign } from "@/api/basic";
 import { usePinned } from "@/composables/usePinned";
 import { useRouter } from "vue-router";
-import { apiClient } from "@/api/client";
+import { apiClient, apiErrMsg } from "@/api/client";
 import RackDiagram from "@/components/RackDiagram.vue";
 import { RACK_DEVICE_TYPES, rackTypeColor } from "@/utils/rackColors";
 import RackFloorPlan from "@/components/RackFloorPlan.vue";
@@ -91,7 +91,7 @@ const mergedHasRear = computed(() =>
 const roomFocus = ref<RD | null>(null);   // 在平面圖上點選的機櫃 → 顯示其 U 位
 async function onRoomRackSelect(rackId: string) {
   try { roomFocus.value = await getRackDiagram(rackId); }
-  catch { msg.error(t("errors.network")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
 }
 const rows = ref<Rack[]>([]);
 const loading = ref(false);
@@ -381,7 +381,7 @@ async function onPickEmpty(u: number, rackId: string, side?: "left" | "right") {
     pickableDevices.value = r.items
       .filter((d) => !(d as any).rack_id)
       .concat(r.items.filter((d) => (d as any).rack_id));
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
 }
 // 把某機櫃的圖在所有出現處（選定 / 釘選機房 / 所屬機櫃清單）都重新整理
 async function refreshRackEverywhere(rackId: string) {

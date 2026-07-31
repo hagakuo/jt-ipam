@@ -45,10 +45,11 @@ export interface RdpTicket {
   ws_path: string;
   default_size: { width: number; height: number };
   has_saved_creds: boolean;
+  clipboard_paste?: boolean;   // 管理者是否允許「控制端貼上文字到被控端」
   ttl: number;
 }
 
-// 換發短期一次性 ticket（之後用它開 WebSocket）。注意帶 /api/v1 前綴。
+// 換發短期一次性 ticket（之後用它開 WebSocket）。注意帶 /api/v1 首碼。
 export async function requestRdpTicket(addressId: string): Promise<RdpTicket> {
   const { data } = await apiClient.post<RdpTicket>(
     `/api/v1/addresses/${addressId}/rdp/ticket`,

@@ -27,6 +27,18 @@ const routes: RouteRecordRaw[] = [
     component: () => import("@/views/VncConsole.vue"),
   },
   {
+    // 另開視窗的全頁 PVE 主控台（noVNC / xterm）
+    path: "/novnc/:id",
+    name: "novnc-console",
+    component: () => import("@/views/NoVncConsole.vue"),
+  },
+  {
+    // 另開視窗的全頁 BMC OOB主控台（IPMI SOL）
+    path: "/bmc/:id",
+    name: "bmc-console",
+    component: () => import("@/views/BmcConsole.vue"),
+  },
+  {
     path: "/",
     component: () => import("@/components/layout/MainLayout.vue"),
     children: [
@@ -46,6 +58,10 @@ const routes: RouteRecordRaw[] = [
       { path: "tasks", name: "tasks", component: () => import("@/views/Tasks.vue") },
       { path: "topology", name: "topology", component: () => import("@/views/Topology.vue") },
       { path: "settings", name: "settings", component: () => import("@/views/Settings.vue") },
+      // API 權杖是自助功能（每個帳號管自己的），不掛 admin。
+      // 路徑刻意放在 /account/ 底下：nginx 是 `location /api/`（帶斜線）所以 /api-tokens
+      // 其實不會被反代吃掉，但只差一個字元，換成 /account/ 就不必依賴那個細節。
+      { path: "account/api-tokens", name: "api_tokens", component: () => import("@/views/ApiTokens.vue") },
       { path: "notifications", name: "notifications", component: () => import("@/views/Notifications.vue") },
       // Admin
       { path: "audit", name: "audit", component: () => import("@/views/Audit.vue"), meta: { admin: true } },
@@ -62,6 +78,10 @@ const routes: RouteRecordRaw[] = [
       { path: "firewall", name: "firewall", component: () => import("@/views/FirewallAdmin.vue"), meta: { admin: true } },
       { path: "firewall-admin", name: "firewall_admin", component: () => import("@/views/FirewallAdmin.vue"), meta: { admin: true } },
       { path: "pfsense", name: "pfsense", component: () => import("@/views/PfSenseAdmin.vue"), meta: { admin: true } },
+      { path: "windows-dhcp", name: "windows_dhcp", component: () => import("@/views/WindowsDhcpAdmin.vue"), meta: { admin: true } },
+      { path: "fortigate", name: "fortigate", component: () => import("@/views/FortiGateAdmin.vue"), meta: { admin: true } },
+      { path: "pfsense-fw", name: "pfsense_fw", component: () => import("@/views/PfSenseFirewallView.vue") },
+      { path: "fortigate-fw", name: "fortigate_fw", component: () => import("@/views/FortiGateFirewallView.vue") },
       { path: "wazuh", name: "wazuh", component: () => import("@/views/WazuhAdmin.vue"), meta: { admin: true } },
       { path: "plugins", name: "plugins", component: () => import("@/views/PluginsAdmin.vue"), meta: { admin: true } },
       // Phase 3
@@ -100,6 +120,7 @@ const routes: RouteRecordRaw[] = [
       { path: "vpn", name: "vpn-tunnels", component: () => import("@/views/Physical.vue"), props: { mode: "vpn" } },
       { path: "physical", redirect: { name: "cabling" } },
       { path: "migration", name: "migration", component: () => import("@/views/Migration.vue"), meta: { admin: true } },
+      { path: "system-transfer", name: "system_transfer", component: () => import("@/views/SystemTransfer.vue"), meta: { admin: true } },
       { path: "import", name: "import", component: () => import("@/views/ImportExternal.vue"), meta: { admin: true } },
     ],
   },

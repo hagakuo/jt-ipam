@@ -95,6 +95,7 @@
       <a href="index.html#screens"><span class="zh">畫面</span><span class="en">Screenshots</span></a>
       <a href="index.html#ai">AI</a>
       <a href="index.html#install"><span class="zh">安裝</span><span class="en">Install</span></a>
+      <a href="api.html">API</a>
       <a class="btn btn-ghost btn-sm" href="index.html"><span class="zh">回首頁</span><span class="en">Home</span></a>
       <a class="btn btn-ghost btn-sm" href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener">GitHub</a>
       <button class="btn btn-ghost btn-sm" id="langBtn" type="button">English</button>
@@ -137,6 +138,9 @@
     <ul class="branch">
       <li><span class="leaf"><span class="zh">DNS、AdGuard、LibreNMS、Wazuh</span><span class="en">DNS, AdGuard, LibreNMS, Wazuh</span></span></li>
       <li><span class="leaf"><span class="zh">OPNsense：防火牆規則 / 別名 / NAT、DHCP / ARP / OpenVPN</span><span class="en">OPNsense: firewall rules / aliases / NAT, DHCP / ARP / OpenVPN</span></span></li>
+      <li><span class="leaf"><span class="zh">pfSense：防火牆規則 / 別名 / NAT、DHCP / ARP（pfSense-pkg-RESTAPI，獨立設定頁）</span><span class="en">pfSense: firewall rules / aliases / NAT, DHCP / ARP (pfSense-pkg-RESTAPI, its own settings page)</span></span></li>
+      <li><span class="leaf"><span class="zh">FortiGate（Beta）：防火牆政策 / 位址物件 / NAT、DHCP 租約與發放範圍 / ARP、IPsec 通道 / SSL-VPN 連線（FortiOS REST API 唯讀，支援多 VDOM）</span><span class="en">FortiGate (Beta): firewall policies / address objects / NAT, DHCP leases and ranges / ARP, IPsec tunnels / SSL-VPN sessions (read-only over the FortiOS REST API, multi-VDOM)</span></span></li>
+      <li><span class="leaf"><span class="zh">Windows DHCP Server（Beta）：DHCP 租約與發放範圍（WinRM + PowerShell 唯讀）</span><span class="en">Windows DHCP Server (Beta): DHCP leases and address ranges (read-only over WinRM + PowerShell)</span></span></li>
       <li><span class="leaf"><span class="zh">Graylog：DSV 查詢表（IP→主機名稱、防火牆規則→別名、別名→成員、Proxmox VM）、記錄補主機名稱（Lookup Table）、稽核事件轉送（syslog/CEF/GELF）</span><span class="en">Graylog: DSV lookup tables (IP→hostname, firewall rule→alias, alias→members, Proxmox VM), log enrichment (Lookup Table), audit forwarding (syslog/CEF/GELF)</span></span></li>
       <li><span class="leaf"><span class="zh">phpIPAM 遷移（SSH tunnel 匯入）</span><span class="en">phpIPAM migration (import over SSH tunnel)</span></span></li>
     </ul>
@@ -151,7 +155,7 @@
 
     <div class="grp"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg><span class="zh">瀏覽器連線管理</span><span class="en">In-browser remote console</span></div>
     <ul class="branch">
-      <li><span class="leaf"><span class="zh">直接從 IP / 裝置開 SSH 終端機與 RDP、VNC 桌面（RDP / VNC 為 Beta），全程在瀏覽器內、免裝用戶端</span><span class="en">Open an SSH terminal plus RDP &amp; VNC desktops (RDP / VNC Beta) straight from an IP / device — all in-browser, no client to install</span></span></li>
+      <li><span class="leaf"><span class="zh">直接從 IP / 裝置開 SSH 終端機、RDP / VNC 桌面、Proxmox VE 主控台（VM noVNC / CT xterm）與 BMC 序列主控台（IPMI SOL）（RDP / VNC / PVE / BMC 為 Beta），全程在瀏覽器內、免裝用戶端</span><span class="en">Open an SSH terminal, RDP / VNC desktops, a Proxmox VE console (noVNC / xterm) and a BMC serial console (IPMI SOL) (RDP / VNC / PVE / BMC Beta) straight from an IP / device — all in-browser, no client to install</span></span></li>
       <li><span class="leaf"><span class="zh">連線帳密預設不儲存（僅連線當下傳送）；也可選擇存進個人加密金庫（by-user、AES-GCM 加密，私鑰 / 密碼逐欄加密）</span><span class="en">Credentials are not stored by default (sent only at connect time); optionally save to a per-user encrypted vault (by-user, AES-GCM, per-field encryption)</span></span></li>
       <li><span class="leaf"><span class="zh">逐物件權限控管誰能連、單次 ticket→WebSocket 連線、每次開閉皆稽核；目標主機鎖死防 SSRF</span><span class="en">Per-object permissions on who may connect, single-use ticket→WebSocket sessions, every open/close audited; target host locked to prevent SSRF</span></span></li>
       <li><span class="leaf"><span class="zh">RDP / VNC 可送特殊組合鍵（Ctrl + Alt + Del、F1～F12、⊞ Win / ⌘…）、自動縮放符合視窗、以目前視窗大小重連取得原生畫面</span><span class="en">RDP / VNC can send special key combos (Ctrl + Alt + Del, F1–F12, ⊞ Win / ⌘…), auto-fit to window, and reconnect at the current window size for a native picture</span></span></li>

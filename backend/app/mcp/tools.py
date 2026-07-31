@@ -769,14 +769,21 @@ async def switch_port_for_ip(
     session: AsyncSession, *, user: User, ip: str,
 ) -> dict[str, Any]:
     """查某 IP 接在哪台 switch 的哪個 port（用 FDB；access port = 該 port MAC 數最少者）。"""
-    ipa = (await session.execute(
-        select(IPAddress).where(IPAddress.ip == ip)
-    )).scalar_one_or_none()
+    # 先把可見範圍套進查詢、再取一筆 —— 不可「先任取一筆再檢查可見性」。
+    # 原寫法有兩個問題：
+    #  (1) 沒 scope 也沒 limit(1) → 重疊網段（多客戶共用 192.168.1.0/24）下同一個 IP
+    #      字串會有多筆，`scalar_one_or_none()` 拋 MultipleResultsFound 直接炸掉；
+    #  (2) 任取一筆才驗權限 → 若剛好取到不可見子網路那筆就回「IP not found」，
+    #      即使使用者其實看得到另一個子網路的同一個 IP。
+    vis = await visible_ids(session, user=user, object_type="subnet")
+    stmt = select(IPAddress).where(IPAddress.ip == ip)
+    if vis is not None:                      # None＝全部可見（admin 或萬用授權）
+        if not vis:
+            raise IPAMToolError("IP not found")
+        stmt = stmt.where(IPAddress.subnet_id.in_(vis))
+    ipa = (await session.execute(stmt.limit(1))).scalars().first()
     if ipa is None:
         raise IPAMToolError("IP not found")
-    vis = await visible_ids(session, user=user, object_type="subnet")
-    if vis is not None and (ipa.subnet_id is None or ipa.subnet_id not in vis):
-        raise IPAMToolError("IP not found")   # RBAC：不可見子網路的 IP
     if ipa.mac is None:
         return {"ip": ip, "mac": None, "locations": [], "note": "no MAC known for this IP"}
     mac = str(ipa.mac).lower()
@@ -824,7 +831,7 @@ async def allocate_ip(
     （取最精確的一個）來配發，使用者不必先知道子網路。"""
     if not user.is_admin:
         raise IPAMToolError("allocate_ip requires admin")
-    # 只給 requested_ip 時，自動推導包含它的子網路（最長前綴優先）
+    # 只給 requested_ip 時，自動推導包含它的子網路（最長首碼優先）
     if not subnet_id and not subnet_cidr and requested_ip:
         row = (await session.execute(
             text(
@@ -906,12 +913,17 @@ async def get_ip_detail(session: AsyncSession, *, user: User, ip: str) -> dict[s
         ipaddress.ip_address(ip)
     except ValueError as exc:
         raise IPAMToolError(f"Invalid IP: {exc}") from exc
-    obj = (await session.execute(select(IPAddress).where(IPAddress.ip == ip))).scalars().first()
-    if obj is None:
-        return {"found": False, "ip": ip}
-    # RBAC：IP 所屬子網路不可見 → 當作查無，不洩漏
+    # RBAC：先縮到可見子網路再取一筆。若「先任取一筆再驗可見性」，在重疊網段
+    # （多客戶共用 192.168.1.0/24）下可能取到不可見那筆而回報「查無」——
+    # 但使用者其實看得到另一個子網路的同一個 IP，那是假的查無。
     vis = await visible_ids(session, user=user, object_type="subnet")
-    if vis is not None and (obj.subnet_id is None or obj.subnet_id not in vis):
+    stmt = select(IPAddress).where(IPAddress.ip == ip)
+    if vis is not None:                      # None＝全部可見（admin 或萬用授權）
+        if not vis:
+            return {"found": False, "ip": ip}
+        stmt = stmt.where(IPAddress.subnet_id.in_(vis))
+    obj = (await session.execute(stmt.limit(1))).scalars().first()
+    if obj is None:
         return {"found": False, "ip": ip}
     sub = await session.get(Subnet, obj.subnet_id) if obj.subnet_id else None
     dev = await session.get(Device, obj.device_id) if obj.device_id else None

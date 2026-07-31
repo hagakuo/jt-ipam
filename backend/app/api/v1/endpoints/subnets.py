@@ -26,9 +26,9 @@ from app.services import ai as ai_service
 from app.services.custom_field import CustomFieldError, validate_custom_fields
 from app.services.notification import deliver_event
 from app.services.permission import (
-    filter_visible,
     get_object_permission,
     has_permission,
+    visible_ids,
 )
 from app.services.subnet import (
     SubnetOverlap,
@@ -70,19 +70,18 @@ async def list_subnets(
         stmt = stmt.where(Subnet.section_id == section_id)
         count_stmt = count_stmt.where(Subnet.section_id == section_id)
 
-    stmt = stmt.order_by(Subnet.cidr).offset((page - 1) * page_size).limit(page_size)
-    rows = list((await session.execute(stmt)).scalars().all())
+    # A01：先把可見範圍套進查詢（含 count_stmt），再分頁 —— 不可「先分頁再過濾」。
+    # 舊寫法先全域分頁、事後才篩掉不可見的，造成 total 回全系統子網路數（洩漏規模），
+    # 且每頁實際筆數少於 page_size、甚至整頁空白。
+    vis = await visible_ids(session, user=user, object_type="subnet", required="read")
+    if vis is not None:                    # None＝全部可見（admin 或萬用授權）
+        if not vis:                        # 空 set＝完全沒有可見範圍
+            return Paginated[SubnetRead](items=[], total=0, page=page, page_size=page_size)
+        stmt = stmt.where(Subnet.id.in_(vis))
+        count_stmt = count_stmt.where(Subnet.id.in_(vis))
 
-    # A01：篩出 user 有 read 權限的
-    visible_ids = await filter_visible(
-        session,
-        user=user,
-        object_type="subnet",
-        object_ids=[r.id for r in rows],
-        required="read",
-    )
-    visible_set = set(visible_ids)
-    vis_rows = [r for r in rows if r.id in visible_set]
+    stmt = stmt.order_by(Subnet.cidr).offset((page - 1) * page_size).limit(page_size)
+    vis_rows = list((await session.execute(stmt)).scalars().all())
     # 批次帶出單位名稱：非管理員載不到 customers 清單，前端樹狀分組才不會只剩 UUID
     cust_ids = {r.customer_id for r in vis_rows if r.customer_id}
     cust_name: dict[uuid.UUID, str] = {}

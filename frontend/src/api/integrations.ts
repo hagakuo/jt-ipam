@@ -68,6 +68,11 @@ export async function deleteDNSServer(id: string): Promise<void> {
   await apiClient.delete(`/api/v1/dns/servers/${id}`);
 }
 
+export async function syncDNSServer(id: string): Promise<unknown> {
+  const { data } = await apiClient.post(`/api/v1/dns/servers/${id}/sync`, null);
+  return data;
+}
+
 export async function testDNSServer(id: string): Promise<unknown> {
   const { data } = await apiClient.post(`/api/v1/dns/servers/${id}/test`);
   return data;
@@ -80,10 +85,12 @@ export interface LibreNMSInstance {
   name: string;
   api_url: string;
   enabled: boolean;
+  verify_tls: boolean;
   sync_devices: boolean;
   sync_arp: boolean;
   sync_fdb: boolean;
   sync_vlans: boolean;
+  sync_links: boolean;
   scope_subnet_ids: string[] | null;
   use_for_status: boolean;
   auto_add_devices: boolean;
@@ -110,10 +117,12 @@ export interface LibreNMSInstanceCreate {
   api_url: string;
   api_token: string;
   enabled?: boolean;
+  verify_tls?: boolean;
   sync_devices?: boolean;
   sync_arp?: boolean;
   sync_fdb?: boolean;
   sync_vlans?: boolean;
+  sync_links?: boolean;
   scope_subnet_ids?: string[] | null;
   use_for_status?: boolean;
   auto_add_devices?: boolean;
@@ -158,6 +167,7 @@ export interface LibreNMSInstanceUpdate {
   sync_arp?: boolean;
   sync_fdb?: boolean;
   sync_vlans?: boolean;
+  sync_links?: boolean;
   scope_subnet_ids?: string[] | null;
   use_for_status?: boolean;
   auto_add_devices?: boolean;
@@ -323,14 +333,19 @@ export async function syncFirewall(id: string): Promise<unknown> {
 }
 
 export interface DhcpPoolRange {
-  id: string; firewall_id: string; subnet_cidr: string;
-  start_ip: string; end_ip: string; family: number; source: string;
-  firewall_name?: string | null;
+  id: string;
+  source_type: string;            // opnsense / pfsense / windows_dhcp
+  source_id: string;
+  source_name?: string | null;    // 顯示用（哪一台防火牆／DHCP 伺服器）
+  subnet_cidr: string | null;
+  start_ip: string; end_ip: string; family: number;
+  source: string;                 // DHCP 引擎：kea / isc / pfsense / windows
 }
-// 所有 DHCP 發放範圍（IP 清單用來標示 DHCP 動態區）。需 admin；非 admin 取不到時回空。
+// 所有來源的 DHCP 發放範圍（IP 清單／詳情用來標示 DHCP 動態區）。
+// 需具全域讀取權；取不到時回空（只是少顯示標籤，不影響其他功能）。
 export async function listDhcpRanges(): Promise<DhcpPoolRange[]> {
   try {
-    const { data } = await apiClient.get<DhcpPoolRange[]>("/api/v1/firewalls/opnsense/dhcp-ranges");
+    const { data } = await apiClient.get<DhcpPoolRange[]>("/api/v1/dhcp-ranges");
     return data;
   } catch {
     return [];

@@ -16,7 +16,7 @@ depends_on = None
 
 _OLD = "discovery_source IN ('manual','scanner','librenms','dns','proxmox','opnsense')"
 _NEW = "discovery_source IN ('manual','scanner','librenms','dns','proxmox','opnsense','phpipam')"
-# 此約束在歷史 migration 裡被命名慣例前綴過（甚至雙重前綴），用 IF EXISTS 把所有可能名稱都掃掉再重建
+# 此約束在歷史 migration 裡被命名慣例首碼過（甚至雙重首碼），用 IF EXISTS 把所有可能名稱都掃掉再重建
 _NAMES = (
     "ip_discovery_source_valid",
     "ck_ip_addresses_ip_discovery_source_valid",

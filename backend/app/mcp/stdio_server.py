@@ -29,7 +29,7 @@ async def _amain() -> int:
     if not token:
         print("stdio MCP: set JT_IPAM_MCP_TOKEN (a jt_ API token)", file=sys.stderr, flush=True)
         return 1
-    user = await resolve_token(token)
+    user, readonly = await resolve_token(token)
     if user is None:
         print("stdio MCP: invalid or expired token", file=sys.stderr, flush=True)
         return 1
@@ -47,11 +47,11 @@ async def _amain() -> int:
             _write({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
             continue
         if isinstance(body, list):           # batch
-            outs = [r for m in body if (r := await process_message(m, user)) is not None]
+            outs = [r for m in body if (r := await process_message(m, user, readonly=readonly)) is not None]
             if outs:
                 _write(outs)
         else:
-            resp = await process_message(body, user)
+            resp = await process_message(body, user, readonly=readonly)
             if resp is not None:
                 _write(resp)
     return 0

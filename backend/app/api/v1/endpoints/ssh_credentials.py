@@ -84,7 +84,7 @@ async def list_ssh_credentials(
     帶 protocol（ssh/rdp/vnc）→ 只回該協定的憑證。
     """
     stmt = select(SSHCredential).where(SSHCredential.owner_user_id == user.id)
-    if protocol in ("ssh", "rdp", "vnc"):
+    if protocol in ("ssh", "rdp", "vnc", "pve", "bmc"):
         stmt = stmt.where(SSHCredential.protocol == protocol)
     if target_ip_id is not None:
         stmt = stmt.where(
@@ -103,12 +103,12 @@ async def create_ssh_credential(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> Any:
-    if payload.protocol not in ("ssh", "rdp"):
-        raise HTTPException(400, detail="protocol must be 'ssh' or 'rdp'")
+    if payload.protocol not in ("ssh", "rdp", "vnc", "pve", "bmc"):
+        raise HTTPException(400, detail="protocol must be 'ssh', 'rdp', 'vnc', 'pve' or 'bmc'")
     if payload.auth_type not in ("password", "key"):
         raise HTTPException(400, detail="auth_type must be 'password' or 'key'")
-    if payload.protocol == "rdp" and payload.auth_type != "password":
-        raise HTTPException(400, detail="RDP credentials only support password auth")
+    if payload.protocol in ("rdp", "vnc", "pve", "bmc") and payload.auth_type != "password":
+        raise HTTPException(400, detail=f"{payload.protocol.upper()} credentials only support password auth")
 
     secrets_enc: dict[str, Any] = {}
     if payload.auth_type == "password":
@@ -127,9 +127,19 @@ async def create_ssh_credential(
         ip = await session.get(IPAddress, payload.target_ip_id)
         ok = False
         if ip is not None:
-            ok = (await can_use_rdp(session, user=user, ip=ip)
-                  if payload.protocol == "rdp"
-                  else await can_use_ssh(session, user=user, ip=ip))
+            if payload.protocol == "rdp":
+                ok = await can_use_rdp(session, user=user, ip=ip)
+            elif payload.protocol == "vnc":
+                from app.services.permission import can_use_vnc
+                ok = await can_use_vnc(session, user=user, ip=ip)
+            elif payload.protocol == "pve":
+                from app.services.permission import can_use_novnc
+                ok = await can_use_novnc(session, user=user, ip=ip)
+            elif payload.protocol == "bmc":
+                from app.services.permission import can_use_bmc
+                ok = await can_use_bmc(session, user=user, ip=ip)
+            else:
+                ok = await can_use_ssh(session, user=user, ip=ip)
         if not ok:
             raise HTTPException(403, detail="無此目標的連線權限")
 

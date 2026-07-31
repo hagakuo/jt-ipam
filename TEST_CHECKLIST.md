@@ -82,6 +82,30 @@ Release flow: run the checklist → all green → bump version → deploy
 - [ ] Against a deployed instance (with `E2E_BASE_URL` + `E2E_ADMIN_PASS`) run
   `pnpm test:e2e` main paths (login / sections / audit)
 
+## 5d. System export / import (cross-instance migration) — **run in full every release that touches it**
+
+- [ ] **Unit (no DB)**: `pytest tests/test_system_transfer.py -q` — crypto seal/open
+  (wrong passphrase → readable error, not 500), secrets round-trip for every
+  representation (column / central / envelope / settings-blob), `registry.validate_registry()`
+  returns empty (every table categorised), backward-compat coercion drops unknown columns
+- [ ] **DB-backed** (`JTIPAM_TEST_DATABASE_URL` at head): export→import round-trip
+  preserves UUIDs + FKs, secrets re-decrypt under the target key, `merge` is idempotent
+  (2nd run all `updated`, no dup rows), `replace` wipes first, `dry_run` writes nothing
+- [ ] **Backward compat**: an older/reduced export file (missing newer tables/columns)
+  imports without error; the target schema_version mismatch shows a warning, not a failure
+- [ ] **CLI**: `python -m app.cli.system_transfer export --scope … --out f.json --passphrase-stdin`
+  then `import --file f.json --dry-run` then real `import`; counts correct, wrong
+  passphrase exits non-zero
+- [ ] **UI (admin → System Export / Import)**: pick scope + passphrase → generate →
+  download; upload on a second instance → analyze (shows source version + counts +
+  warnings) → dry-run preview → apply (merge and replace); non-admin gets 403 / no menu
+- [ ] **End-to-end migration**: export full default scope from instance A, import into a
+  clean instance B, then log in on B and confirm subnets / IP / devices / integrations
+  are present, an integration actually connects (secret re-encrypted), SSH credential
+  works, and TOTP still logs in
+- [ ] **Security**: download / analyze / apply all require admin + validate task ownership;
+  spool files are 0600 in a 0700 dir; no plaintext secret or passphrase in logs/responses
+
 ## 6. Manual page review (browser, after deploy)
 
 - [ ] Login / logout / theme switch (light / dark / auto)
@@ -115,6 +139,34 @@ Release flow: run the checklist → all green → bump version → deploy
 - [ ] **Anomaly page**: tabs, per-table column picker, `ip_address_id` hidden by default, MAC drift shows IP/hostname.
 - [ ] **MCP client-config generator** (LLM/AI): button outputs Claude Desktop / opencode / mcpo / generic snippets.
 - [ ] **Add address in a subnet**: the create form has a required IP field (issue #14).
+
+### Recent (v0.5.6x–0.5.7x)
+
+- [ ] **BMC out-of-band console** (IPMI SOL, Beta): enable per IP (`bmc_enabled`, migration 0092) → connect
+  button appears on IP detail + Connections; connects with cipher auto-fallback (17→3); credential vault
+  “remember” persists (`protocol='bmc'`) and pre-fills next time; RBAC = same as SSH (per-object + can_ssh);
+  session open/close audited; **Setup guide** modal opens (form/toolbar/blank-hint) with troubleshooting;
+  **Fit to window** button sends `stty` (tooltip warns it sends a command).
+- [ ] **Disconnected overlay** (SSH / RDP / VNC / noVNC / xterm / BMC): dropping the session shows a big
+  centered “Disconnected” + broken-link icon **over the display only** (toolbar / Reconnect stay clickable);
+  fades out on reconnect.
+- [ ] **Connections OS column** matches the IP-detail page (shared `OsCell`): OS icon + localized family name
+  + （source） annotation, raw guess on hover; value is the source-precedence-resolved OS.
+- [ ] **Scan-agent OS detection** (agent ≥ 1.7.0): appliances/BMCs are no longer mis-guessed — Debian
+  appliance (SSH banner) → `Debian`, Windows via SMB/Service-Info → `Windows`, device-model-only guesses
+  (NAS / OpenWrt / router) are dropped to unknown rather than shown.
+- [ ] **Notification i18n**: switch UI language (繁中 ⇄ English) → the bell **and** the Notifications page
+  render in the current language (IP-request, anomaly, cert, stale-IP); old notifications fall back to stored text.
+- [ ] **Notification channels** (Admin → 通知發送設定): Telegram / Slack / Teams / Nextcloud Talk / Zulip each
+  save (encrypted token/webhook; “set — leave blank to keep”), the per-channel **Test** button delivers, and an
+  enabled channel receives a matrix-fired event (e.g. an IP request) alongside Email/in-app.
+- [ ] **Export button** on table pages is bordered (matches Columns / Refresh).
+- [ ] **DHCP-server / gateway IP marking** (migration 0090 `is_dhcp_server`): OPNsense/pfSense DHCP-server IPs
+  and gateways are flagged; IP detail shows the DHCP-server / gateway / in-DHCP-range badges.
+- [ ] **LibreNMS auto-create device IPs** (migration 0091 default on): a LibreNMS-only device's primary IP is
+  created in the matching (scoped) subnet; ambiguous overlaps are skipped, not mis-placed.
+- [ ] **PVE browser console** (noVNC for VMs / xterm for CTs, migration 0089): per-IP toggle on PVE VM/CT IPs;
+  connects with the PVE account; orange button + PVE badge on IP detail + Connections.
 
 ---
 

@@ -217,3 +217,25 @@ export async function checkLatestVersion(): Promise<LatestVersion> {
   const { data } = await apiClient.get<LatestVersion>("/api/v1/system/version/check-latest");
   return data;
 }
+
+// 連線管理資安設定（目前：RDP 控制端貼上文字到被控端）
+export interface ConsoleSecurity { rdp_clipboard_paste: boolean }
+export async function getConsoleSecurity(): Promise<ConsoleSecurity> {
+  const { data } = await apiClient.get<ConsoleSecurity>("/api/v1/system/console-security");
+  return data;
+}
+export async function setConsoleSecurity(p: ConsoleSecurity): Promise<ConsoleSecurity> {
+  const { data } = await apiClient.put<ConsoleSecurity>("/api/v1/system/console-security", p);
+  return data;
+}
+
+// 介面顯示設定（系統層；目前：異動記錄淡化天數）
+export interface UiDisplay { change_log_dim_days: number }
+export async function getUiDisplay(): Promise<UiDisplay> {
+  const { data } = await apiClient.get<UiDisplay>("/api/v1/system/ui-display");
+  return data;
+}
+export async function setUiDisplay(p: UiDisplay): Promise<UiDisplay> {
+  const { data } = await apiClient.put<UiDisplay>("/api/v1/system/ui-display", p);
+  return data;
+}

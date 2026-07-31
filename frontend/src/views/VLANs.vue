@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import { useAuthStore } from "@/stores/auth";
 import {
   NCard, NDataTable, NSpace, NIcon, NButton, NModal, NForm, NFormItem,
   NInput, NInputNumber, NSelect, NTabs, NTabPane, NPopconfirm, NTooltip,
@@ -37,6 +38,7 @@ const vlans = ref<VLAN[]>([]);
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
 const { query: vlanFilterQ, filtered: vlansFiltered } = useTableQuickFilter(vlans);
 import { useTablePagination } from "@/composables/useTablePagination";
+import { apiErrMsg } from "@/api/client";
 const pg = useTablePagination();
 const loading = ref(false);
 
@@ -128,7 +130,7 @@ async function refresh() {
     ]);
     domains.value = d.items;
     vlans.value = v.items;
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 
@@ -240,9 +242,15 @@ const domPickerItems = [
   { key: "description", label: t("cols.description") },
   { key: "actions", label: t("cols.actions") },
 ];
-function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
+// 唯讀帳號（無任何寫入授權）→ 寫入按鈕反灰。VLAN 頁只需 global_read 就能開，
+// 所以這裡的反灰是有意義的（不像純 admin 頁那樣恆真）。後端仍是唯一真相。
+const _authBtn = useAuthStore();
+const canEdit = computed(() => _authBtn.me?.can_edit !== false);
+
+function iconAction(icon: any, label: string, onClick: () => void, type?: any,
+                    disabled = false) {
   return h(NTooltip, null, {
-    trigger: () => h(NButton, { size: "small", quaternary: true, type,
+    trigger: () => h(NButton, { size: "small", quaternary: true, type, disabled,
       onClick: (e: MouseEvent) => { e.stopPropagation(); onClick(); } },
       { icon: () => h(NIcon, null, () => h(icon)) }),
     default: () => label,
@@ -296,9 +304,9 @@ const allVlanCols = computed<DataTableColumns<VLAN>>(() => [
   {
     title: t("common.actions"), key: "actions", className: "col-actions", width: 96,
     render: (r) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
-      iconAction(EditIcon, t("common.edit"), () => openVlanEdit(r)),
+      iconAction(EditIcon, t("common.edit"), () => openVlanEdit(r), undefined, !canEdit.value),
       h(NPopconfirm, { onPositiveClick: () => delVlan(r) }, {
-        trigger: () => iconAction(DeleteIcon, t("common.delete"), () => {}, "error"),
+        trigger: () => iconAction(DeleteIcon, t("common.delete"), () => {}, "error", !canEdit.value),
         default: () => t("common.confirm_delete"),
       }),
     ]),
@@ -316,9 +324,9 @@ const allDomCols = computed<DataTableColumns<VLANDomain>>(() => [
   {
     title: t("common.actions"), key: "actions", className: "col-actions", width: 96,
     render: (r) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
-      iconAction(EditIcon, t("common.edit"), () => openDomEdit(r)),
+      iconAction(EditIcon, t("common.edit"), () => openDomEdit(r), undefined, !canEdit.value),
       h(NPopconfirm, { onPositiveClick: () => delDom(r) }, {
-        trigger: () => iconAction(DeleteIcon, t("common.delete"), () => {}, "error"),
+        trigger: () => iconAction(DeleteIcon, t("common.delete"), () => {}, "error", !canEdit.value),
         default: () => t("common.confirm_delete"),
       }),
     ]),
@@ -355,7 +363,7 @@ onMounted(() => {
             <template #icon><n-icon><RefreshIcon /></n-icon></template>
             {{ t("common.refresh") }}
           </n-button>
-          <n-button type="primary" @click="openVlanCreate">
+          <n-button type="primary" :disabled="!canEdit" @click="openVlanCreate">
             <template #icon><n-icon><PlusIcon /></n-icon></template>
             {{ t("common.create") }}
           </n-button>
@@ -393,7 +401,7 @@ onMounted(() => {
           <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><SectionsIcon /></n-icon>VLAN Domain</span>
         </template>
         <n-space style="margin-bottom: 12px">
-          <n-button type="primary" @click="openDomCreate">
+          <n-button type="primary" :disabled="!canEdit" @click="openDomCreate">
             <template #icon><n-icon><PlusIcon /></n-icon></template>
             {{ t("common.create") }}
           </n-button>

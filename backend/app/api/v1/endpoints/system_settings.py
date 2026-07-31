@@ -5,14 +5,15 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Annotated, Any
 
 import httpx
-from fastapi import APIRouter, Body, Depends, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.safe_http import UnsafeOutboundURL, safe_request
@@ -31,6 +32,9 @@ router = APIRouter(prefix="/system", tags=["system"], dependencies=[Depends(requ
 # 不需 admin 的系統讀取路由（例如 Locations 地圖預覽要讀全域 map_provider）。
 # 寫入（PUT）仍掛在上面的 admin 路由，只有 admin 能改。
 public_router = APIRouter(prefix="/system", tags=["system"])
+# 需要登入且具全域讀取（不是 admin 專屬）的系統層唯讀資訊
+view_router = APIRouter(prefix="/system", tags=["system"],
+                        dependencies=[Depends(require_global_read)])
 
 
 class HostnamePrecedenceOut(StrictModel):
@@ -256,7 +260,10 @@ async def put_arp_precedence_ep(
 
 
 class MapProviderOut(StrictModel):
-    provider: str   # "osm" | "google"
+    provider: str   # "builtin" | "osm" | "google"
+
+
+_MAP_PROVIDERS = ("builtin", "osm", "google")
 
 
 @public_router.get("/map-provider", response_model=MapProviderOut)
@@ -266,8 +273,8 @@ async def get_map_provider(
 ) -> MapProviderOut:
     from app.models.system_setting import SystemSetting
     row = await session.get(SystemSetting, "map_provider")
-    prov = (row.value.get("provider") if row and isinstance(row.value, dict) else None) or "osm"
-    return MapProviderOut(provider=prov if prov in ("osm", "google") else "osm")
+    prov = (row.value.get("provider") if row and isinstance(row.value, dict) else None) or "builtin"
+    return MapProviderOut(provider=prov if prov in _MAP_PROVIDERS else "builtin")
 
 
 @router.put("/map-provider", response_model=MapProviderOut)
@@ -280,7 +287,7 @@ async def put_map_provider(
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.models.system_setting import SystemSetting
-    prov = payload.provider if payload.provider in ("osm", "google") else "osm"
+    prov = payload.provider if payload.provider in _MAP_PROVIDERS else "builtin"
     row = await session.get(SystemSetting, "map_provider")
     if row is None:
         row = SystemSetting(key="map_provider", value={}, updated_by=user.id)
@@ -298,6 +305,117 @@ async def put_map_provider(
     )
     await session.commit()
     return MapProviderOut(provider=prov)
+
+
+class UiDisplayOut(StrictModel):
+    # 異動記錄超過幾天的項目以淡色顯示；0 = 不淡化
+    change_log_dim_days: int = 30
+
+
+@public_router.get("/ui-display", response_model=UiDisplayOut)
+async def get_ui_display(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> UiDisplayOut:
+    from app.services.system_config import get_change_log_dim_days
+    return UiDisplayOut(change_log_dim_days=await get_change_log_dim_days(session))
+
+
+@router.put("/ui-display", response_model=UiDisplayOut)
+async def put_ui_display(
+    payload: UiDisplayOut,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> UiDisplayOut:
+    from app.services.system_config import set_change_log_dim_days
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "ui_display", "change_log_dim_days": payload.change_log_dim_days},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    days = await set_change_log_dim_days(
+        session, days=payload.change_log_dim_days, updated_by_user_id=user.id)
+    return UiDisplayOut(change_log_dim_days=days)
+
+
+class ConsoleSecurityOut(StrictModel):
+    # 允許 RDP 控制端把文字貼到被控端（剪貼簿單向重導；預設關閉）
+    rdp_clipboard_paste: bool = False
+
+
+@public_router.get("/console-security", response_model=ConsoleSecurityOut)
+async def get_console_security(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ConsoleSecurityOut:
+    from app.services.system_config import get_rdp_clipboard_paste
+    return ConsoleSecurityOut(rdp_clipboard_paste=await get_rdp_clipboard_paste(session))
+
+
+@router.put("/console-security", response_model=ConsoleSecurityOut)
+async def put_console_security(
+    payload: ConsoleSecurityOut,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ConsoleSecurityOut:
+    from app.services.system_config import set_rdp_clipboard_paste
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "console_security", "rdp_clipboard_paste": payload.rdp_clipboard_paste},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    enabled = await set_rdp_clipboard_paste(
+        session, enabled=payload.rdp_clipboard_paste, updated_by_user_id=user.id)
+    return ConsoleSecurityOut(rdp_clipboard_paste=enabled)
+
+
+# 本機地圖圖磚代理（OSM）：讓「OpenStreetMap」供應商在維持嚴格 CSP（img-src 'self'）+ COEP require-corp
+# 下仍能在頁內顯示圖磚。URL 由伺服器端組（只連 OSM、z/x/y 驗證為整數範圍）→ 非開放代理、非 SSRF。
+# 供 <img> 載入故不帶 auth header（token 走 Authorization，圖磚標籤帶不了）；由 nginx /api 限流保護。
+# 小型記憶體 LRU 對 OSM 圖磚政策友善（避免重複抓取）。
+_TILE_CACHE: OrderedDict[str, bytes] = OrderedDict()
+_TILE_CACHE_MAX = 512
+_OSM_HOSTS = ("a", "b", "c")
+_TILE_HEADERS = {"Cache-Control": "public, max-age=604800"}
+
+
+@public_router.get("/map-tile/{z}/{x}/{y}")
+async def map_tile(z: int, x: int, y: int) -> Response:
+    if not (0 <= z <= 19):
+        raise HTTPException(status_code=400, detail="bad zoom")
+    n = 1 << z
+    if not (0 <= x < n and 0 <= y < n):
+        raise HTTPException(status_code=400, detail="bad tile coordinate")
+    key = f"{z}/{x}/{y}"
+    cached = _TILE_CACHE.get(key)
+    if cached is not None:
+        _TILE_CACHE.move_to_end(key)
+        return Response(content=cached, media_type="image/png", headers=_TILE_HEADERS)
+    host = _OSM_HOSTS[(x + y) % 3]
+    url = f"https://{host}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+    try:
+        resp = await safe_request(
+            "GET", url, timeout=10.0,
+            headers={"User-Agent": "jt-ipam/1.0 (self-hosted IPAM; +https://github.com/jasoncheng7115/jt-ipam)"},
+        )
+    except (UnsafeOutboundURL, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=502, detail="tile upstream error") from exc
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"tile upstream {resp.status_code}")
+    data = resp.content
+    _TILE_CACHE[key] = data
+    _TILE_CACHE.move_to_end(key)
+    while len(_TILE_CACHE) > _TILE_CACHE_MAX:
+        _TILE_CACHE.popitem(last=False)
+    return Response(content=data, media_type="image/png", headers=_TILE_HEADERS)
 
 
 # ─────────────────── 機櫃示意圖：裝置名稱對齊（全域）───────────────────
@@ -761,11 +879,12 @@ def _gather_version_info() -> dict[str, Any]:
 
     from app.version import __version__
 
-    # 後端 Python 套件（含 SSH/RDP/VNC 連線管理用：asyncssh、aardwolf〔選用〕、Pillow）
+    # 後端 Python 套件（含連線管理用：asyncssh〔SSH〕、aardwolf〔RDP/VNC，選用〕、
+    #                    websockets〔PVE noVNC/xterm 主控台代理〕、Pillow）
     pkgs = [
         "fastapi", "starlette", "sqlalchemy", "pydantic", "asyncpg", "alembic",
         "uvicorn", "httpx", "redis", "argon2-cffi", "cryptography", "defusedxml",
-        "authlib", "mcp", "asyncssh", "aardwolf", "pillow",
+        "authlib", "mcp", "asyncssh", "aardwolf", "websockets", "pillow",
     ]
     versions: dict[str, str | None] = {}
     for p in pkgs:
@@ -778,7 +897,7 @@ def _gather_version_info() -> dict[str, Any]:
     frontend: dict[str, str | None] = {}
     fe_root = Path(__file__).resolve().parents[5] / "frontend" / "node_modules"
     for p in ["vue", "naive-ui", "vite", "typescript", "pinia", "vue-router",
-              "vue-i18n", "axios", "@xterm/xterm", "@iconoir/vue"]:
+              "vue-i18n", "axios", "@xterm/xterm", "@novnc/novnc", "@iconoir/vue"]:
         ver: str | None = None
         try:
             ver = json.loads((fe_root / p / "package.json").read_text(encoding="utf-8")).get("version")
@@ -931,7 +1050,32 @@ class NotificationChannelsOut(StrictModel):
     smtp_username: str | None = None
     smtp_from: str | None = None
     smtp_password_set: bool = False      # 是否已存密碼（不回傳明文）
-    # 規劃中的管道：available=False 前端反灰顯示「開發中」
+    # Telegram
+    telegram_enabled: bool = False
+    telegram_chat_id: str | None = None
+    telegram_token_set: bool = False
+    # Slack（Incoming Webhook URL）
+    slack_enabled: bool = False
+    slack_webhook_set: bool = False
+    # Microsoft Teams（Incoming Webhook URL）
+    teams_enabled: bool = False
+    teams_webhook_set: bool = False
+    # Nextcloud Talk（bot：對話 token + 密鑰）
+    nextcloud_enabled: bool = False
+    nextcloud_url: str | None = None
+    nextcloud_token: str | None = None
+    nextcloud_secret_set: bool = False
+    # Zulip（bot email + API key → 串流/主題）
+    zulip_enabled: bool = False
+    zulip_site: str | None = None
+    zulip_bot_email: str | None = None
+    zulip_stream: str | None = None
+    zulip_topic: str | None = None
+    zulip_api_key_set: bool = False
+    # 通用 webhook
+    webhook_enabled: bool = False
+    webhook_url_set: bool = False
+    webhook_token_set: bool = False
     channels: list[dict[str, Any]] = []
 
 
@@ -943,6 +1087,32 @@ class NotificationChannelsIn(StrictModel):
     smtp_username: str | None = None
     smtp_from: str | None = None
     smtp_password: str | None = None     # 給非空才更新；"" 清除；不給保留
+    # Telegram
+    telegram_enabled: bool | None = None
+    telegram_chat_id: str | None = None
+    telegram_token: str | None = None
+    # Slack
+    slack_enabled: bool | None = None
+    slack_webhook: str | None = None
+    # Teams
+    teams_enabled: bool | None = None
+    teams_webhook: str | None = None
+    # Nextcloud Talk
+    nextcloud_enabled: bool | None = None
+    nextcloud_url: str | None = None
+    nextcloud_token: str | None = None
+    nextcloud_secret: str | None = None
+    # Zulip
+    zulip_enabled: bool | None = None
+    zulip_site: str | None = None
+    zulip_bot_email: str | None = None
+    zulip_stream: str | None = None
+    zulip_topic: str | None = None
+    zulip_api_key: str | None = None
+    # 通用 webhook
+    webhook_enabled: bool | None = None
+    webhook_url: str | None = None
+    webhook_token: str | None = None
 
 
 class TestEmailIn(StrictModel):
@@ -959,6 +1129,26 @@ def _channels_payload(cfg: dict[str, Any]) -> NotificationChannelsOut:
         smtp_username=cfg.get("smtp_username"),
         smtp_from=cfg.get("smtp_from"),
         smtp_password_set=bool(cfg.get("smtp_password_enc")),
+        telegram_enabled=bool(cfg.get("telegram_enabled")),
+        telegram_chat_id=cfg.get("telegram_chat_id"),
+        telegram_token_set=bool(cfg.get("telegram_token_enc")),
+        slack_enabled=bool(cfg.get("slack_enabled")),
+        slack_webhook_set=bool(cfg.get("slack_webhook_enc")),
+        teams_enabled=bool(cfg.get("teams_enabled")),
+        teams_webhook_set=bool(cfg.get("teams_webhook_enc")),
+        nextcloud_enabled=bool(cfg.get("nextcloud_enabled")),
+        nextcloud_url=cfg.get("nextcloud_url"),
+        nextcloud_token=cfg.get("nextcloud_token"),
+        nextcloud_secret_set=bool(cfg.get("nextcloud_secret_enc")),
+        zulip_enabled=bool(cfg.get("zulip_enabled")),
+        zulip_site=cfg.get("zulip_site"),
+        zulip_bot_email=cfg.get("zulip_bot_email"),
+        zulip_stream=cfg.get("zulip_stream"),
+        zulip_topic=cfg.get("zulip_topic"),
+        zulip_api_key_set=bool(cfg.get("zulip_api_key_enc")),
+        webhook_enabled=bool(cfg.get("webhook_enabled")),
+        webhook_url_set=bool(cfg.get("webhook_url_enc")),
+        webhook_token_set=bool(cfg.get("webhook_token_enc")),
         channels=[{"key": k, "available": avail} for k, avail in NOTIFY_CHANNELS],
     )
 
@@ -1058,3 +1248,67 @@ async def test_notification_email(
     except EmailSendError as exc:
         raise HTTPException(502, detail=f"SMTP send failed: {exc}") from exc
     return {"ok": True}
+
+
+class TestChannelIn(StrictModel):
+    channel: str
+
+
+@router.post("/notification-channels/test-channel")
+async def test_notification_channel(
+    payload: TestChannelIn,
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """用目前『已儲存』的設定，對指定 webhook 型管道送一則測試通知。"""
+    from fastapi import HTTPException
+
+    from app.services.notify_channels import WEBHOOK_CHANNELS, send_one
+    from app.services.system_config import get_notification_channels
+    if payload.channel not in WEBHOOK_CHANNELS:
+        raise HTTPException(400, detail="unknown channel")
+    cfg = await get_notification_channels(session)
+    try:
+        await send_one(
+            cfg, payload.channel,
+            "jt-ipam 測試通知 / test notification",
+            "這是一則來自 jt-ipam 的測試通知；若你收到，代表此管道設定正確。",
+        )
+    except Exception as exc:
+        raise HTTPException(502, detail=f"send failed: {str(exc)[:300]}") from exc
+    return {"ok": True}
+
+
+# ── 整合是否已設定（給側邊選單用）──────────────────────────────────
+@view_router.get("/integration-presence")
+async def integration_presence(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, bool]:
+    """各整合是否至少有一個實例。
+
+    「進階」選單裡的整合唯讀檢視頁（防火牆 / 虛擬化 / DNS 記錄 / 憑證派送），
+    在該整合完全沒設定時只會顯示「尚未設定 X」，等於是空選項 —— 前端據此隱藏。
+    只回布林值、不回任何實例內容，所以掛 global_read 就夠（無需 admin），
+    否則具全域讀取的非 admin 會看不到自己有權限看的選單。
+    """
+    from sqlalchemy import func, select
+
+    from app.models.certificate import CertAgent
+    from app.models.dns import DNSServer
+    from app.models.firewall import OPNsenseFirewall
+    from app.models.fortigate import FortiGateFirewall
+    from app.models.pfsense import PfSenseFirewall
+    from app.models.virt import ProxmoxInstance
+
+    out: dict[str, bool] = {}
+    for key, model in (
+        ("opnsense", OPNsenseFirewall),
+        ("pfsense", PfSenseFirewall),
+        ("fortigate", FortiGateFirewall),
+        ("dns", DNSServer),
+        ("cert_agents", CertAgent),
+        ("proxmox", ProxmoxInstance),
+    ):
+        n = await session.scalar(select(func.count()).select_from(model))
+        out[key] = bool(n)
+    return out

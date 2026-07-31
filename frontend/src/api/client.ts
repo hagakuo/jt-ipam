@@ -8,14 +8,39 @@ const DETAIL_I18N: Record<string, string> = {
   "No visible resources": "errors.no_visible_resources",
   "Not found": "errors.not_found",
   "Authentication required": "errors.session_expired",
+  // 全域基礎設施的守門（require_global_read）
+  "Global resource requires full visibility": "errors.forbidden",
+  "Forbidden": "errors.forbidden",
 };
 
 function localizeDetail(error: AxiosError): void {
   const data: any = error.response?.data;
   const detail = data?.detail;
-  if (typeof detail !== "string") return;
-  const key = DETAIL_I18N[detail];
-  if (key) data.detail = (i18n.global as any).t(key);
+  const t = (i18n.global as any).t;
+  if (typeof detail === "string") {
+    const key = DETAIL_I18N[detail];
+    if (key) {
+      data.detail = t(key);
+      return;
+    }
+  }
+  // 403 沒對到已知字串時給通用權限訊息。原本元件的退路是「連線失敗，請稍後再試」，
+  // 對權限不足來說是錯的訊息 —— 使用者會以為系統壞了而不是自己沒權限。
+  if (error.response?.status === 403 && error.response.data) {
+    (error.response.data as any).detail = t("errors.forbidden");
+  }
+}
+
+/**
+ * 從 API 錯誤取出該顯示給使用者的訊息。
+ * 優先用後端 detail（已經過 `localizeDetail` 在地化，403 也已轉成權限訊息），
+ * 真的沒有才退回「連線失敗」—— 這樣才不會把權限/驗證錯誤一律講成連線問題。
+ */
+export function apiErrMsg(e: unknown): string {
+  const detail = (e as any)?.response?.data?.detail;
+  return typeof detail === "string" && detail
+    ? detail
+    : (i18n.global as any).t("errors.network");
 }
 
 /**

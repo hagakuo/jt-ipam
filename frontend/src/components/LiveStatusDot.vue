@@ -7,6 +7,7 @@ import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { IPAddress } from "@/types";
 import { classifyAddressLiveness, onlineGraceMinutes } from "@/composables/useLivenessSettings";
+import { fmtDateTime } from "@/utils/datetime";
 
 const { t } = useI18n();
 
@@ -61,10 +62,6 @@ const meta = computed(() => {
   }
   return { color: colorMap[kind], label, ts, kind, grace: onlineGraceMinutes.value };
 });
-
-function fmt(s: string): string {
-  return s.replace("T", " ").split(".")[0];
-}
 </script>
 
 <template>
@@ -80,7 +77,7 @@ function fmt(s: string): string {
       <div class="tip-row tip-head"><span class="tip-swatch" :style="{ background: meta.color }" />{{ meta.label }}</div>
       <div v-if="meta.ts.length" class="tip-sep" />
       <div v-for="x in meta.ts" :key="x.key" class="tip-row">
-        <span class="tip-src">{{ x.key }}</span><span class="tip-ts">{{ fmt(x.at) }}</span>
+        <span class="tip-src">{{ x.key }}</span><span class="tip-ts">{{ fmtDateTime(x.at) }}</span>
       </div>
       <div v-if="!meta.ts.length" class="tip-row tip-empty">{{ t("live_dot.no_records") }}</div>
       <div class="tip-sep" />

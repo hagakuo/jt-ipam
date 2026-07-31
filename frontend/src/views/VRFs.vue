@@ -22,6 +22,7 @@ const msg = useMessage();
 const pg = useTablePagination();
 const rows = ref<VRF[]>([]);
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
+import { apiErrMsg } from "@/api/client";
 const { query: filterQ, filtered: filteredRows } = useTableQuickFilter(rows);
 const loading = ref(false);
 const show = ref(false);
@@ -46,7 +47,7 @@ async function doBulkDelete() {
 async function refresh() {
   loading.value = true;
   try { rows.value = (await listVRFs()).items; }
-  catch { msg.error(t("errors.network")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 function openCreate() {

@@ -40,7 +40,8 @@ class DevicePort(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         nullable=False,
         index=True,
     )
-    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 介面名稱可能很長（Windows NDIS 過濾介面描述可達 70+ 字）→ 255（見 migration 0096）
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
     # network / front / rear / console / power
     type: Mapped[str] = mapped_column(String(16), default="network", nullable=False, server_default="network")
     # front↔rear pass-through 對應（跳接面板穿透）

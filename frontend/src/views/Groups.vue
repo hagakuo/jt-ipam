@@ -20,6 +20,7 @@ import { autoSort } from "@/composables/useTableSort";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { useTablePagination } from "@/composables/useTablePagination";
+import { apiErrMsg } from "@/api/client";
 const { t } = useI18n();
 const pg = useTablePagination();
 
@@ -28,13 +29,13 @@ const { visibleKeys: grpVis, setVisible: grpSet, reset: grpReset } = useColumnPr
   ["name", "description", "member_count", "is_builtin", "actions"],
   ["name", "description", "member_count", "is_builtin", "actions"],
 );
-const grpPicker = [
+const grpPicker = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "description", label: t("cols.description") },
   { key: "member_count", label: t("cols.member_count") },
   { key: "is_builtin", label: t("cols.builtin") },
   { key: "actions", label: t("cols.actions") },
-];
+]);
 
 const msg = useMessage();
 const rows = ref<Group[]>([]);
@@ -58,7 +59,7 @@ async function refresh() {
     const res = await listGroups(200, 0);
     rows.value = res.items;
     total.value = res.total;
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 
@@ -95,14 +96,14 @@ async function openMembers(g: Group) {
   await loadMembers();
   if (allUsers.value.length === 0) {
     try { allUsers.value = (await listUsers("", "", 500, 0)).items; }
-    catch { msg.error(t("errors.network")); }
+    catch (e) { msg.error(apiErrMsg(e)); }
   }
 }
 async function loadMembers() {
   if (!membersGroup.value) return;
   membersLoading.value = true;
   try { members.value = await listGroupMembers(membersGroup.value.id); }
-  catch { msg.error(t("errors.network")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
   finally { membersLoading.value = false; }
 }
 async function add() {

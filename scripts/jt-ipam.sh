@@ -117,19 +117,21 @@ patch_nginx_websocket() {
     local site=/etc/nginx/sites-available/jt-ipam
     [[ -f "$site" ]] || return 0                       # not nginx mode → nothing to do
     command -v nginx >/dev/null 2>&1 || return 0
-    grep -qE '\(ssh\|rdp\|vnc\)/ws' "$site" && return 0     # already fully patched (SSH + RDP)
+    grep -qE 'bmc\)/ws' "$site" && return 0     # already fully patched (incl. BMC SOL)
 
     local bak="${site}.pre-ws.bak"
 
-    # Older install with an SSH-only (or SSH+RDP) WS location → widen it to ssh+rdp+vnc.
-    if grep -q '/ssh/ws' "$site" || grep -qF '(ssh|rdp)/ws' "$site"; then
-        log "Widening nginx WebSocket location to cover SSH + RDP + VNC…"
+    # Existing WS location (any older subset) → widen it to ssh+rdp+vnc+novnc+bmc.
+    if grep -qE '/(ssh|rdp|vnc|novnc)[/)]' "$site" || grep -q '/ssh/ws' "$site"; then
+        log "Widening nginx WebSocket location to cover SSH + RDP + VNC + noVNC + BMC…"
         cp -p "$site" "$bak" 2>/dev/null || true
-        sed -i 's#/ssh/ws$ {#/(ssh|rdp|vnc)/ws$ {#' "$site"
-        sed -i 's#(ssh|rdp)/ws$ {#(ssh|rdp|vnc)/ws$ {#' "$site"
+        sed -i 's#/ssh/ws$ {#/(ssh|rdp|vnc|novnc|bmc)/ws$ {#' "$site"
+        sed -i 's#(ssh|rdp)/ws$ {#(ssh|rdp|vnc|novnc|bmc)/ws$ {#' "$site"
+        sed -i 's#(ssh|rdp|vnc)/ws$ {#(ssh|rdp|vnc|novnc|bmc)/ws$ {#' "$site"
+        sed -i 's#(ssh|rdp|vnc|novnc)/ws$ {#(ssh|rdp|vnc|novnc|bmc)/ws$ {#' "$site"
         if nginx -t >/dev/null 2>&1; then
             systemctl reload nginx 2>/dev/null || true
-            log "nginx WebSocket location widened (SSH + RDP + VNC) + reloaded."
+            log "nginx WebSocket location widened (SSH + RDP + VNC + noVNC + BMC) + reloaded."
         else
             warn "nginx -t failed after widening WS location; restoring previous config."
             cp -p "$bak" "$site" 2>/dev/null || true
@@ -137,7 +139,7 @@ patch_nginx_websocket() {
         return 0
     fi
 
-    log "Patching nginx site for WebSocket (SSH + RDP + VNC console)…"
+    log "Patching nginx site for WebSocket (SSH + RDP + VNC + BMC console)…"
     cp -p "$site" "$bak" 2>/dev/null || true
 
     # 1) http-level map (skip if some connection_upgrade map already exists)
@@ -154,7 +156,7 @@ patch_nginx_websocket() {
     awk '
       !ins && /location \/api\/ \{/ {
         print "    # jt-ipam-conn-ws: SSH + RDP + VNC console WebSocket (long-lived)";
-        print "    location ~ ^/api/v1/addresses/[0-9a-fA-F-]+/(ssh|rdp|vnc)/ws$ {";
+        print "    location ~ ^/api/v1/addresses/[0-9a-fA-F-]+/(ssh|rdp|vnc|novnc|bmc)/ws$ {";
         print "        proxy_pass http://127.0.0.1:8000;";
         print "        proxy_http_version 1.1;";
         print "        proxy_set_header Host               $host;";
@@ -210,6 +212,8 @@ Commands:
                  --bind-port <port>                       (for direct/self-signed, default 8443)
   upgrade      upgrade existing install (git pull -> backup -> pip -> alembic -> build -> restart)
                  --no-pull                                skip git pull
+                 --force                                  discard local changes to tracked files (e.g. an edited
+                                                          scripts/jt-ipam.sh) so git pull won't abort
   uninstall    stop and remove systemd units/timers + nginx site (keeps data by default)
                  --purge                                  also dropdb + remove config/uploads/system user
                  --yes                                    skip interactive confirmation when using --purge
@@ -228,6 +232,28 @@ USAGE
 # =============================================================================
 # cmd_install — fresh install (original scripts/install-debian.sh logic, preserved verbatim)
 # =============================================================================
+# OWASP A05 — security headers are a required part of the deployment. The bundled nginx config
+# applies them; but if the operator fronts this box with their own edge proxy, that proxy must
+# set them too (they don't survive an extra hop). Print a clear, required notice.
+security_headers_notice() {
+    local mode="${1:-nginx}" fqdn="${2:-your-fqdn}"
+    echo
+    echo "  === SECURITY HEADERS (required) ============================="
+    if [[ "$mode" == "nginx" ]]; then
+        echo "   This install's nginx applies HSTS / CSP (frame-src 'self') / X-Frame-Options /"
+        echo "   nosniff / Referrer-Policy / Permissions-Policy / COOP / CORP and hides the banner."
+    fi
+    echo "   ⚠  If you put your OWN reverse proxy / load balancer in FRONT of this box, that edge"
+    echo "      proxy MUST set the same security headers — they do NOT survive an extra hop, or the"
+    echo "      public site ships with no CSP/HSTS. Apply on that edge box:"
+    echo "        deploy/nginx/jt-ipam-external-proxy.conf  (+ jt-ipam-external-proxy-snippet.conf)"
+    echo "   Verify through the PUBLIC url users actually hit:"
+    echo "     curl -skI https://${fqdn}/ | grep -iE 'strict-transport|content-security|x-frame|cross-origin|^server'"
+    echo "     (each header exactly once; Server: nginx, no version)"
+    echo "  ============================================================"
+    echo
+}
+
 cmd_install() {
     # -- default parameters --
     local TLS_MODE="nginx"
@@ -373,6 +399,7 @@ cmd_install() {
         "${PYTHON_PKGS[@]}"
         build-essential libpq-dev pkg-config
         curl ca-certificates gnupg openssl
+        ipmitool freeipmi-tools
     )
 
     # Node.js is handled by ensure_node() right before the frontend build — distro 'nodejs'
@@ -689,6 +716,7 @@ EOF
             ;;
     esac
     log "Review /etc/jt-ipam/backend.env (especially APP_PUBLIC_URL / CORS_ORIGINS)"
+    security_headers_notice "$TLS_MODE" "$PUBLIC_FQDN"
 
     # -- first-admin credentials --
     if [[ -n "$INITIAL_ADMIN_PW" ]]; then
@@ -715,7 +743,13 @@ cmd_upgrade() {
     local ENV_FILE="${ENV_FILE:-/etc/jt-ipam/backend.env}"
     local SVC="jt-ipam-backend"
     local DO_PULL=1
-    [[ "${1:-}" == "--no-pull" ]] && DO_PULL=0
+    local FORCE=0
+    for arg in "$@"; do
+      case "$arg" in
+        --no-pull) DO_PULL=0 ;;
+        --force|-f) FORCE=1 ;;
+      esac
+    done
 
     [[ $EUID -eq 0 ]] || die "please run as root / sudo (needs to restart services and write backups)"
     [[ -r "$ENV_FILE" ]] || die "cannot read $ENV_FILE"
@@ -749,8 +783,36 @@ cmd_upgrade() {
 
     # -- 2. git pull --
     if [[ $DO_PULL -eq 1 ]]; then
-      log "git pull --ff-only"
       as_user git config --global --add safe.directory "$ROOT" 2>/dev/null || true
+      # Handle a dirty working tree (local changes to tracked files — e.g. a hand-edited or
+      # partially-updated scripts/jt-ipam.sh) so the upgrade doesn't just abort with
+      # "Your local changes to the following files would be overwritten by merge".
+      local DIRTY
+      DIRTY="$(as_user git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)"
+      if [[ -n "$DIRTY" ]]; then
+        warn "Local changes to tracked files were found in $ROOT:"
+        printf '%s\n' "$DIRTY" | sed 's/^/      /' >&2
+        local do_discard=0
+        if [[ $FORCE -eq 1 ]]; then
+          do_discard=1
+          log "--force set → discarding these local changes and continuing."
+        elif [[ -t 0 ]]; then
+          local ans=""
+          read -r -p "Discard these local changes and continue upgrading? [y/N] " ans || true
+          [[ "$ans" =~ ^[Yy] ]] && do_discard=1
+        else
+          die "Upgrade would overwrite local changes. Re-run 'jt-ipam.sh upgrade --force' to discard them, or commit/stash them first."
+        fi
+        if [[ $do_discard -eq 1 ]]; then
+          # Only touches tracked files; untracked/ignored files (customer config lives outside
+          # the repo, in /etc/jt-ipam) are left alone. reset to HEAD, then the pull fast-forwards.
+          log "Discarding local changes (git reset --hard HEAD)…"
+          as_user git -C "$ROOT" reset --hard >/dev/null
+        else
+          die "Aborted: local changes kept. Commit or stash them, then re-run upgrade (or use --force)."
+        fi
+      fi
+      log "git pull --ff-only"
       as_user git -C "$ROOT" pull --ff-only
     else
       log "Skipping git pull (--no-pull)"
@@ -781,6 +843,12 @@ cmd_upgrade() {
     log "Updating backend dependencies (pip install -e .)…"
     ( cd "$ROOT/backend"; as_user .venv/bin/pip install --quiet -e . )
     install_rdp_optional
+    # IPMI tools for the BMC console (install on upgrade of existing setups; best-effort)
+    if command -v apt-get >/dev/null 2>&1 && ! command -v ipmitool >/dev/null 2>&1; then
+        log "Installing IPMI tools (ipmitool freeipmi-tools) for the BMC console…"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ipmitool freeipmi-tools || \
+            warn "ipmitool install failed; BMC console unavailable until installed."
+    fi
 
     # -- 5. database migration --
     log "alembic upgrade head…"
@@ -803,6 +871,8 @@ cmd_upgrade() {
     trap - ERR
     log "Upgrade complete: ${OLD_VER} (${OLD_REV}) -> ${NEW_VER} (${NEW_REV})  alembic $(alembic_head)"
     log "Frontend rebuilt (nginx serves dist directly, no restart needed)."
+    security_headers_notice "$(grep -oP 'BACKEND_TLS_MODE=\K\S+' "$ENV_FILE" 2>/dev/null || echo nginx)" \
+        "$(grep -oP 'APP_PUBLIC_URL=https?://\K[^/]+' "$ENV_FILE" 2>/dev/null || echo your-fqdn)"
 }
 
 # =============================================================================

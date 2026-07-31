@@ -16,6 +16,7 @@ import {
 } from "@/api/vnc";
 import { buildSendKeysMenu, makeSendCombo } from "@/composables/useSendKeys";
 import { VncIcon, CancelIcon, RefreshIcon, DeleteIcon, ChevronDownIcon, KeyIcon, ExpandIcon, ReduceIcon } from "@/icons";
+import ConsoleDisconnectedOverlay from "@/components/ConsoleDisconnectedOverlay.vue";
 
 const props = withDefaults(defineProps<{
   addressId: string;
@@ -110,15 +111,24 @@ function wsSend(obj: Record<string, unknown>) {
 const sendKeysMenu = buildSendKeysMenu(true);
 const _sendCombo = makeSendCombo(wsSend);
 function onSendKey(key: string) { _sendCombo(key); canvasEl.value?.focus(); }
+function onVisibility() {
+  // 分頁切回前景：重置計時窗，避免背景期間 lastRecv 變舊 → 一回前景就被 watchdog 誤判斷線
+  if (!document.hidden) lastRecv = Date.now();
+}
 function stopHeartbeat() {
   if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+  document.removeEventListener("visibilitychange", onVisibility);
 }
 function startHeartbeat() {
   stopHeartbeat();
   lastRecv = Date.now();
+  document.addEventListener("visibilitychange", onVisibility);
   pingTimer = setInterval(() => wsSend({ type: "ping" }), PING_MS);
   watchdogTimer = setInterval(() => {
+    // 背景分頁：瀏覽器節流 setInterval、heartbeat 不準 → 不判定斷線（連線由 WS 傳輸層
+    // uvicorn ws-ping/pong 維持，真正斷線走 ws.onclose）。切走再切回不會誤斷。
+    if (document.hidden) return;
     if (phase.value === "connected" && Date.now() - lastRecv > DEAD_MS) {
       teardown();
       phase.value = "closed";
@@ -170,6 +180,10 @@ async function connect() {
         password: form.password,
       });
       credId = saved.id;
+      // 記進本地狀態 → 同一分頁「重新連線」直接沿用剛存的憑證，不再跳帳密輸入
+      selectedCredId.value = saved.id;
+      remember.value = false;
+      void loadCreds();
     } catch (e: any) {
       phase.value = "error";
       errorMsg.value = e?.response?.data?.detail || t("vnc.err_save_cred");
@@ -362,12 +376,15 @@ onBeforeUnmount(teardown);
       <n-alert v-if="phase === 'error'" type="error" :show-icon="true" style="margin:8px 0">
         {{ errorMsg }}
       </n-alert>
+      <div class="vnc-disp" :class="{ 'vnc-full': fullHeight }">
       <div ref="canvasBoxEl" class="vnc-canvas-box"
-           :class="{ 'vnc-full': fullHeight, 'vnc-fit': scaleMode === 'fit', 'vnc-native': scaleMode !== 'fit' }">
+           :class="{ 'vnc-full': fullHeight, 'vnc-fit': scaleMode === 'fit', 'vnc-native': scaleMode !== 'fit', 'term-dim': phase === 'closed' }">
         <canvas ref="canvasEl" class="vnc-canvas" tabindex="0"
                 @mousemove="onMouseMove" @mousedown="onMouseDown" @mouseup="onMouseUp"
                 @wheel.prevent="onWheel" @contextmenu.prevent
                 @keydown="onKey($event, true)" @keyup="onKey($event, false)" />
+      </div>
+      <ConsoleDisconnectedOverlay :show="phase === 'closed' || phase === 'error'" :error="phase === 'error'" />
       </div>
     </div>
   </div>
@@ -380,6 +397,8 @@ onBeforeUnmount(teardown);
 .vnc-wrap.vnc-center .vnc-form { width: 520px; max-width: 92vw; }
 .vnc-form { max-width: 520px; }
 .vnc-screen-area { display: flex; flex-direction: column; }
+.vnc-disp { position: relative; }
+.vnc-disp.vnc-full { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .vnc-screen-area.vnc-full { flex: 1; min-height: 0; }
 .vnc-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 2px; gap: 8px; }
 .vnc-status { font-size: 13px; display: inline-flex; align-items: center; gap: 7px;
@@ -413,4 +432,6 @@ onBeforeUnmount(teardown);
 .vnc-saved-label { width: 92px; flex: none; box-sizing: border-box; text-align: right;
   padding-right: 12px; font-size: 14px; }
 .vnc-saved-row :deep(.n-button) { margin-left: 6px; }
+/* 已斷線：整個畫面反灰並停用互動，讓使用者一眼看出已中斷 */
+.term-dim { filter: grayscale(1) brightness(.45); pointer-events: none; transition: filter .25s; }
 </style>

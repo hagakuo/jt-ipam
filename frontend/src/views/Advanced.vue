@@ -7,7 +7,7 @@ import {
   NDatePicker,
   useMessage, type DataTableColumns,
 } from "naive-ui";
-import { apiClient } from "@/api/client";
+import { apiClient, apiErrMsg } from "@/api/client";
 import { Advanced } from "@/api/phase3";
 import { listDevices } from "@/api/basic";
 import {
@@ -74,7 +74,7 @@ async function loadAll() {
         Advanced.contactGroups(), Advanced.contacts(), Advanced.ssids(),
       ]);
     try { devices.value = (await listDevices({ pageSize: 500 })).items.map((d: any) => ({ id: d.id, name: d.name })); } catch { /* */ }
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 

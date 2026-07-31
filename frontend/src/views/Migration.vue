@@ -8,7 +8,7 @@ import {
   useMessage, type DataTableColumns,
 } from "naive-ui";
 import { migrationStatus, getMigrationConfig, saveMigrationConfig, type MappingStat } from "@/api/phase3";
-import { apiClient } from "@/api/client";
+import { apiClient, apiErrMsg } from "@/api/client";
 import { getTask } from "@/api/tasks";
 import {
   MigrationIcon, RefreshIcon, EyeIcon, SaveIcon, WarnIcon,
@@ -78,8 +78,8 @@ const resultObj = computed<MigrationResult | null>(() => {
   try { return JSON.parse(result.value); } catch { return null; }
 });
 const tableRows = computed<TableRow[]>(() => {
-  const t = resultObj.value?.tables ?? {};
-  return Object.entries(t).map(([name, v]) => ({ name, ...v }));
+  const tbls = resultObj.value?.tables ?? {};   // 別用 t（會遮蔽 i18n 的 t）
+  return Object.entries(tbls).map(([name, v]) => ({ name, ...v }));
 });
 const totalErrored = computed(() =>
   tableRows.value.reduce((s, r) => s + (r.errored || 0), 0),
@@ -150,7 +150,7 @@ const cols: DataTableColumns<MappingStat> = [
 async function refresh() {
   loading.value = true;
   try { stats.value = await migrationStatus(); }
-  catch { msg.error(t("errors.network")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 

@@ -53,7 +53,6 @@ router = APIRouter(prefix="/addresses", tags=["vnc"])
 
 _TICKET_TTL = 60
 _CONNECT_TIMEOUT = 20.0
-_CLIENT_IDLE_TIMEOUT = 60.0
 _DEFAULT_PORT = 5900
 
 # VNC（RFB）鍵盤用 X11 keysym（非 PC scancode）。特殊鍵對應表：
@@ -369,10 +368,9 @@ async def _bridge(websocket: WebSocket, conn: Any, send: Any) -> None:
     async def pump_in() -> None:
         with contextlib.suppress(WebSocketDisconnect, Exception):
             while True:
-                try:
-                    raw = await asyncio.wait_for(websocket.receive_text(), timeout=_CLIENT_IDLE_TIMEOUT)
-                except TimeoutError:
-                    break
+                # 不做應用層 idle-timeout（背景分頁 heartbeat 會被節流誤判斷線）；保活靠 WS
+                # 傳輸層 uvicorn ws-ping/pong，真正斷線走 WebSocketDisconnect。
+                raw = await websocket.receive_text()
                 msg = json.loads(raw)
                 t = msg.get("type")
                 if t == "m":

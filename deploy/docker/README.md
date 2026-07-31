@@ -12,6 +12,17 @@ terminating HTTPS).
 
 ## Quick start
 
+Prerequisites: **git** and **Docker Engine with the `docker compose` v2 plugin**. The official
+`get.docker.com` script installs both. **Do not** `apt install docker.io` — that package has **no
+`docker compose` subcommand** (you'll hit `unknown shorthand flag: 'd' in -d`); remove it and use the script:
+
+```bash
+sudo apt-get remove -y docker.io docker-compose podman-docker   # if you installed those
+sudo apt-get update && sudo apt-get install -y curl git         # get.docker.com needs curl
+curl -fsSL https://get.docker.com | sudo sh                     # Docker Engine + compose plugin
+docker compose version                                          # verify the v2 plugin is present
+```
+
 `gen-env.sh`, `docker-compose.yml` and the rest live in the repo under `deploy/docker/`, so **clone the repo
 first**:
 
@@ -66,6 +77,40 @@ docker compose logs -f backend   # watch migration / boot logs
 
 > The version tracks the source (`backend/app/version.py` / `frontend/package.json`), so `git pull` + rebuild
 > *is* the upgrade.
+
+## Air-gapped / offline host (build outside, run inside)
+
+If the target host has **no internet** (can't reach Docker Hub), build the images on an
+internet-connected host, carry them over, and load them — for both install and upgrade.
+
+**On the internet-connected host** — get the source first, then build:
+
+```bash
+git clone https://github.com/jasoncheng7115/jt-ipam.git   # first time (later: git pull to ship a newer version)
+cd jt-ipam/deploy/docker
+./offline-export.sh            # build + pull base images -> jt-ipam-images-<sha>.tar.gz
+```
+
+This saves all four images into one archive: the two app images (`jt-ipam-backend:local`,
+`jt-ipam-web:local`) **and** the base images (`pgvector/pgvector:pg16`, `redis:7-alpine`) — the
+air-gapped host can't pull those, so they travel too.
+
+**Carry to the air-gapped host:** the `jt-ipam-images-*.tar.gz` archive **and the jt-ipam repo
+folder** (compose still needs the build-context path to exist, even though it is never rebuilt there).
+
+**On the air-gapped host** (in `deploy/docker/`):
+
+```bash
+./gen-env.sh                          # first install only (needs openssl, no internet)
+./offline-import.sh jt-ipam-images-<sha>.tar.gz
+```
+
+`offline-import.sh` runs `docker load` then `docker compose up -d --no-build --pull never`, so it
+**only** uses the images from the archive — no build, no pull. Migrations still run automatically on
+backend start.
+
+**To upgrade** an air-gapped host: re-run `./offline-export.sh` on the online host (after `git pull`),
+copy the newer archive over, and run `./offline-import.sh <newer-archive>` again. `.env` stays put.
 
 ## Common commands
 

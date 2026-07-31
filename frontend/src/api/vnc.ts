@@ -41,7 +41,7 @@ export interface VncTicket {
   ttl: number;
 }
 
-// 換發短期一次性 ticket（之後用它開 WebSocket）。注意帶 /api/v1 前綴。
+// 換發短期一次性 ticket（之後用它開 WebSocket）。注意帶 /api/v1 首碼。
 export async function requestVncTicket(addressId: string): Promise<VncTicket> {
   const { data } = await apiClient.post<VncTicket>(
     `/api/v1/addresses/${addressId}/vnc/ticket`,

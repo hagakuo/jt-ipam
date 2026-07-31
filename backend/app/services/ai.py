@@ -528,7 +528,7 @@ def _build_chat_context(
 ) -> Any:
     """共用：把 IPAM tools 轉 Ollama schema + 組 system prompt + 接上對話。
 
-    回傳 (ollama_tools, convo)。chat / chat_stream 共用，避免兩份 prompt 漂移。
+    回傳 (ollama_tools, convo)。chat / chat_stream 共用，避免兩份 prompt 不一致。
     allowed_tools 給定時依 RBAC 過濾掉使用者不可呼叫的工具（避免 LLM 浪費回合）。
     """
     from app.mcp.tools import TOOLS

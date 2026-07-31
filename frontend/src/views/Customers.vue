@@ -26,6 +26,7 @@ import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { useTablePagination } from "@/composables/useTablePagination";
+import { apiErrMsg } from "@/api/client";
 const pg = useTablePagination();
 const { t } = useI18n();
 const router = useRouter();
@@ -66,7 +67,7 @@ async function refresh() {
     const res = await listCustomers({ q: q.value || undefined, pageSize: 500 });
     rows.value = res.items;
     total.value = res.total;
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 

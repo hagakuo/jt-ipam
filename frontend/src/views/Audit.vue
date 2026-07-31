@@ -52,6 +52,20 @@ function renderObjectLink(objectType: string | null, objectId: string | null, la
     case "webhook":      return go("webhooks");
     case "custom_field": return go("custom_fields");
     case "ip_request":   return go("requests");
+    // 整合實例 → 點進對應的設定頁（標籤已由後端解析成實例名稱）
+    case "fortigate_firewall":  return go("fortigate");
+    case "pfsense_firewall":    return go("pfsense");
+    case "opnsense_firewall":   return go("firewall_admin");
+    case "librenms_instance":   return go("librenms");
+    case "wazuh_instance":      return go("wazuh");
+    case "adguard_instance":    return go("adguard");
+    case "windows_dhcp_server": return go("windows_dhcp");
+    case "proxmox_instance":
+    case "virt_cluster":        return go("virt_admin");
+    case "dns_server":          return go("dns");
+    case "cert_agent":
+    case "certificate":         return go("certificates");
+    case "api_token":           return go("api_tokens");
     default:             return short;
   }
 }

@@ -84,6 +84,38 @@ _LABEL_REGISTRY: dict[str, tuple[str, str, str]] = {
     "ssh_credential": ("app.models.ssh_credential", "SSHCredential", "label"),
     "rdp_credential": ("app.models.ssh_credential", "SSHCredential", "label"),
     "vnc_credential": ("app.models.ssh_credential", "SSHCredential", "label"),
+    "pve_credential": ("app.models.ssh_credential", "SSHCredential", "label"),
+    # ── 整合實例 ──
+    # 沒有這些的話，稽核的「目標」欄只會顯示截斷 UUID，多台同型整合時完全分不出
+    # 是哪一台在同步（客戶實測 FortiGate 時發現）。
+    "fortigate_firewall": ("app.models.fortigate", "FortiGateFirewall", "name"),
+    "pfsense_firewall": ("app.models.pfsense", "PfSenseFirewall", "name"),
+    "opnsense_firewall": ("app.models.firewall", "OPNsenseFirewall", "name"),
+    "librenms_instance": ("app.models.librenms", "LibreNMSInstance", "name"),
+    "wazuh_instance": ("app.models.wazuh", "WazuhInstance", "name"),
+    "adguard_instance": ("app.models.adguard", "AdGuardInstance", "name"),
+    "windows_dhcp_server": ("app.models.windows_dhcp", "WindowsDhcpServer", "name"),
+    "proxmox_instance": ("app.models.virt", "ProxmoxInstance", "api_url"),
+    "virt_cluster": ("app.models.virt", "VirtCluster", "name"),
+    "dns_server": ("app.models.dns", "DNSServer", "name"),
+    # ── 代理 / 憑證 / 權杖 ──
+    "scan_agent": ("app.models.scan_agent", "ScanAgent", "name"),
+    "cert_agent": ("app.models.certificate", "CertAgent", "name"),
+    "certificate": ("app.models.certificate", "Certificate", "name"),
+    "api_token": ("app.models.user", "APIToken", "name"),
+    "webhook": ("app.models.notification", "WebhookSubscription", "name"),
+    # ── 其他常見物件 ──
+    "group": ("app.models.user", "Group", "name"),
+    "nat": ("app.models.nat", "NATTranslation", "name"),
+    "tenant": ("app.models.advanced", "Tenant", "name"),
+    "provider": ("app.models.advanced", "Provider", "name"),
+    "contact": ("app.models.advanced", "Contact", "name"),
+    "circuit": ("app.models.advanced", "Circuit", "cid"),
+    "asn": ("app.models.advanced", "ASN", "asn"),
+    "vlan_domain": ("app.models.vlan", "VLANDomain", "name"),
+    "vpn_tunnel": ("app.models.physical", "VPNTunnel", "name"),
+    "wireless_ssid": ("app.models.advanced", "WirelessSSID", "ssid"),
+    "custom_field": ("app.models.custom_field", "CustomFieldDefinition", "name"),
 }
 
 

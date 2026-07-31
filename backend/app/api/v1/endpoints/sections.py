@@ -21,7 +21,7 @@ from app.models.section import Section
 from app.models.subnet import Subnet
 from app.schemas.base import Paginated, StrictModel
 from app.schemas.section import SectionCreate, SectionRead, SectionUpdate
-from app.services.permission import filter_visible
+from app.services.permission import visible_ids
 
 
 async def _subnet_counts_by_section(
@@ -52,28 +52,28 @@ async def list_sections(
     page: int = Query(1, ge=1, le=10_000),
     page_size: int = Query(50, ge=1, le=500),
 ) -> Paginated[SectionRead]:
-    offset = (page - 1) * page_size
-    stmt = (
-        select(Section)
-        .order_by(Section.display_order, Section.name)
-        .offset(offset)
-        .limit(page_size)
-    )
-    rows = list((await session.execute(stmt)).scalars().all())
+    # A01：先把可見範圍套進查詢，再分頁 —— 不可「先分頁再過濾」。
+    # 舊寫法先全域分頁、事後才篩掉不可見的，造成兩個問題：
+    #   (1) total 回全系統 section 數 → 洩漏受限帳號不該知道的規模
+    #   (2) 每頁實際筆數少於 page_size、甚至整頁空白，分頁邏輯壞掉
+    vis = await visible_ids(session, user=user, object_type="section", required="read")
+    stmt = select(Section)
+    count_stmt = select(func.count()).select_from(Section)
+    if vis is not None:                    # None＝全部可見（admin 或萬用授權）
+        if not vis:                        # 空 set＝完全沒有可見範圍
+            return Paginated[SectionRead](items=[], total=0, page=page, page_size=page_size)
+        stmt = stmt.where(Section.id.in_(vis))
+        count_stmt = count_stmt.where(Section.id.in_(vis))
 
-    visible_ids = set(
-        await filter_visible(
-            session,
-            user=user,
-            object_type="section",
-            object_ids=[r.id for r in rows],
-            required="read",
-        )
-    )
-    visible = [r for r in rows if r.id in visible_ids]
-    counts = await _subnet_counts_by_section(session, [r.id for r in visible])
-    items = [_attach_subnet_count(r, counts) for r in visible]
-    total = int(await session.scalar(select(func.count()).select_from(Section)) or 0)
+    rows = list((await session.execute(
+        stmt.order_by(Section.display_order, Section.name)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )).scalars().all())
+
+    counts = await _subnet_counts_by_section(session, [r.id for r in rows])
+    items = [_attach_subnet_count(r, counts) for r in rows]
+    total = int(await session.scalar(count_stmt) or 0)
     return Paginated[SectionRead](items=items, total=total, page=page, page_size=page_size)
 
 

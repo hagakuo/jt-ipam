@@ -34,8 +34,25 @@ from app.services.permission import (
     filter_visible,
     get_object_permission,
     has_permission,
+    visible_ids,
 )
 from app.services.subnet import get_usage
+
+
+async def _assert_global_read(session: AsyncSession, user: User) -> None:
+    """GraphQL 版的 `require_global_read`（REST 那邊是 FastAPI dependency，這裡進不來）。
+
+    全域基礎設施（VLAN / ARP·FDB / NAT / 防火牆…）無法逐物件授權，只有 admin 或
+    具萬用讀取權限者可讀；只被指派特定物件的部門帳號一律拒絕。
+    ⚠️ 這裡的判斷必須與 `app/api/v1/dependencies.require_global_read` 一致 ——
+    否則 GraphQL 會變成繞過 REST 限制的旁路。
+    """
+    if user.is_admin:
+        return
+    for ot in ("subnet", "device", "customer", "section", "rack", "location"):
+        if await visible_ids(session, user=user, object_type=ot) is None:
+            return                      # None＝萬用授權（全部可見）
+    raise PermissionError("Global resource requires full visibility")
 
 
 @strawberry.type
@@ -165,6 +182,9 @@ class Query:
         if limit > 1000:
             limit = 1000
         session: AsyncSession = info.context["session"]
+        # A01：VLAN 屬全域基礎設施，REST 的 /api/v1/vlans 掛 require_global_read，
+        # 這裡若不擋，受限帳號就能改用 GraphQL 看到全部 VLAN。
+        await _assert_global_read(session, info.context["user"])
         stmt = select(VLANModel)
         if domain_id is not None:
             stmt = stmt.where(VLANModel.domain_id == domain_id)
@@ -188,19 +208,21 @@ class Query:
         if limit > 1000:
             limit = 1000
         session: AsyncSession = info.context["session"]
-        user: User = info.context["user"]
+        # A01：裝置屬可逐物件授權的型別 —— REST 的 /api/v1/devices 會依可見範圍過濾，
+        # 這裡若不過濾，受限帳號就能改用 GraphQL 列出全部裝置。
+        vis = await visible_ids(
+            session, user=info.context["user"], object_type="device", required="read",
+        )
         stmt = select(DeviceModel)
+        if vis is not None:               # None＝全部可見（admin 或萬用授權）
+            if not vis:                   # 空 set＝沒有任何可見範圍
+                return []
+            stmt = stmt.where(DeviceModel.id.in_(vis))
         if type is not None:
             stmt = stmt.where(DeviceModel.type == type)
         stmt = stmt.order_by(DeviceModel.name).limit(limit)
         rows = list((await session.execute(stmt)).scalars().all())
-        visible = set(
-            await filter_visible(
-                session, user=user, object_type="device",
-                object_ids=[r.id for r in rows], required="read",
-            )
-        )
-        return [gqltypes.Device(**_dict_device(r)) for r in rows if r.id in visible]
+        return [gqltypes.Device(**_dict_device(r)) for r in rows]
 
     @strawberry.field(
         description="ARP-derived IP→MAC→Switch+Port lookup (LibreNMS Phase 2)."
@@ -209,25 +231,9 @@ class Query:
         self, info: strawberry.Info, ip: str,
     ) -> gqltypes.ARPLookup:
         session: AsyncSession = info.context["session"]
-        user: User = info.context["user"]
-        ip_row = (
-            await session.execute(
-                select(IPAddressModel).where(IPAddressModel.ip == ip).limit(1)
-            )
-        ).scalar_one_or_none()
-        if ip_row is None:
-            return gqltypes.ARPLookup(
-                ip=ip, mac=None, interface=None,
-                switch_device_id=None, switch_port=None, vlan=None,
-            )
-        ip_level = await get_object_permission(
-            session, user=user, object_type="ip", object_id=ip_row.id
-        )
-        if not has_permission(ip_level, "read"):
-            return gqltypes.ARPLookup(
-                ip=ip, mac=None, interface=None,
-                switch_device_id=None, switch_port=None, vlan=None,
-            )
+        # A01：ARP / FDB 是 LibreNMS 撈回來的全域基礎設施資料（MCP 也把它歸在
+        # GLOBAL_READ_TOOLS），受限帳號不得用它反查任意 IP 落在哪台交換器哪個埠。
+        await _assert_global_read(session, info.context["user"])
         arp = (
             await session.execute(
                 select(ARPEntry)
@@ -249,12 +255,6 @@ class Query:
                 .limit(1)
             )
         ).scalar_one_or_none()
-        if fdb is not None and fdb.device_id is not None:
-            device_level = await get_object_permission(
-                session, user=user, object_type="device", object_id=fdb.device_id
-            )
-            if not has_permission(device_level, "read"):
-                fdb = None
         return gqltypes.ARPLookup(
             ip=ip,
             mac=arp.mac,

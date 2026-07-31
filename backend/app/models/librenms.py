@@ -42,14 +42,23 @@ class LibreNMSInstance(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     api_token_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # 關閉＝接受自簽/主機名稱不符（httpx verify=False；與 Wazuh 同機制）
+    verify_tls: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, server_default="true")
 
     # 細分開關（規格書 §6.10）
     sync_devices: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sync_arp: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sync_fdb: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sync_vlans: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # LLDP / CDP 鄰居（LibreNMS 的 links 表）—— 需要對方也開 LLDP/CDP 且 LibreNMS
+    # 的 xdp discovery 有跑到，否則來源本身就是空的
+    sync_links: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default="true",
+    )
     use_for_status: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    auto_add_devices: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_add_devices: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default=text("true"),
+    )
     # 同步裝置時，把落在「既有且符合 scope」子網路內的裝置主 IP 自動建成 IPAddress
     # （discovery_source='librenms'）。預設開啟——使用者通常預期「接了 NMS 就會長出 IP」。
     # 只建裝置主 IP，不建 ARP 學到的鄰居（避免把雜訊端點灌進來）。
@@ -82,6 +91,8 @@ class LibreNMSDevice(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     primary_ip: Mapped[str | None] = mapped_column(INET)
     hardware: Mapped[str | None] = mapped_column(Text)
     os: Mapped[str | None] = mapped_column(Text)
+    # LibreNMS 原生 device type（network/server/firewall/power/wireless/storage/…）
+    type: Mapped[str | None] = mapped_column(Text)
     version: Mapped[str | None] = mapped_column(Text)
     serial: Mapped[str | None] = mapped_column(Text)
     sysObjectID: Mapped[str | None] = mapped_column(Text)
@@ -162,4 +173,49 @@ class FDBEntry(Base, UUIDPrimaryKeyMixin):
             "mac", "device_id", "port_name", "vlan_id_num",
             name="fdb_entry_unique",
         ),
+    )
+
+
+class LibreNMSLink(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """LLDP / CDP 探到的鄰居連線（鏡像 LibreNMS 的 `links` 表）。
+
+    與 FDB/ARP 推導的差別：這是**對方自己宣告**的「我是誰、你接在我哪個埠」，
+    所以交換器之間的 trunk 也能正確畫出來 —— 那正是 FDB 推導最不準的地方
+    （trunk 埠上 MAC 太多，「MAC 數最少者為 access port」的啟發法會失準）。
+
+    remote_* 允許為空：對端不一定也被 LibreNMS 監控，此時只有 hostname/platform
+    這類 LLDP 通報字串，沒有可對映的 device id。
+    """
+
+    __tablename__ = "librenms_links"
+
+    instance_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("librenms_instances.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # LibreNMS 端的識別（links.id）；用來做 upsert 與清除已消失的連線
+    legacy_link_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    protocol: Mapped[str | None] = mapped_column(String(16))       # lldp / cdp / edp …
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    local_device_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    local_port_id: Mapped[int | None] = mapped_column(BigInteger)
+    local_port_name: Mapped[str | None] = mapped_column(Text)
+
+    remote_device_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    remote_port_id: Mapped[int | None] = mapped_column(BigInteger)
+    remote_hostname: Mapped[str | None] = mapped_column(Text)
+    remote_port: Mapped[str | None] = mapped_column(Text)
+    remote_platform: Mapped[str | None] = mapped_column(Text)
+    remote_version: Mapped[str | None] = mapped_column(Text)
+
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("instance_id", "legacy_link_id", name="librenms_link_unique"),
     )

@@ -15,6 +15,7 @@ import {
 import { autoSort } from "@/composables/useTableSort";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
+import { apiErrMsg } from "@/api/client";
 const { t } = useI18n();
 
 const { visibleKeys: wbVis, setVisible: wbSet, reset: wbReset } = useColumnPrefs(
@@ -22,7 +23,7 @@ const { visibleKeys: wbVis, setVisible: wbSet, reset: wbReset } = useColumnPrefs
   ["name", "target_url", "events", "enabled", "failure_count", "last_error", "actions"],
   ["name", "target_url", "events", "enabled", "failure_count", "last_error", "actions"],
 );
-const wbPicker = [
+const wbPicker = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "target_url", label: "Target URL" },
   { key: "events", label: t("cols.event") },
@@ -30,7 +31,7 @@ const wbPicker = [
   { key: "failure_count", label: t("cols.failed_login") },
   { key: "last_error", label: t("cols.last_error") },
   { key: "actions", label: t("cols.actions") },
-];
+]);
 
 const msg = useMessage();
 const rows = ref<Webhook[]>([]);
@@ -58,7 +59,7 @@ const newSecret = ref("");
 async function refresh() {
   loading.value = true;
   try { rows.value = (await listWebhooks()).items; }
-  catch { msg.error(t("errors.network")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 async function submit() {

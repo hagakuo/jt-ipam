@@ -11,17 +11,18 @@ import {
   NModal, NCard, NSpace, NButton, NDescriptions, NDescriptionsItem,
   NForm, NFormItem, NInput, NSelect, NSwitch, NPopconfirm, NTag, NIcon,
   NCollapse, NCollapseItem, NTimeline, NTimelineItem, NText, NEmpty, NSpin,
-  NTooltip, NCheckbox, NCheckboxGroup, NButtonGroup, NDropdown, NDivider,
+  NTooltip, NCheckbox, NCheckboxGroup, NButtonGroup, NDivider,
   useMessage,
 } from "naive-ui";
 import type { IPAddress } from "@/types";
 import { updateAddress, deleteAddress, createAddress, type IPAddressUpdate } from "@/api/addresses";
 import { getAddressHistory, getAddressSwitchPort, type IPChangeLog, type SwitchPortInfo } from "@/api/ip_history";
 import { getHostnameSources, clearHostnameSource, type HostnameSources } from "@/api/hostname";
-import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon, TerminalIcon, DisplayIcon, VncIcon, ChevronDownIcon, OpenNewWindowIcon, renderIcon } from "@/icons";
+import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon, TerminalIcon, DisplayIcon, VncIcon, NoVncIcon } from "@/icons";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useCustomers } from "@/composables/useCustomers";
+import { useChangeLogDim } from "@/composables/useChangeLogDim";
 import { useRouter } from "vue-router";
 import { listDevices, type Device } from "@/api/basic";
 import { getAddressRelations, type RelationNode } from "@/api/relations";
@@ -33,6 +34,7 @@ import OsIcon from "@/components/OsIcon.vue";
 
 const router = useRouter();
 const { options: customerOptions, labelFor: customerLabelFor, ensureLoaded: ensureCustomersLoaded } = useCustomers();
+const { isOld: isOldLog } = useChangeLogDim();
 const devices = ref<Device[]>([]);
 
 async function loadDevices() {
@@ -67,7 +69,7 @@ async function loadDhcpRanges() {
     const out: typeof dhcpRanges.value = [];
     for (const r of rows) {
       const a = _ip2int(r.start_ip), b = _ip2int(r.end_ip);
-      if (a != null && b != null) out.push({ a: Math.min(a, b), b: Math.max(a, b), server: r.firewall_name || "—", source: (r.source || "").toUpperCase(), start: r.start_ip, end: r.end_ip });
+      if (a != null && b != null) out.push({ a: Math.min(a, b), b: Math.max(a, b), server: r.source_name || "—", source: (r.source || "").toUpperCase(), start: r.start_ip, end: r.end_ip });
     }
     dhcpRanges.value = out;
   } catch { /* silent */ }
@@ -180,6 +182,10 @@ const emit = defineEmits<{
   (e: "rdp-popout"): void;
   (e: "vnc-open"): void;
   (e: "vnc-popout"): void;
+  (e: "novnc-open"): void;
+  (e: "novnc-popout"): void;
+  (e: "bmc-open"): void;
+  (e: "bmc-popout"): void;
 }>();
 
 const { t, locale } = useI18n();
@@ -206,28 +212,6 @@ onMounted(() => {
 });
 onBeforeUnmount(() => { cro?.disconnect(); cro = null; });
 
-// SSH 連線分割按鈕的下拉選單（另開視窗）
-const sshMenuOptions = computed(() => [
-  { label: t("ssh.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) },
-]);
-function onSshMenu(key: string) {
-  if (key === "popout") emit("ssh-popout");
-}
-// RDP 連線分割按鈕的下拉選單（另開視窗）
-const rdpMenuOptions = computed(() => [
-  { label: t("rdp.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) },
-]);
-function onRdpMenu(key: string) {
-  if (key === "popout") emit("rdp-popout");
-}
-// VNC 連線分割按鈕的下拉選單（另開視窗）
-const vncMenuOptions = computed(() => [
-  { label: t("vnc.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) },
-]);
-function onVncMenu(key: string) {
-  if (key === "popout") emit("vnc-popout");
-}
-
 const isCreate = computed(() => !props.address && !!props.createContext);
 
 interface FormState {
@@ -245,6 +229,9 @@ interface FormState {
   ssh_enabled: boolean;
   rdp_enabled: boolean;
   vnc_enabled: boolean;
+  novnc_enabled: boolean;
+  bmc_enabled: boolean;
+  is_dhcp_server: boolean;
 }
 
 const form = ref<FormState>(emptyForm());
@@ -262,6 +249,9 @@ function emptyForm(): FormState {
     ssh_enabled: false,
     rdp_enabled: false,
     vnc_enabled: false,
+    novnc_enabled: false,
+    bmc_enabled: false,
+    is_dhcp_server: false,
   };
 }
 
@@ -306,6 +296,9 @@ function fromAddress(a: IPAddress): FormState {
     ssh_enabled: !!a.ssh_enabled,
     rdp_enabled: !!a.rdp_enabled,
     vnc_enabled: !!a.vnc_enabled,
+    novnc_enabled: !!a.novnc_enabled,
+    bmc_enabled: !!a.bmc_enabled,
+    is_dhcp_server: !!a.is_dhcp_server,
   };
 }
 
@@ -500,6 +493,9 @@ async function save() {
       ssh_enabled: form.value.ssh_enabled,
       rdp_enabled: form.value.rdp_enabled,
       vnc_enabled: form.value.vnc_enabled,
+      novnc_enabled: form.value.novnc_enabled,
+      bmc_enabled: form.value.bmc_enabled,
+      is_dhcp_server: form.value.is_dhcp_server,
     };
     const updated = await updateAddress(props.address?.id, payload);
     hostnameSourcesLoaded.value = false;  // 重新整理來源/有效 hostname
@@ -544,14 +540,19 @@ async function remove() {
           <span>{{ props.address?.ip ?? props.createContext?.ip ?? '' }}</span>
           <n-tag v-if="isCreate" type="info" size="small">{{ t("common.create") }}</n-tag>
           <n-tag v-else :type="stateType" size="small">{{ labelState(props.address?.state) }}</n-tag>
+          <!-- 「真的有 DHCP 租約」與「只是落在 DHCP 池範圍內」是兩回事：
+               後者常見於在池範圍內設固定 IP 的機器，標成 DHCP 會誤導，改用中性的「DHCP 範圍」。 -->
           <n-tooltip v-if="dhcpInfo || props.address?.in_dhcp_lease" :delay="0">
             <template #trigger>
-              <n-tag type="warning" size="small" :bordered="false">DHCP</n-tag>
+              <n-tag :type="props.address?.in_dhcp_lease ? 'warning' : 'default'" size="small" :bordered="false">
+                {{ props.address?.in_dhcp_lease ? "DHCP" : t("addresses.dhcp_in_range_tag") }}
+              </n-tag>
             </template>
-            <div style="max-width:260px;line-height:1.5">
+            <div style="max-width:280px;line-height:1.5">
               <div v-if="props.address?.in_dhcp_lease">{{ t("addresses.dhcp_has_lease") }}</div>
               <template v-if="dhcpInfo">
                 <div>{{ t("addresses.dhcp_pool_hint") }}</div>
+                <div v-if="!props.address?.in_dhcp_lease" style="margin-top:4px">{{ t("addresses.dhcp_no_lease_hint") }}</div>
                 <div style="margin-top:4px"><strong>{{ t("addresses.dhcp_server") }}：</strong>{{ dhcpInfo.server }}{{ dhcpInfo.source ? ` (${dhcpInfo.source})` : "" }}</div>
                 <div>{{ t("addresses.dhcp_range") }}：{{ dhcpInfo.start }} – {{ dhcpInfo.end }}</div>
               </template>
@@ -565,50 +566,82 @@ async function remove() {
           <template v-if="!editMode">
             <!-- SSH 連線分割按鈕：主鍵嵌入終端機、下箭頭可另開視窗（僅在啟用且有權限時顯示） -->
             <template v-if="props.address?.ssh_available">
-              <n-button-group key="hx-ssh">
-                <n-button type="info" size="small" :title="t('ssh.connect')" @click="emit('ssh-open')">
-                  <template #icon><n-icon><TerminalIcon /></n-icon></template>
-                  <span v-if="!consoleCompact">{{ t("ssh.connect") }}</span>
-                </n-button>
-                <n-dropdown trigger="click" :options="sshMenuOptions" @select="onSshMenu">
-                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
-                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
-                  </n-button>
-                </n-dropdown>
-              </n-button-group>
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group key="hx-ssh">
+                    <n-button type="info" size="small" @click="emit('ssh-open')">
+                      <template #icon><n-icon><TerminalIcon /></n-icon></template>
+                      <span v-if="!consoleCompact">{{ t("ssh.connect") }}</span>
+                    </n-button>
+                  </n-button-group>
+                </template>
+                {{ t("ssh.connect") }}
+              </n-tooltip>
             </template>
             <!-- RDP 連線分割按鈕：主鍵新分頁、下箭頭另開視窗（僅在啟用且有權限時顯示） -->
             <span v-if="props.address?.rdp_available" key="hx-rdp" class="conn-beta-wrap">
-              <n-button-group>
-                <n-button type="info" size="small" :title="t('rdp.connect')" @click="emit('rdp-open')">
-                  <template #icon><n-icon><DisplayIcon /></n-icon></template>
-                  <span v-if="!consoleCompact">{{ t("rdp.connect") }}</span>
-                </n-button>
-                <n-dropdown trigger="click" :options="rdpMenuOptions" @select="onRdpMenu">
-                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
-                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
-                  </n-button>
-                </n-dropdown>
-              </n-button-group>
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group>
+                    <n-button type="info" size="small" @click="emit('rdp-open')">
+                      <template #icon><n-icon><DisplayIcon /></n-icon></template>
+                      <span v-if="!consoleCompact">{{ t("rdp.connect") }}</span>
+                    </n-button>
+                  </n-button-group>
+                </template>
+                {{ t("rdp.connect") }}
+              </n-tooltip>
               <span class="conn-beta-badge">{{ t("rdp.beta") }}</span>
             </span>
             <!-- VNC 連線分割按鈕：主鍵新分頁、下箭頭另開視窗（僅在啟用且有權限時顯示） -->
             <span v-if="props.address?.vnc_available" key="hx-vnc" class="conn-beta-wrap">
-              <n-button-group>
-                <n-button type="info" size="small" :title="t('vnc.connect')" @click="emit('vnc-open')">
-                  <template #icon><n-icon><VncIcon /></n-icon></template>
-                  <span v-if="!consoleCompact">{{ t("vnc.connect") }}</span>
-                </n-button>
-                <n-dropdown trigger="click" :options="vncMenuOptions" @select="onVncMenu">
-                  <n-button type="info" size="small" style="padding:0 3px;border-left:1px solid rgba(255,255,255,.4)">
-                    <template #icon><n-icon><ChevronDownIcon /></n-icon></template>
-                  </n-button>
-                </n-dropdown>
-              </n-button-group>
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group>
+                    <n-button type="info" size="small" @click="emit('vnc-open')">
+                      <template #icon><n-icon><VncIcon /></n-icon></template>
+                      <span v-if="!consoleCompact">{{ t("vnc.connect") }}</span>
+                    </n-button>
+                  </n-button-group>
+                </template>
+                {{ t("vnc.connect") }}
+              </n-tooltip>
               <span class="conn-beta-badge">{{ t("vnc.beta") }}</span>
             </span>
-            <!-- 連線鈕（SSH/RDP/VNC）與編輯/刪除間只留一條分隔線 -->
-            <n-divider v-if="props.address?.ssh_available || props.address?.rdp_available || props.address?.vnc_available"
+            <!-- PVE 主控台連線按鈕（noVNC/xterm；僅在該 IP 是 PVE VM/CT 且有權限時顯示），右上小標 PVE -->
+            <span v-if="props.address?.novnc_available" key="hx-novnc" class="conn-beta-wrap">
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group>
+                    <n-button type="warning" size="small" @click="emit('novnc-open')">
+                      <template #icon>
+                        <n-icon><TerminalIcon v-if="props.address?.pve?.kind === 'ct'" /><NoVncIcon v-else /></n-icon>
+                      </template>
+                      <span v-if="!consoleCompact">{{ props.address?.pve?.kind === 'ct' ? 'xterm' : 'noVNC' }}</span>
+                    </n-button>
+                  </n-button-group>
+                </template>
+                {{ `${props.address?.pve?.kind === 'ct' ? 'xterm' : 'noVNC'} ${t('novnc.connect')}` }}
+              </n-tooltip>
+              <span class="conn-beta-badge conn-pve-badge">PVE</span>
+            </span>
+            <!-- BMC 主控台連線按鈕（IPMI SOL；該 IP 啟用 BMC 且有權限時顯示），右上小標 SOL -->
+            <span v-if="props.address?.bmc_available" key="hx-bmc" class="conn-beta-wrap">
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group>
+                    <n-button type="warning" size="small" @click="emit('bmc-open')">
+                      <template #icon><n-icon><TerminalIcon /></n-icon></template>
+                      <span v-if="!consoleCompact">BMC</span>
+                    </n-button>
+                  </n-button-group>
+                </template>
+                {{ t("bmc.connect") }}
+              </n-tooltip>
+              <span class="conn-beta-badge conn-sol-badge">SOL</span>
+            </span>
+            <!-- 連線鈕（SSH/RDP/VNC/PVE/BMC）與編輯/刪除間只留一條分隔線 -->
+            <n-divider v-if="props.address?.ssh_available || props.address?.rdp_available || props.address?.vnc_available || props.address?.novnc_available || props.address?.bmc_available"
                        key="hx-conn-div" vertical />
             <n-button key="hx-edit" type="primary" size="small" @click="editMode = true">
               <template #icon><n-icon><EditIcon /></n-icon></template>{{ t("common.edit") }}
@@ -772,6 +805,7 @@ async function remove() {
                   v-for="h in history" :key="h.id"
                   :type="HISTORY_TYPE[h.event_type] ?? 'default'"
                   :time="fmtDateTime(h.created_at)"
+                  :class="{ 'log-dim': isOldLog(h.created_at) }"
                 >
                   <template #header>
                     <n-space align="center" :size="6">
@@ -893,6 +927,33 @@ async function remove() {
               <span style="font-size: 11px; opacity: .7">{{ t("vnc.enable_hint") }}</span>
             </n-space>
           </n-form-item>
+          <!-- PVE 主控台開關：僅在此 IP 對應到 Proxmox VE 的 VM/CT 時出現 -->
+          <n-form-item v-if="props.address?.pve">
+            <template #label>
+              {{ t("novnc.enable") }}
+              <n-tag size="tiny" type="warning" :bordered="false" style="margin-left:6px">PVE</n-tag>
+            </template>
+            <n-space vertical :size="2" style="width:100%">
+              <n-switch v-model:value="form.novnc_enabled" />
+              <span style="font-size: 11px; opacity: .7">{{ t("novnc.enable_hint") }}（{{ props.address.pve.kind === 'ct' ? 'LXC → xterm' : 'QEMU → noVNC' }} · vmid {{ props.address.pve.vmid }}）</span>
+            </n-space>
+          </n-form-item>
+          <n-form-item>
+            <template #label>
+              {{ t("bmc.enable_label") }}
+              <n-tag size="tiny" type="warning" :bordered="false" style="margin-left:6px">Beta</n-tag>
+            </template>
+            <n-space vertical :size="2" style="width:100%">
+              <n-switch v-model:value="form.bmc_enabled" />
+              <span style="font-size: 11px; opacity: .7">{{ t("bmc.enable_hint") }}</span>
+            </n-space>
+          </n-form-item>
+          <n-form-item :label="t('addresses.is_dhcp_server')">
+            <n-space vertical :size="2" style="width:100%">
+              <n-switch v-model:value="form.is_dhcp_server" />
+              <span style="font-size: 11px; opacity: .7">{{ t("addresses.is_dhcp_server_hint") }}</span>
+            </n-space>
+          </n-form-item>
         </n-form>
       </div>
 
@@ -950,4 +1011,7 @@ async function remove() {
   padding: 1px 4px; border-radius: 999px;
   color: #fff; background: #d99812; box-shadow: 0 0 0 1.5px var(--n-color, #fff);
 }
+.conn-sol-badge { background: #909399; }
+/* 異動記錄超過 N 天（系統設定）的項目以淡色顯示 */
+.log-dim { opacity: .45; }
 </style>

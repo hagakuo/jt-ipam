@@ -14,6 +14,7 @@ import { listAddresses, updateAddress } from "@/api/addresses";
 import { listLocations, listRacks, getDeviceVlans, getDeviceLibrenms, type Device, type Location, type Rack, type DeviceVLAN, type DeviceLibreNMS } from "@/api/basic";
 import { getDeviceRelations, type RelationNode } from "@/api/relations";
 import RelationChain from "@/components/RelationChain.vue";
+import UptimeBar from "@/components/UptimeBar.vue";
 import RackDiagram from "@/components/RackDiagram.vue";
 import DevicePortsPanel from "@/components/DevicePortsPanel.vue";
 import DevicePowerPortsPanel from "@/components/DevicePowerPortsPanel.vue";
@@ -21,6 +22,7 @@ import SwitchPortLabel from "@/components/SwitchPortLabel.vue";
 import { getRackDiagram } from "@/api/racks";
 type RackDiagramData = Awaited<ReturnType<typeof getRackDiagram>>;
 import IPAddressEditModal from "@/components/IPAddressEditModal.vue";
+import DeviceEditModal from "@/components/DeviceEditModal.vue";
 import LiveStatusDot from "@/components/LiveStatusDot.vue";
 import type { IPAddress } from "@/types";
 import { autoSort } from "@/composables/useTableSort";
@@ -64,6 +66,7 @@ const router = useRouter();
 const msg = useMessage();
 
 const device = ref<Device | null>(null);
+const editShow = ref(false);
 const relations = ref<RelationNode[]>([]);
 const location = ref<Location | null>(null);
 const rack = ref<Rack | null>(null);
@@ -157,6 +160,9 @@ function typeColor(type: string): "success" | "info" | "warning" | "error" | "de
     storage: "warning",
     ap: "info",
     ipmi: "warning",
+    patch_panel: "default",
+    pdu: "warning",
+    ups: "warning",
     other: "default",
   } as Record<string, "success" | "info" | "warning" | "error" | "default">)[type] ?? "default";
 }
@@ -181,7 +187,7 @@ function lnmsStatusLabel(s: unknown): string {
 function lastSeen(r: IPAddress): string {
   const arr = [r.last_seen_scanner, r.last_seen_librenms, r.last_seen_dns].filter(Boolean) as string[];
   if (!arr.length) return "—";
-  return arr.sort().reverse()[0].replace("T", " ").split(".")[0];
+  return fmtDateTime(arr.sort().reverse()[0]);   // 轉本地時區（原本直接顯示 UTC）
 }
 
 function liveDot(r: IPAddress) {
@@ -250,13 +256,12 @@ onMounted(() => {
           <n-space align="center" :wrap-item="false">
             <n-icon :size="22"><DevicesIcon /></n-icon>
             <span>{{ device.name }}</span>
-            <n-tag :type="typeColor(device.type)" size="small">{{ device.type }}</n-tag>
+            <n-tag :type="typeColor(device.type)" size="small">{{ t(`devices.type_${device.type}`) }}</n-tag>
           </n-space>
         </template>
         <template #header-extra>
           <n-space :size="8">
-            <n-button type="primary" size="small"
-                      @click="router.push({ name: 'devices', query: { edit: device.id } })">
+            <n-button type="primary" size="small" @click="editShow = true">
               <template #icon><n-icon><EditIcon /></n-icon></template>
               {{ t("common.edit") }}
             </n-button>
@@ -270,7 +275,7 @@ onMounted(() => {
           <div class="dev-head-info">
         <n-descriptions bordered :column="3" size="small" label-placement="left">
           <n-descriptions-item :label="t('common.name')">{{ device.name }}</n-descriptions-item>
-          <n-descriptions-item :label="t('common.type')">{{ device.type }}</n-descriptions-item>
+          <n-descriptions-item :label="t('common.type')">{{ t(`devices.type_${device.type}`) }}</n-descriptions-item>
           <n-descriptions-item :label="t('devices.vendor')">{{ device.vendor ?? "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('devices.model')">{{ device.model ?? "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('devices.serial')">{{ device.serial ?? "—" }}</n-descriptions-item>
@@ -308,6 +313,11 @@ onMounted(() => {
             <RackDiagram :diagram="rackDiagram" :show-legend="false" :highlight-id="device.id" :compact="true" :bare="true" />
           </div>
         </div>
+      </n-card>
+
+      <!-- 存活狀況：合併此裝置名下所有 IP 的狀態轉換 -->
+      <n-card v-if="device" size="small">
+        <UptimeBar :device-id="device.id" :days="90" />
       </n-card>
 
       <n-card v-if="device && relations.length > 1" :title="() => cardHead(TopologyIcon, t('relations.title'))" size="small">
@@ -424,6 +434,8 @@ onMounted(() => {
     @saved="onSaved"
     @deleted="onDeleted"
   />
+  <DeviceEditModal v-model:show="editShow" :device="device"
+                   @saved="() => load(String(route.params.id))" />
 </template>
 
 <style scoped>

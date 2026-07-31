@@ -22,6 +22,22 @@ from dataclasses import dataclass
 
 import asyncssh
 
+# 相容（legacy）演算法：連老舊網路裝置用（如 D-Link DGS-1510、老 switch / 防火牆，
+# 這類機種常只提供 CBC 加密、group1 / group14-sha1 金鑰交換、ssh-rsa（SHA-1）host key）。
+# 以 "+" 首碼「附加」到 asyncssh 預設集之後 → 連現代裝置時仍優先協商強演算法（chacha20 /
+# aes-gcm / curve25519 / ed25519），只有對方完全不支援時才退到這些較舊的。
+# 刻意排除真正破掉的 arcfour / blowfish / cast / des。
+LEGACY_SSH_ALGS: dict[str, str] = {
+    "encryption_algs": "+aes256-cbc,aes192-cbc,aes128-cbc,3des-cbc",
+    "kex_algs": "+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1,"
+    "diffie-hellman-group-exchange-sha1",
+    "mac_algs": "+hmac-sha1,hmac-sha1-96",
+    "server_host_key_algs": "+ssh-rsa",
+    # 用戶端金鑰簽章：很舊的 sshd 只收 ssh-rsa（SHA-1）簽章，新版 asyncssh 預設只送
+    # rsa-sha2-* → 對端明明有這把 RSA 公鑰卻回 Permission denied。以 "+" 附加保留相容。
+    "signature_algs": "+ssh-rsa",
+}
+
 
 class SSHTunnelError(RuntimeError):
     """SSH tunnel 任一階段失敗。"""
@@ -87,7 +103,12 @@ async def fetch_host_key(host: str, port: int = 22, timeout: float = 8.0) -> dic
     """
     try:
         async with asyncio.timeout(timeout):
-            key = await asyncssh.get_server_host_key(host, port=port)
+            key = await asyncssh.get_server_host_key(
+                host,
+                port=port,
+                # 相容老裝置：get_server_host_key 只吃 options=，把 legacy 演算法帶進去
+                options=asyncssh.SSHClientConnectionOptions(**LEGACY_SSH_ALGS),
+            )
     except TimeoutError as exc:
         raise SSHTunnelError(f"SSH connect timeout to {host}:{port}") from exc
     except (asyncssh.Error, OSError) as exc:
@@ -170,6 +191,7 @@ async def open_tunnel(cfg: TunnelConfig) -> AsyncIterator[int]:
                 # 安全：不繼承 agent；不允許 password fallback
                 agent_path=None,
                 preferred_auth=("publickey",),
+                **LEGACY_SSH_ALGS,
             ) as conn:
                 # 開 local TCP port → 對端 TCP 或 Unix socket
                 if cfg.remote_socket_path:
@@ -190,7 +212,12 @@ async def open_tunnel(cfg: TunnelConfig) -> AsyncIterator[int]:
     except SSHHostKeyMismatch:
         raise
     except asyncssh.PermissionDenied as exc:
-        raise SSHTunnelError(f"SSH 認證失敗（key 不對？）: {exc}") from exc
+        raise SSHTunnelError(
+            f"SSH 金鑰認證被拒：{exc}。請確認 (1) 這把私鑰對應的公鑰已加入對端 "
+            f"{cfg.username}@{cfg.host} 的 ~/.ssh/authorized_keys；(2) sshd 允許該帳號金鑰"
+            f"登入（root 需 PermitRootLogin 至少 prohibit-password）；(3) 家目錄與 "
+            f"~/.ssh(700)、authorized_keys(600) 權限正確；(4) 貼上的私鑰與該公鑰確實成對。"
+        ) from exc
     except TimeoutError as exc:
         raise SSHTunnelError(f"SSH timeout（{cfg.timeout}s）— host 不在 / 防火牆擋了？") from exc
     except asyncssh.Error as exc:

@@ -24,6 +24,7 @@ import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import { useRoute } from "vue-router";
 import { useTablePagination } from "@/composables/useTablePagination";
+import { apiErrMsg } from "@/api/client";
 
 const { t } = useI18n();
 const route = useRoute();
@@ -52,7 +53,7 @@ async function refresh() {
   try {
     [clusters.value, vms.value, proxmox.value]
       = await Promise.all([Virt.clusters(), Virt.vms(), Virt.proxmox()]);
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 async function syncProxmox(id: string) {
@@ -69,6 +70,10 @@ async function testProxmox(id: string) {
 }
 async function delProxmox(id: string) {
   try { await Virt.deleteProxmox(id); msg.success(t("common.ok")); await refresh(); }
+  catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+}
+async function delCluster(id: string) {
+  try { await Virt.deleteCluster(id); msg.success(t("common.ok")); await refresh(); }
   catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
 
@@ -216,8 +221,18 @@ const clusterCols = computed<DataTableColumns<any>>(() => autoSort([
   },
   { title: t("sections.description"), key: "description" },
   {
-    title: t("common.actions"), key: "actions", width: 70,
-    render: (r) => iconAction(EditIcon, t("common.edit"), () => openClusterEdit(r)),
+    title: t("common.actions"), key: "actions", width: 100, className: "col-actions",
+    render: (r) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
+      iconAction(EditIcon, t("common.edit"), () => openClusterEdit(r)),
+      h(NPopconfirm, { onPositiveClick: () => delCluster(r.id) }, {
+        trigger: () => h(NTooltip, null, {
+          trigger: () => h(NButton, { size: "small", quaternary: true, type: "error" },
+            { icon: () => h(NIcon, null, () => h(DeleteIcon)) }),
+          default: () => t("common.delete"),
+        }),
+        default: () => t("virt.cluster_delete_confirm"),
+      }),
+    ]),
   },
 ]));
 // 每個 NIC 一行（IP / bridge / MAC 三欄同 index 對齊）— 多 IP 一看就知道對應關係
@@ -311,7 +326,8 @@ function useVirtPrefs(name: string, cols: typeof clusterCols, rows: typeof clust
     .map((c: any) => ({ key: String(c.key), label: typeof c.title === "string" ? c.title : String(c.key) })));
   const visibleCols = computed<DataTableColumns<any>>(() =>
     cols.value.filter((c: any) => c.key === "actions" || c.key === "_" || visibleKeys.value.includes(String(c.key))));
-  const { query, filtered } = useTableQuickFilter(rows);
+  // 只比對「目前顯示的欄位」，避免查數字（如 102）誤中 memory_mb / disk_gb 等內部欄位
+  const { query, filtered } = useTableQuickFilter(rows, () => visibleKeys.value);
   return reactive({ visibleKeys, setVisible, reset, items, visibleCols, query, filtered });
 }
 const clusterP = useVirtPrefs("clusters", clusterCols, clusters);

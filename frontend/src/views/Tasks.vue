@@ -16,6 +16,7 @@ import { listTasks, type BackgroundTask } from "@/api/tasks";
 import { autoSort } from "@/composables/useTableSort";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
+import { fmtDateTime } from "@/utils/datetime";
 const { t } = useI18n();
 
 const { visibleKeys: tkVis, setVisible: tkSet, reset: tkReset } = useColumnPrefs(
@@ -23,7 +24,7 @@ const { visibleKeys: tkVis, setVisible: tkSet, reset: tkReset } = useColumnPrefs
   ["kind", "target_label", "status", "progress", "queued_at", "duration", "finished_at", "summary"],
   ["kind", "target_label", "status", "progress", "queued_at", "duration", "finished_at", "summary"],
 );
-const tkPicker = [
+const tkPicker = computed(() => [
   { key: "kind", label: t("cols.type") },
   { key: "target_label", label: t("cols.target") },
   { key: "status", label: t("cols.status") },
@@ -32,7 +33,7 @@ const tkPicker = [
   { key: "duration", label: t("cols.duration") },
   { key: "finished_at", label: t("cols.finished_at") },
   { key: "summary", label: t("cols.result") },
-];
+]);
 
 const msg = useMessage();
 const active = ref<BackgroundTask[]>([]);
@@ -91,12 +92,21 @@ function duration(r: BackgroundTask): string {
 }
 
 function fmtTs(s: string | null): string {
-  if (!s) return "—";
-  return s.replace("T", " ").split(".")[0];
+  // DB 存 UTC（timestamptz）；顯示轉成觀看者瀏覽器的本地時區（與全站一致），
+  // 原本只 strip 掉 T 會直接顯示 UTC → 看起來時區不對。
+  return fmtDateTime(s);
 }
 
 const commonCols = computed<DataTableColumns<BackgroundTask>>(() => autoSort([
   { title: t("tasks.col_kind"), key: "kind", width: 180 },
+  {
+    title: t("tasks.col_trigger"), key: "trigger", width: 96,
+    render: (r) => h(
+      NTag,
+      { size: "small", round: true, type: r.trigger === "scheduled" ? "info" : "default" },
+      () => r.trigger === "scheduled" ? t("tasks.trigger_scheduled") : t("tasks.trigger_manual"),
+    ),
+  },
   {
     title: t("tasks.col_target"), key: "target_label",
     width: 200, ellipsis: { tooltip: true },
@@ -144,14 +154,39 @@ function aggregateCounts(summary: any): { ins: number; upd: number; err: number;
     return out;
   }
 
-  // 3) 通用 top-level：librenms / wazuh / adguard 等
-  for (const [k, v] of Object.entries(summary)) {
-    if (typeof v !== "number") continue;
-    if (k.endsWith("_inserted") || k === "inserted") out.ins += v;
-    else if (k.endsWith("_updated") || k === "updated" || k.endsWith("_matched") || k.endsWith("_filled")) out.upd += v;
-    else if (k.endsWith("_errored") || k === "errored" || k.endsWith("_failed") || k === "missing_agents") out.err += v;
-    else if (k.endsWith("_seen") || k.endsWith("_count")) out.total += v;
+  // 2b) DNS sync: {pulled_zones, pulled_records, mismatches, dns_only, ipam_only, hostname_obs}
+  if ("pulled_records" in summary || "pulled_zones" in summary) {
+    out.total = n(summary.pulled_records);
+    out.upd = n(summary.hostname_obs);   // 套用到 IPAM 的主機名稱觀測數
+    return out;
   }
+
+  // 2c) pfSense 排程心跳：{arp, aliases, rules, nat}（每輪重新同步的項目數）
+  if ("arp" in summary && "rules" in summary && "nat" in summary && typeof summary.arp === "number") {
+    out.upd = n(summary.arp) + n(summary.aliases) + n(summary.rules) + n(summary.nat);
+    out.total = out.upd;
+    return out;
+  }
+
+  // 3) 通用：top-level 數字，或「一層巢狀分組」
+  //    （librenms：{devices:{seen,inserted,updated}, arp:{...}, fdb:{...}, vlans:{seen,upserted,mappings}}）
+  const bump = (k: string, v: number) => {
+    if (k.endsWith("_inserted") || k === "inserted" || k === "upserted" || k === "new") out.ins += v;
+    else if (k.endsWith("_updated") || k === "updated" || k.endsWith("_matched") || k.endsWith("_filled") || k === "mappings") out.upd += v;
+    else if (k.endsWith("_errored") || k === "errored" || k.endsWith("_failed") || k === "missing_agents") out.err += v;
+    else if (k.endsWith("_seen") || k === "seen" || k.endsWith("_count") || k === "fetched") out.total += v;
+  };
+  for (const [k, v] of Object.entries(summary)) {
+    if (typeof v === "number") bump(k, v);
+    else if (v && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) {
+        if (typeof v2 === "number") bump(k2, v2);
+      }
+    }
+  }
+  // 沒有明確的「總數」欄位命中時（如 OPNsense 心跳 {mappings:9}），用 新增+更新 當總數，
+  // 至少反映「有做事」，不要顯示成 0。
+  if (out.total === 0) out.total = out.ins + out.upd;
   return out;
 }
 
@@ -194,16 +229,63 @@ function formatSummary(kind: string, summary: any): string {
     return lines.join("；");
   }
 
+  // 2b) DNS sync 風格：{pulled_zones, pulled_records, mismatches, dns_only, ipam_only, hostname_obs}
+  if ("pulled_records" in summary || "pulled_zones" in summary) {
+    const p: string[] = [];
+    if (num(summary.pulled_zones)) p.push(`zones ${num(summary.pulled_zones)}`);
+    if (num(summary.pulled_records)) p.push(`records ${num(summary.pulled_records)}`);
+    if (num(summary.hostname_obs)) p.push(`hostname ${num(summary.hostname_obs)}`);
+    if (num(summary.mismatches)) p.push(`mismatch ${num(summary.mismatches)}`);
+    if (num(summary.dns_only)) p.push(`DNS-only ${num(summary.dns_only)}`);
+    if (num(summary.ipam_only)) p.push(`IPAM-only ${num(summary.ipam_only)}`);
+    return p.length ? p.join("；") : t("tasks.summary.no_change");
+  }
+
+  // 2c) pfSense 心跳：{arp, aliases, rules, nat}
+  if ("arp" in summary && "rules" in summary && "nat" in summary && typeof summary.arp === "number") {
+    const p: string[] = [];
+    if (num(summary.arp)) p.push(`ARP ${num(summary.arp)}`);
+    if (num(summary.rules)) p.push(`rules ${num(summary.rules)}`);
+    if (num(summary.aliases)) p.push(`aliases ${num(summary.aliases)}`);
+    if (num(summary.nat)) p.push(`NAT ${num(summary.nat)}`);
+    return p.length ? p.join("；") : t("tasks.summary.no_change");
+  }
+
+  // 2d) Wazuh sync 風格：{fetched, new, updated, matched_ip}
+  if ("fetched" in summary && ("new" in summary || "matched_ip" in summary)) {
+    const p: string[] = [];
+    if (num(summary.new)) p.push(t("common.added_n", { n: num(summary.new) }));
+    if (num(summary.updated)) p.push(t("common.updated_n", { n: num(summary.updated) }));
+    if (num(summary.fetched)) p.push(`fetched ${num(summary.fetched)}`);
+    if (num(summary.matched_ip)) p.push(`matched IP ${num(summary.matched_ip)}`);
+    return p.length ? p.join("；") : t("tasks.summary.no_change");
+  }
+
+  // 2e) Proxmox sync 風格：{cluster, vms_seen, vms_updated, vms_inserted, nodes_seen, ipam_linked, interfaces_seen}
+  if ("vms_seen" in summary || "ipam_linked" in summary) {
+    const p: string[] = [];
+    if (num(summary.vms_inserted)) p.push(t("common.added_n", { n: num(summary.vms_inserted) }));
+    if (num(summary.vms_updated)) p.push(t("common.updated_n", { n: num(summary.vms_updated) }));
+    if (num(summary.vms_seen)) p.push(`VM ${num(summary.vms_seen)}`);
+    if (num(summary.nodes_seen)) p.push(`nodes ${num(summary.nodes_seen)}`);
+    if (num(summary.ipam_linked)) p.push(`IPAM ${num(summary.ipam_linked)}`);
+    return p.length ? p.join("；") : t("tasks.summary.no_change");
+  }
+
   // 3) LibreNMS sync 風格：{instance, devices_seen, devices_inserted, ...}
   const k = (key: string, label: string) => {
     if (typeof summary[key] === "number" && summary[key] !== 0) lines.push(`${label} ${summary[key]}`);
   };
-  k("devices_seen", t("tasks.summary.devices_seen"));
-  k("devices_inserted", t("tasks.summary.devices_inserted"));
-  k("devices_updated", t("tasks.summary.devices_updated"));
-  k("arp_seen", "ARP");
-  k("arp_inserted", t("tasks.summary.arp_inserted"));
-  k("fdb_seen", "FDB");
+  // 巢狀 summary：devices/arp/fdb/vlans 各是 {seen, inserted, updated}
+  const kn = (val: unknown, label: string) => {
+    if (typeof val === "number" && val !== 0) lines.push(`${label} ${val}`);
+  };
+  kn(summary.devices?.seen, t("tasks.summary.devices_seen"));
+  kn(summary.devices?.inserted, t("tasks.summary.devices_inserted"));
+  kn(summary.devices?.updated, t("tasks.summary.devices_updated"));
+  kn(summary.arp?.seen, "ARP");
+  kn(summary.arp?.inserted, t("tasks.summary.arp_inserted"));
+  kn(summary.fdb?.seen, "FDB");
   k("ip_mac_filled", t("tasks.summary.ip_mac_filled"));
 
   // 4) AdGuard 風格：{clients_result: {clients, ips_seen, ips_matched}, ...}
@@ -274,7 +356,8 @@ const allHistoryCols = computed<DataTableColumns<BackgroundTask>>(() => autoSort
 ]));
 
 const historyCols = computed<DataTableColumns<BackgroundTask>>(() =>
-  allHistoryCols.value.filter((c: any) => tkVis.value.includes(c.key)),
+  // 觸發方式（排程／手動）永遠顯示，不受欄位選擇隱藏
+  allHistoryCols.value.filter((c: any) => c.key === "trigger" || tkVis.value.includes(c.key)),
 );
 
 onMounted(() => {
@@ -307,7 +390,7 @@ onUnmounted(() => {
       <n-tabs type="line" animated>
         <n-tab-pane name="active">
           <template #tab>
-            <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><PendingIcon /></n-icon>{{ `${t('tasks.tab_active')}(${active.length})` }}</span>
+            <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><PendingIcon /></n-icon>{{ `${t('tasks.tab_active')} (${active.length})` }}</span>
           </template>
           <n-data-table
             :columns="activeCols"

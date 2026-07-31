@@ -210,6 +210,68 @@ async def set_ai_chat_retention_days(
     return days
 
 
+# ─────────────────── 連線管理資安設定（console security）───────────────────
+CONSOLE_SECURITY_KEY = "console_security"
+
+
+async def get_rdp_clipboard_paste(session: AsyncSession) -> bool:
+    """是否允許 RDP 控制端把文字貼到被控端（剪貼簿單向重導）。預設關閉（deny by default）。"""
+    row = await session.get(SystemSetting, CONSOLE_SECURITY_KEY)
+    if row and isinstance(row.value, dict):
+        return bool(row.value.get("rdp_clipboard_paste", False))
+    return False
+
+
+async def set_rdp_clipboard_paste(
+    session: AsyncSession, *, enabled: bool, updated_by_user_id: uuid.UUID | None = None,
+) -> bool:
+    row = await session.get(SystemSetting, CONSOLE_SECURITY_KEY)
+    if row is None:
+        row = SystemSetting(key=CONSOLE_SECURITY_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    current = dict(row.value or {})
+    current["rdp_clipboard_paste"] = bool(enabled)
+    row.value = current
+    row.updated_by = updated_by_user_id
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(row, "value")
+    await session.commit()
+    return bool(enabled)
+
+
+# ─────────────────── 介面顯示設定（UI display）───────────────────
+UI_DISPLAY_KEY = "ui_display"
+_DEFAULT_CHANGE_LOG_DIM_DAYS = 30
+
+
+async def get_change_log_dim_days(session: AsyncSession) -> int:
+    """異動記錄超過幾天的項目以淡色顯示；0 = 不淡化。預設 30 天。"""
+    row = await session.get(SystemSetting, UI_DISPLAY_KEY)
+    if row and isinstance(row.value, dict):
+        v = row.value.get("change_log_dim_days")
+        if isinstance(v, int) and v >= 0:
+            return v
+    return _DEFAULT_CHANGE_LOG_DIM_DAYS
+
+
+async def set_change_log_dim_days(
+    session: AsyncSession, *, days: int, updated_by_user_id: uuid.UUID | None = None,
+) -> int:
+    days = max(0, min(3650, int(days)))
+    row = await session.get(SystemSetting, UI_DISPLAY_KEY)
+    if row is None:
+        row = SystemSetting(key=UI_DISPLAY_KEY, value={}, updated_by=updated_by_user_id)
+        session.add(row)
+    current = dict(row.value or {})
+    current["change_log_dim_days"] = days
+    row.value = current
+    row.updated_by = updated_by_user_id
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(row, "value")
+    await session.commit()
+    return days
+
+
 # ─────────────────── Graylog DSV 查表（lookup table adapter）───────────────────
 
 GRAYLOG_DSV_KEY = "graylog_dsv"
@@ -653,12 +715,35 @@ _ncfg_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 # 規劃支援的管道；available=False 者前端顯示但反灰（開發中）
 NOTIFY_CHANNELS: tuple[tuple[str, bool], ...] = (
     ("email", True),
-    ("telegram", False),
-    ("slack", False),
-    ("teams", False),
-    ("nextcloud", False),
-    ("zulip", False),
+    ("telegram", True),
+    ("slack", True),
+    ("teams", True),
+    ("nextcloud", True),
+    ("zulip", True),
+    ("webhook", True),
 )
+
+# 通知管道設定欄位（除 email/smtp 外的 webhook 類管道）
+_NOTIFY_BOOL_KEYS = (
+    "email_enabled", "telegram_enabled", "slack_enabled",
+    "teams_enabled", "nextcloud_enabled", "zulip_enabled", "webhook_enabled",
+)
+_NOTIFY_STR_KEYS = (
+    "smtp_host", "smtp_username", "smtp_from",
+    "telegram_chat_id", "nextcloud_url", "nextcloud_token",
+    "zulip_site", "zulip_bot_email", "zulip_stream", "zulip_topic",
+)
+# 明文設定欄位 -> 加密儲存欄位（get 會反向解密回明文欄位）
+_NOTIFY_SECRETS = {
+    "smtp_password": "smtp_password_enc",
+    "telegram_token": "telegram_token_enc",
+    "slack_webhook": "slack_webhook_enc",
+    "teams_webhook": "teams_webhook_enc",
+    "nextcloud_secret": "nextcloud_secret_enc",
+    "zulip_api_key": "zulip_api_key_enc",
+    "webhook_url": "webhook_url_enc",      # 通用 webhook（URL 可能含密鑰，一律加密）
+    "webhook_token": "webhook_token_enc",  # 選填 Bearer token
+}
 
 
 def _enc_smtp(pw: str) -> str:
@@ -677,15 +762,17 @@ def _dec_smtp(blob: str) -> str | None:
 
 
 def _default_notify() -> dict[str, Any]:
-    return {
-        "email_enabled": False,
-        "smtp_host": None, "smtp_port": 587, "smtp_tls": "starttls",  # none/starttls/tls
-        "smtp_username": None, "smtp_password_enc": None, "smtp_from": None,
-    }
+    cfg: dict[str, Any] = dict.fromkeys(_NOTIFY_BOOL_KEYS, False)
+    cfg.update({"smtp_port": 587, "smtp_tls": "starttls"})  # none/starttls/tls
+    for k in _NOTIFY_STR_KEYS:
+        cfg[k] = None
+    for enc in _NOTIFY_SECRETS.values():
+        cfg[enc] = None
+    return cfg
 
 
 async def get_notification_channels(session: AsyncSession) -> dict[str, Any]:
-    """回傳通知管道設定（含解密後的 smtp_password；僅後端 send 用，API 層會遮蔽）。"""
+    """回傳通知管道設定（含解密後的各管道密鑰；僅後端 send 用，API 層會遮蔽）。"""
     now = time.monotonic()
     c = _ncfg_cache.get(NOTIFY_CH_KEY)
     if c and now - c[0] < _TTL_SEC:
@@ -694,17 +781,19 @@ async def get_notification_channels(session: AsyncSession) -> dict[str, Any]:
     row = await session.get(SystemSetting, NOTIFY_CH_KEY)
     if row and isinstance(row.value, dict):
         v = row.value
-        for k in ("email_enabled",):
+        for k in _NOTIFY_BOOL_KEYS:
             if isinstance(v.get(k), bool):
                 cfg[k] = v[k]
         if isinstance(v.get("smtp_port"), int):
             cfg["smtp_port"] = v["smtp_port"]
         if v.get("smtp_tls") in ("none", "starttls", "tls"):
             cfg["smtp_tls"] = v["smtp_tls"]
-        for k in ("smtp_host", "smtp_username", "smtp_from", "smtp_password_enc"):
+        for k in (*_NOTIFY_STR_KEYS, *_NOTIFY_SECRETS.values()):
             if isinstance(v.get(k), str) and v[k]:
                 cfg[k] = v[k]
-    cfg["smtp_password"] = _dec_smtp(cfg["smtp_password_enc"]) if cfg.get("smtp_password_enc") else None
+    # 解密每個密鑰到對應明文欄位（smtp_password / telegram_token / slack_webhook / …）
+    for plain, enc in _NOTIFY_SECRETS.items():
+        cfg[plain] = _dec_smtp(cfg[enc]) if cfg.get(enc) else None
     _ncfg_cache[NOTIFY_CH_KEY] = (now, dict(cfg))
     return cfg
 
@@ -718,16 +807,17 @@ async def set_notification_channels(
         row = SystemSetting(key=NOTIFY_CH_KEY, value={}, updated_by=updated_by_user_id)
         session.add(row)
     val = dict(row.value or {})
-    for k in ("email_enabled", "smtp_host", "smtp_port", "smtp_tls", "smtp_username", "smtp_from"):
+    for k in (*_NOTIFY_BOOL_KEYS, "smtp_port", "smtp_tls", *_NOTIFY_STR_KEYS):
         if k in data:
             val[k] = data[k]
-    # 密碼：給了非空字串才更新（空字串/未給 = 保留原本）；明確傳 null/"" 清除
-    if "smtp_password" in data:
-        pw = data["smtp_password"]
-        if pw:
-            val["smtp_password_enc"] = _enc_smtp(str(pw))
-        elif pw == "" or pw is None:
-            val.pop("smtp_password_enc", None)
+    # 密鑰：給了非空字串才更新（空字串/未給 = 保留原本）；明確傳 null/"" 清除
+    for plain, enc in _NOTIFY_SECRETS.items():
+        if plain in data:
+            secret = data[plain]
+            if secret:
+                val[enc] = _enc_smtp(str(secret))
+            elif secret == "" or secret is None:
+                val.pop(enc, None)
     row.value = val
     row.updated_by = updated_by_user_id
     flag_modified(row, "value")

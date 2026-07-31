@@ -215,6 +215,62 @@ async def update_cluster(
     return ClusterRead.model_validate(obj)
 
 
+@router.delete("/clusters/{cluster_id}", status_code=204,
+               dependencies=[Depends(require_admin)])
+async def delete_cluster(
+    cluster_id: uuid.UUID, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    """刪除叢集，連同底下的 VM 鏡像與所屬 PVE 連線一起清掉。
+
+    虛擬化資料都是同步鏡像：cluster 對 proxmox_instances / virtual_machines 的 FK 是
+    CASCADE（VM 再 CASCADE 到 vm_interfaces），所以刪叢集會連帶清掉整個虛擬化子樹。
+    VM 對 ip_addresses / devices / vlans 的 FK 在 VM 這端、且是 SET NULL，又隨 VM 一起刪，
+    因此 IP／裝置／VLAN 等核心資料完全不受影響。
+
+    cascade 清不到的鬆散參照（非 FK）在此手動補清，避免留孤兒：
+    - encrypted_secrets：被 cascade 刪掉的 proxmox_instance 的加密 token 密文
+    - background_tasks：此叢集的 proxmox.sync 排程心跳列（target_type=proxmox_cluster）
+    """
+    obj = await session.get(VirtCluster, cluster_id)
+    if obj is None:
+        raise HTTPException(404, detail="Cluster not found")
+    from sqlalchemy import delete as _delete
+
+    from app.models.background_task import BackgroundTask
+    from app.models.encrypted_secret import EncryptedSecret
+
+    px_ids = list((await session.execute(
+        select(ProxmoxInstance.id).where(ProxmoxInstance.cluster_id == cluster_id)
+    )).scalars().all())
+    vm_count = int(await session.scalar(
+        select(func.count()).select_from(VirtualMachine)
+        .where(VirtualMachine.cluster_id == cluster_id)
+    ) or 0)
+    # PVE token 密文（encrypted_secrets 非 FK，cascade 不會清）
+    for pid in px_ids:
+        await session.execute(_delete(EncryptedSecret).where(
+            EncryptedSecret.object_type == "proxmox_instance",
+            EncryptedSecret.object_id == pid,
+        ))
+    # 此叢集的排程同步心跳列（background_tasks.target_id 非 FK）
+    await session.execute(_delete(BackgroundTask).where(
+        BackgroundTask.target_type == "proxmox_cluster",
+        BackgroundTask.target_id == cluster_id,
+    ))
+    await append_audit(
+        session,
+        actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="virt_cluster", object_id=str(obj.id), action="delete",
+        diff={"name": obj.name, "vms_removed": vm_count, "proxmox_removed": len(px_ids)},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.delete(obj)
+    await session.commit()
+
+
 # ─────────────────── VMs（唯讀，由 sync 進來）───────────────────
 
 

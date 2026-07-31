@@ -54,6 +54,9 @@ router = APIRouter(prefix="/ip-requests", tags=["ip-requests"])
 async def _read_with_flag(session: AsyncSession, user: CurrentUser, obj: IPRequest) -> IPRequestRead:
     out = IPRequestRead.model_validate(obj)
     out.can_approve = obj.status == "pending" and await _can_approve(session, user, obj)
+    # 清單「子網路」欄要顯示 CIDR 而非 UUID（session.get 對同一頁重複子網路會走快取）
+    sub = await session.get(Subnet, obj.subnet_id)
+    out.subnet_cidr = str(sub.cidr) if sub else None
     return out
 
 

@@ -31,6 +31,7 @@ from app.models.librenms import (
     FDBEntry,
     LibreNMSDevice,
     LibreNMSInstance,
+    LibreNMSLink,
 )
 from app.models.physical import DevicePort
 from app.models.subnet import Subnet
@@ -92,7 +93,7 @@ async def _api_get(instance: LibreNMSInstance, path: str, *, timeout: float = 30
         resp = await safe_request(
             "GET", url,
             headers={"X-Auth-Token": token, "Accept": "application/json"},
-            timeout=timeout,
+            timeout=timeout, verify=instance.verify_tls,
         )
     except UnsafeOutboundURL as exc:
         raise LibreNMSError(f"SSRF guard rejected URL: {exc}") from exc
@@ -111,7 +112,7 @@ async def _api_post(instance: LibreNMSInstance, path: str, body: dict[str, Any],
         resp = await safe_request(
             "POST", url,
             headers={"X-Auth-Token": token, "Content-Type": "application/json"},
-            json=body, timeout=timeout,
+            json=body, timeout=timeout, verify=instance.verify_tls,
         )
     except UnsafeOutboundURL as exc:
         raise LibreNMSError(f"SSRF guard rejected URL: {exc}") from exc
@@ -142,6 +143,9 @@ class SyncSummary:
     vlans_seen: int = 0
     vlans_upserted: int = 0
     vlan_mappings: int = 0
+    links_seen: int = 0
+    links_upserted: int = 0
+    links_pruned: int = 0
     ip_mac_filled: int = 0   # 自動把 ARP 學到的 MAC 填回 IPAddress 表
     errors: list[str] = field(default_factory=list)
 
@@ -177,8 +181,24 @@ class SyncSummary:
 
 
 def _infer_device_type(ldev: LibreNMSDevice) -> str:
-    """從 LibreNMS os/hardware/sysObjectID 粗略推 jt-ipam Device.type。"""
+    """從 LibreNMS 原生 type 欄位 + os/hardware/sysObjectID 推 jt-ipam Device.type。
+
+    優先序：先抓最明確的（UPS/PDU 電源設備、防火牆、AP），再一般網路/伺服器，最後用
+    LibreNMS 原生 type 欄位（network/power/wireless/storage/…）補推、否則 other。
+    patch_panel 是被動設備、LibreNMS 不會回報，只能手動建立。
+    """
+    native = (getattr(ldev, "type", None) or "").strip().lower()   # LibreNMS 原生分類
     blob = " ".join(filter(None, [ldev.os, ldev.hardware, ldev.sysObjectID or ""])).lower()
+
+    # 電源設備最優先（vendor/型號名很有辨識度）：先分 UPS / PDU
+    if native == "power" or any(k in blob for k in (
+        "ups", "smart-ups", "pdu", "rpdu", "apc", "eaton", "tripp lite", "tripplite",
+        "cyberpower", "powerware", "liebert", "vertiv", "riello", "socomec", "raritan",
+        "servertech", "geist", "netbotz",
+    )):
+        if any(k in blob for k in ("pdu", "rpdu", "raritan", "servertech", "geist", "switched rack")):
+            return "pdu"
+        return "ups"   # 其餘電源設備（含裸 native=power）多為 UPS
     if any(k in blob for k in ("firewall", "pfsense", "opnsense", "fortigate", "fortios",
                                "palo alto", "panos", "asa", "sonicwall", "checkpoint")):
         return "firewall"
@@ -197,7 +217,11 @@ def _infer_device_type(ldev: LibreNMSDevice) -> str:
                                "freebsd", "esxi", "vmware", "dsm", "synology", "truenas",
                                "freenas", "macos", "server")):
         return "server"
-    return "other"
+    # 關鍵字沒命中 → 用 LibreNMS 原生 type 欄位補推
+    return {
+        "firewall": "firewall", "wireless": "ap", "storage": "storage",
+        "server": "server", "workstation": "server", "network": "switch",
+    }.get(native, "other")
 
 
 async def link_librenms_device(
@@ -399,6 +423,7 @@ async def sync_devices(
                 primary_ip=primary_ip,
                 hardware=d.get("hardware"),
                 os=d.get("os"),
+                type=d.get("type"),
                 version=d.get("version"),
                 serial=d.get("serial"),
                 sysObjectID=d.get("sysObjectID"),
@@ -415,6 +440,7 @@ async def sync_devices(
             existing.primary_ip = primary_ip
             existing.hardware = d.get("hardware")
             existing.os = d.get("os")
+            existing.type = d.get("type")
             existing.version = d.get("version")
             existing.serial = d.get("serial")
             existing.sysObjectID = d.get("sysObjectID")
@@ -437,7 +463,7 @@ async def sync_devices(
 async def sync_arp(
     session: AsyncSession, instance: LibreNMSInstance,
 ) -> tuple[int, int, int, int]:
-    """抓 ARP；回傳 (seen, inserted, updated, ip_mac_filled)。"""
+    """逐 device 抓 ARP；回傳 (seen, inserted, updated, ip_mac_filled)。"""
     devices = list(
         (await session.execute(
             select(LibreNMSDevice).where(
@@ -450,91 +476,76 @@ async def sync_arp(
     # 重疊網段：若 instance 設了 scope_subnet_ids，IP→IPAddress 比對限定在這些子網路內
     scope_ids = _scope_uuids(instance)
 
-    async def _arp_batches() -> list[tuple[LibreNMSDevice, dict[str, Any]]]:
-        """LibreNMS current API exposes ARP globally; older installs may need per-device."""
-        by_legacy = {int(d.legacy_device_id): d for d in devices}
-        try:
-            data = await _api_get(instance, "/api/v0/resources/ip/arp/all", timeout=30.0)
-        except LibreNMSError:
-            batches: list[tuple[LibreNMSDevice, dict[str, Any]]] = []
-            for d in devices:
-                path = f"/api/v0/devices/{d.legacy_device_id}/ip/arp/all"
-                try:
-                    pdata = await _api_get(instance, path, timeout=20.0)
-                except LibreNMSError:
-                    continue   # device 可能不支援 ARP（例如非 L3）
-                batches.append((d, pdata))
-            return batches
+    # legacy_device_id（LibreNMS 的 device_id）→ jt-ipam LibreNMSDevice
+    legacy_map = {d.legacy_device_id: d for d in devices if d.legacy_device_id is not None}
+    # 一次取回全站 ARP：/api/v0/resources/ip/arp/all（"all" 是 {ip} 位置的關鍵字＝回全部）。
+    # 取代舊的逐 device /api/v0/devices/{id}/ip/arp/all —— 那在新版 LibreNMS 是不存在的
+    # 路由，會對「每一台」裝置各回一次 404（每輪 sync 數十筆 4xx → 被對端 Wazuh 判為
+    # web-scan/recon 告警，而且 ARP 其實一筆都同步不到）。改用單一 resources 端點正確拿到。
+    try:
+        data = await _api_get(instance, "/api/v0/resources/ip/arp/all", timeout=60.0)
+    except LibreNMSError:
+        return seen, inserted, updated, filled
 
-        grouped: dict[int, list[dict[str, Any]]] = {}
-        seen_keys: set[tuple[int, str, str]] = set()
-        for arp in data.get("arp") or []:
-            try:
-                legacy = int(arp.get("device_id"))
-            except (TypeError, ValueError):
-                continue
-            ip = arp.get("ipv4_address") or arp.get("ip_address")
-            mac = _norm_mac(arp.get("mac_address"))
-            if not ip or not mac:
-                continue
-            key = (legacy, str(ip), mac)
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            if legacy in by_legacy:
-                arp["mac_address"] = mac
-                grouped.setdefault(legacy, []).append(arp)
-        return [(by_legacy[legacy], {"arp": rows}) for legacy, rows in grouped.items()]
-
-    for d, data in await _arp_batches():
-        for arp in data.get("arp") or []:
-            ip = arp.get("ipv4_address") or arp.get("ip_address")
-            mac = _norm_mac(arp.get("mac_address"))
-            if not ip or not mac:
-                continue
-            seen += 1
-            existing = (
-                await session.execute(
-                    select(ARPEntry).where(
-                        ARPEntry.ip == ip,
-                        ARPEntry.mac == mac,
-                        ARPEntry.device_id == d.id,
-                    )
+    # 全域 ARP 端點同一 (ip, mac, device) 可能因跨多個 port 而重複回報；arp_entries 唯一鍵是
+    # (ip, mac, device_id)，同一輪重複 add 會撞 UniqueViolation → 用 set 去重，一輪只處理一次。
+    seen_keys: set[tuple[str, str, object]] = set()
+    for arp in data.get("arp") or []:
+        ip = arp.get("ipv4_address") or arp.get("ip_address")
+        mac = arp.get("mac_address")
+        if not ip or not mac:
+            continue
+        d = legacy_map.get(arp.get("device_id"))
+        if d is None:
+            continue   # ARP 來自本 instance 未追蹤的裝置 → 跳過
+        mac = mac.lower()
+        key = (ip, mac, d.id)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        seen += 1
+        existing = (
+            await session.execute(
+                select(ARPEntry).where(
+                    ARPEntry.ip == ip,
+                    ARPEntry.mac == mac,
+                    ARPEntry.device_id == d.id,
                 )
-            ).scalar_one_or_none()
-            if existing is None:
-                session.add(ARPEntry(
-                    ip=ip, mac=mac,
-                    instance_id=instance.id, device_id=d.id,
-                    interface=arp.get("port_name") or arp.get("interface"),
-                    vrf=arp.get("context_name"),
-                    source="librenms",
-                    first_seen_at=now, last_seen_at=now,
-                ))
-                inserted += 1
-            else:
-                existing.last_seen_at = now
-                updated += 1
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(ARPEntry(
+                ip=ip, mac=mac,
+                instance_id=instance.id, device_id=d.id,
+                interface=arp.get("port_name") or arp.get("interface"),
+                vrf=arp.get("context_name"),
+                source="librenms",
+                first_seen_at=now, last_seen_at=now,
+            ))
+            inserted += 1
+        else:
+            existing.last_seen_at = now
+            updated += 1
 
-            # 只要 LibreNMS ARP 有看到這個 IP，就 stamp last_seen_librenms
-            # （effective_status 計算靠這個）。補 MAC 是額外副作用。
-            ipa = (
-                await session.execute(
-                    select(IPAddress).where(IPAddress.ip == ip).where(
-                        IPAddress.subnet_id.in_(scope_ids) if scope_ids else sa_true()
-                    ).limit(1)
+        # 只要 LibreNMS ARP 有看到這個 IP，就 stamp last_seen_librenms
+        # （effective_status 計算靠這個）。補 MAC 是額外副作用。
+        ipa = (
+            await session.execute(
+                select(IPAddress).where(IPAddress.ip == ip).where(
+                    IPAddress.subnet_id.in_(scope_ids) if scope_ids else sa_true()
+                ).limit(1)
+            )
+        ).scalar_one_or_none()
+        if ipa is not None:
+            ipa.last_seen_librenms = now
+            from app.services.arp_precedence import consider_mac
+            if await consider_mac(session, ip=ipa, mac=mac, source="librenms"):
+                filled += 1
+                # feature B：ARP 學到 MAC（原本沒有）
+                await log_change(
+                    session, ip=ipa, event_type="arp_changed",
+                    field="mac", old=None, new=mac, source="librenms",
                 )
-            ).scalar_one_or_none()
-            if ipa is not None:
-                ipa.last_seen_librenms = now
-                from app.services.arp_precedence import consider_mac
-                if await consider_mac(session, ip=ipa, mac=mac, source="librenms"):
-                    filled += 1
-                    # feature B：ARP 學到 MAC（原本沒有）
-                    await log_change(
-                        session, ip=ipa, event_type="arp_changed",
-                        field="mac", old=None, new=mac, source="librenms",
-                    )
 
     return seen, inserted, updated, filled
 
@@ -934,7 +945,9 @@ async def sync_device_ports(session: AsyncSession, instance: LibreNMSInstance) -
         # ifName → 此埠自身的實體 MAC（ifPhysAddress），正規化成小寫冒號格式
         name_mac: dict[str, str | None] = {}
         for p in (pdata.get("ports") or []):
-            nm = (p.get("ifName") or "").strip()
+            # device_ports.name 上限 255；Windows NDIS 過濾介面描述可能更長 → 先截斷，
+            # 讓「既有名稱比對」與 upsert 用同一個值，也不再 StringDataRightTruncation。
+            nm = (p.get("ifName") or "").strip()[:255]
             if not nm or nm.lower() in ("null", "unrouted vlan 1"):
                 continue
             name_mac[nm] = _norm_mac(p.get("ifPhysAddress"))
@@ -974,6 +987,112 @@ def _norm_mac(raw: object) -> str | None:
 # ─────────────────── 主入口 ───────────────────
 
 
+def _first(d: dict[str, Any], *keys: str) -> Any:
+    """依序取第一個有值的 key —— LibreNMS 各版本欄位名略有出入。"""
+    for k in keys:
+        v = d.get(k)
+        if v not in (None, "", []):
+            return v
+    return None
+
+
+async def sync_links(
+    session: AsyncSession, instance: LibreNMSInstance,
+) -> tuple[int, int, int]:
+    """撈 LibreNMS 的 LLDP / CDP 鄰居（links 表）→ 鏡像進 `librenms_links`。
+
+    回 `(seen, upserted, pruned)`。
+
+    來源端點：`GET /api/v0/resources/links`（全域）。**已對實機確認過路徑**：
+    LibreNMS 認得這條路由，沒有資料時回 404 且 body 是
+    `{"status":"error","message":"Links do not exist"}` —— 這代表「links 表是空的」
+    而不是「端點不支援」，所以那個 404 要當成「0 筆」正常處理，不能當錯誤讓整輪 sync 掛掉。
+    （`/api/v0/resources/links/all` 不存在，會被當成 `links/{id}` 回 400。）
+
+    欄位一律容錯取：LibreNMS 各版本欄位名略有出入，抓不到就留空，不讓單一欄位
+    拖垮整批。對端未被監控時 `remote_device_id` 為 0/空 —— 這種只有 LLDP 通報字串
+    的鄰居仍然要留下來，那正是「接到未納管交換器」的線索。
+    """
+    if not instance.sync_links:
+        return 0, 0, 0
+
+    try:
+        data = await _api_get(instance, "/api/v0/resources/links", timeout=60.0)
+    except LibreNMSError as exc:
+        # 沒有任何鄰居資料 → LibreNMS 回 404 "Links do not exist"，這是正常狀態
+        if "Links do not exist" in str(exc) or ": 404" in str(exc):
+            data = {"links": []}
+        else:
+            raise
+
+    rows = data.get("links") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        rows = []
+
+    def _int(v: object) -> int | None:
+        try:
+            n = int(str(v))
+        except (TypeError, ValueError):
+            return None
+        return n or None          # LibreNMS 用 0 表示「沒有對應」
+
+    def _txt(v: object) -> str | None:
+        s2 = str(v).strip() if v is not None else ""
+        return s2 or None
+
+    seen = upserted = 0
+    now = datetime.now(UTC)
+    fresh_ids: set[int] = set()
+
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        lid = _int(_first(r, "id", "link_id"))
+        if lid is None:
+            continue
+        seen += 1
+        fresh_ids.add(lid)
+
+        existing = (await session.execute(
+            select(LibreNMSLink).where(
+                LibreNMSLink.instance_id == instance.id,
+                LibreNMSLink.legacy_link_id == lid,
+            )
+        )).scalars().first()
+        if existing is None:
+            existing = LibreNMSLink(instance_id=instance.id, legacy_link_id=lid)
+            session.add(existing)
+
+        existing.protocol = _txt(_first(r, "protocol"))
+        existing.active = bool(_first(r, "active") in (1, "1", True, "true", None))
+        existing.local_device_id = _int(_first(r, "local_device_id"))
+        existing.local_port_id = _int(_first(r, "local_port_id"))
+        existing.local_port_name = _txt(_first(r, "local_port", "local_ifname", "ifName"))
+        existing.remote_device_id = _int(_first(r, "remote_device_id"))
+        existing.remote_port_id = _int(_first(r, "remote_port_id"))
+        existing.remote_hostname = _txt(_first(r, "remote_hostname", "remote_device"))
+        existing.remote_port = _txt(_first(r, "remote_port", "remote_ifname"))
+        existing.remote_platform = _txt(_first(r, "remote_platform"))
+        existing.remote_version = _txt(_first(r, "remote_version"))
+        existing.last_seen_at = now
+        upserted += 1
+
+    await session.flush()
+
+    # 清掉這個實例先前有、這次沒看到的鄰居（拔線 / 對端下線 → 關係就不該留著）
+    stale = select(LibreNMSLink.id).where(LibreNMSLink.instance_id == instance.id)
+    if fresh_ids:
+        stale = stale.where(LibreNMSLink.legacy_link_id.not_in(fresh_ids))
+    stale_ids = list((await session.execute(stale)).scalars().all())
+    pruned = 0
+    if stale_ids:
+        await session.execute(
+            delete(LibreNMSLink).where(LibreNMSLink.id.in_(stale_ids))
+        )
+        pruned = len(stale_ids)
+    return seen, upserted, pruned
+
+
 async def sync_instance(
     session: AsyncSession, instance: LibreNMSInstance,
 ) -> SyncSummary:
@@ -1001,6 +1120,10 @@ async def sync_instance(
         if instance.sync_vlans:
             s, u, m = await sync_vlans(session, instance)
             summary.vlans_seen, summary.vlans_upserted, summary.vlan_mappings = s, u, m
+            await session.commit()
+        if instance.sync_links:
+            s, u, pr = await sync_links(session, instance)
+            summary.links_seen, summary.links_upserted, summary.links_pruned = s, u, pr
             await session.commit()
         if instance.use_for_status:
             await recompute_effective_status(session, instance)

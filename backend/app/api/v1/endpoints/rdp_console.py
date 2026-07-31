@@ -22,6 +22,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 import secrets
 import uuid
 from datetime import UTC, datetime
@@ -29,7 +30,7 @@ from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser
@@ -64,7 +65,6 @@ router = APIRouter(prefix="/addresses", tags=["rdp"])
 
 _TICKET_TTL = 60              # 秒；ticket 單次用、短壽
 _CONNECT_TIMEOUT = 20.0       # RDP（NLA）連線逾時
-_CLIENT_IDLE_TIMEOUT = 60.0   # WS 端 60s 無任何訊息（含 heartbeat）視為斷線
 _WHEEL_DELTA = 120            # 一格滾輪
 _WHEEL_NEGATIVE = 0x100       # PTRFLAGS.WHEEL_NEGATIVE 位（放進 steps 表向下）
 _MAX_DIM = 2560              # 解析度上限保護
@@ -81,6 +81,21 @@ _SPECIAL_KEYS: dict[str, tuple[int, bool]] = {
     "F1": (0x3B, False), "F2": (0x3C, False), "F3": (0x3D, False), "F4": (0x3E, False),
     "F5": (0x3F, False), "F6": (0x40, False), "F7": (0x41, False), "F8": (0x42, False),
     "F9": (0x43, False), "F10": (0x44, False), "F11": (0x57, False), "F12": (0x58, False),
+}
+
+# DOM e.code → PC Set-1 掃描碼。按住修飾鍵（Ctrl/Alt/Meta）時，字母/數字鍵要走 scancode，
+# 否則 unicode 字元事件不會與 scancode 修飾鍵組合（→ Ctrl+V、Ctrl+C… 全失效，只會打出字元）。
+_CODE_SCANCODES: dict[str, int] = {
+    "KeyA": 0x1E, "KeyB": 0x30, "KeyC": 0x2E, "KeyD": 0x20, "KeyE": 0x12, "KeyF": 0x21,
+    "KeyG": 0x22, "KeyH": 0x23, "KeyI": 0x17, "KeyJ": 0x24, "KeyK": 0x25, "KeyL": 0x26,
+    "KeyM": 0x32, "KeyN": 0x31, "KeyO": 0x18, "KeyP": 0x19, "KeyQ": 0x10, "KeyR": 0x13,
+    "KeyS": 0x1F, "KeyT": 0x14, "KeyU": 0x16, "KeyV": 0x2F, "KeyW": 0x11, "KeyX": 0x2D,
+    "KeyY": 0x15, "KeyZ": 0x2C,
+    "Digit1": 0x02, "Digit2": 0x03, "Digit3": 0x04, "Digit4": 0x05, "Digit5": 0x06,
+    "Digit6": 0x07, "Digit7": 0x08, "Digit8": 0x09, "Digit9": 0x0A, "Digit0": 0x0B,
+    "Minus": 0x0C, "Equal": 0x0D, "BracketLeft": 0x1A, "BracketRight": 0x1B,
+    "Backslash": 0x2B, "Semicolon": 0x27, "Quote": 0x28, "Backquote": 0x29,
+    "Comma": 0x33, "Period": 0x34, "Slash": 0x35,
 }
 
 # 同時在線 session 計數（單核 GIL 下限制並發；0 = 不限）
@@ -110,7 +125,10 @@ async def list_connection_targets(
         IPAddress.ssh_enabled.is_(True)
         | IPAddress.rdp_enabled.is_(True)
         | IPAddress.vnc_enabled.is_(True)
+        | IPAddress.novnc_enabled.is_(True)
+        | IPAddress.bmc_enabled.is_(True)
     )
+    vis: set[uuid.UUID] | None = None  # None = 不限（admin 或萬用可見）
     if not user.is_admin:
         vis = await visible_ids(session, user=user, object_type="subnet")
         if vis is not None:
@@ -120,7 +138,7 @@ async def list_connection_targets(
     rows = (await session.execute(stmt)).scalars().all()
 
     perm_cache: dict[uuid.UUID, str] = {}
-    kept: list[tuple[IPAddress, bool, bool, bool]] = []
+    kept: list[tuple[IPAddress, bool, bool, bool, bool]] = []
     for ip in rows:
         if user.is_admin:
             usable = True
@@ -136,9 +154,9 @@ async def list_connection_targets(
             usable = has_permission(lvl, "write") or bool(user.can_ssh)
         if not usable:
             continue
-        kept.append((ip, bool(ip.ssh_enabled), bool(ip.rdp_enabled), bool(ip.vnc_enabled)))
+        kept.append((ip, bool(ip.ssh_enabled), bool(ip.rdp_enabled), bool(ip.vnc_enabled), bool(ip.bmc_enabled)))
 
-    dev_ids = {ip.device_id for ip, _, _, _ in kept if ip.device_id}
+    dev_ids = {ip.device_id for ip, *_ in kept if ip.device_id}
     dev_names: dict[uuid.UUID, str] = {}
     if dev_ids:
         drows = (await session.execute(
@@ -146,13 +164,48 @@ async def list_connection_targets(
         )).all()
         dev_names = {d[0]: d[1] for d in drows}
 
+    # 借用「同一 IP、使用者可見範圍內其它記錄」的最新存活時間 —— 解重疊子網路把同一台
+    # 實體機拆成多筆、掃描 / LibreNMS 只 stamp 其中一筆（.limit(1)）導致連線頁那筆顯示離線。
+    # 只借用可見記錄：多租戶下不會拿到別單位的存活證據（RBAC 安全）。
+    live_map: dict[str, tuple[Any, Any, Any]] = {}
+    ip_values = list({str(ip.ip) for ip, *_ in kept})
+    if ip_values:
+        lstmt = (
+            select(
+                func.host(IPAddress.ip),
+                func.max(IPAddress.last_seen_scanner),
+                func.max(IPAddress.last_seen_librenms),
+                func.max(IPAddress.last_seen_dns),
+            )
+            .where(func.host(IPAddress.ip).in_(ip_values))
+            .group_by(func.host(IPAddress.ip))
+        )
+        if vis is not None:
+            lstmt = lstmt.where(IPAddress.subnet_id.in_(vis))
+        for lr in (await session.execute(lstmt)).all():
+            live_map[str(lr[0])] = (lr[1], lr[2], lr[3])
+
     from app.services.os_precedence import effective_os
+    from app.services.oui import vendor_for_mac
     out: list[IPAddressRead] = []
-    for ip, ssh_ok, rdp_ok, vnc_ok in kept:
+    for ip, ssh_ok, rdp_ok, vnc_ok, bmc_ok in kept:
         r = IPAddressRead.model_validate(ip)
+        r.mac_vendor = await vendor_for_mac(session, ip.mac)
+        lm = live_map.get(str(ip.ip))
+        if lm:
+            # lm 為同 IP 可見記錄的最新值（已含自身），直接採用 → 連線頁的燈反映實際存活
+            r.last_seen_scanner, r.last_seen_librenms, r.last_seen_dns = lm
         r.ssh_available = ssh_ok
         r.rdp_available = rdp_ok
         r.vnc_available = vnc_ok
+        r.bmc_available = bmc_ok
+        if ip.novnc_enabled:  # PVE 主控台：已啟用且對應到 PVE VM/CT（權限已在 kept 過濾）
+            from app.services.pve_console import resolve_pve_target
+            tgt = await resolve_pve_target(session, ip)
+            if tgt is not None:
+                r.novnc_available = True
+                from app.schemas.address import PveConsoleTarget
+                r.pve = PveConsoleTarget(kind=tgt.kind, node=tgt.node, vmid=tgt.vmid, cluster=tgt.cluster_name)
         r.device_name = dev_names.get(ip.device_id) if ip.device_id else None
         # OS 與 IP 詳細資料頁一致：依來源優先序（librenms/wazuh/scanner）解析有效值
         _os = await effective_os(session, ip)
@@ -189,6 +242,9 @@ async def issue_rdp_ticket(
         ).limit(1)
     )).first()
 
+    from app.services.system_config import get_rdp_clipboard_paste
+    clip_enabled = await get_rdp_clipboard_paste(session)
+
     ticket = secrets.token_urlsafe(32)
     payload = json.dumps({"user_id": str(user.id), "ip_id": str(ip.id)})
     await _redis_client().set(_ticket_key(ticket), payload, ex=_TICKET_TTL)
@@ -198,6 +254,7 @@ async def issue_rdp_ticket(
         "ws_path": f"/api/v1/addresses/{ip.id}/rdp/ws",
         "default_size": {"width": 1280, "height": 800},
         "has_saved_creds": saved is not None,
+        "clipboard_paste": clip_enabled,
         "ttl": _TICKET_TTL,
     }
 
@@ -252,6 +309,8 @@ async def rdp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
             return
         allowed = await can_use_rdp(s, user=user, ip=ip)
         host = str(ip.ip).split("/")[0]
+        from app.services.system_config import get_rdp_clipboard_paste
+        clip_enabled = await get_rdp_clipboard_paste(s)
     if not allowed:
         await websocket.close(code=4403)
         return
@@ -323,7 +382,12 @@ async def rdp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
         # 5) 建立 RDP 連線（NLA / CredSSP+NTLM）
         await send({"type": "status", "state": "connecting"})
         io = RDPIOSettings()
-        io.channels = []
+        # 預設不啟用任何虛擬通道；僅在管理者開啟「控制端貼上」時才掛剪貼簿通道（cliprdr）
+        if clip_enabled:
+            from aardwolf.extensions.RDPECLIP.channel import RDPECLIPChannel
+            io.channels = [RDPECLIPChannel]
+        else:
+            io.channels = []
         io.video_width = width
         io.video_height = height
         io.video_bpp_min = 24
@@ -364,7 +428,14 @@ async def rdp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
         )
         await send({"type": "status", "state": "connected", "width": width, "height": height})
 
-        await _bridge(websocket, conn, send)
+        if clip_enabled:
+            # 預先放一個空字串到剪貼簿，讓 clipboard.data 不為 None。
+            # 否則被控端一發 CB_FORMAT_DATA_REQUEST（想讀我們的剪貼簿）時，
+            # aardwolf 的 _handle_format_data_request 會存取 None.datatype → 整條 RDP 斷線。
+            with contextlib.suppress(Exception):
+                await conn.set_current_clipboard_text("")
+
+        await _bridge(websocket, conn, send, clip_enabled=clip_enabled)
 
     except WebSocketDisconnect:
         pass
@@ -389,8 +460,12 @@ async def rdp_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
             await websocket.close()
 
 
-async def _bridge(websocket: WebSocket, conn: Any, send: Any) -> None:
-    """雙向 pump：RDP 視訊→ws（PNG tile）、ws→直接呼叫 send_mouse/send_key。"""
+async def _bridge(websocket: WebSocket, conn: Any, send: Any, *, clip_enabled: bool = False) -> None:
+    """雙向 pump：RDP 視訊→ws（PNG tile）、ws→直接呼叫 send_mouse/send_key。
+
+    clip_enabled 時額外接受 {type:"clip", text} → 單向把文字塞進被控端剪貼簿（控制端→被控端）。
+    伺服器→控制端的剪貼簿一律不回傳（pump_out 只送視訊），維持單向、不外洩被控端剪貼簿。
+    """
 
     async def pump_out() -> None:
         with contextlib.suppress(Exception):
@@ -406,12 +481,12 @@ async def _bridge(websocket: WebSocket, conn: Any, send: Any) -> None:
                     })
 
     async def pump_in() -> None:
+        mods_down: set[str] = set()   # 目前按住的 Ctrl/Alt/Meta（決定字母鍵走 scancode 還是 unicode）
         with contextlib.suppress(WebSocketDisconnect, Exception):
             while True:
-                try:
-                    raw = await asyncio.wait_for(websocket.receive_text(), timeout=_CLIENT_IDLE_TIMEOUT)
-                except TimeoutError:
-                    break
+                # 不做應用層 idle-timeout（背景分頁 heartbeat 會被節流誤判斷線）；保活靠 WS
+                # 傳輸層 uvicorn ws-ping/pong，真正斷線走 WebSocketDisconnect。
+                raw = await websocket.receive_text()
                 msg = json.loads(raw)
                 t = msg.get("type")
                 if t == "m":
@@ -426,13 +501,33 @@ async def _bridge(websocket: WebSocket, conn: Any, send: Any) -> None:
                 elif t == "k":
                     pressed = bool(msg.get("p"))
                     key = msg.get("key", "")
+                    code = msg.get("code", "")
                     if key in _SPECIAL_KEYS:
                         sc, ext = _SPECIAL_KEYS[key]
                         await conn.send_key_scancode(sc, pressed, ext)
+                        if key in ("Control", "Alt", "Meta"):
+                            mods_down.add(key) if pressed else mods_down.discard(key)
+                    elif mods_down and code in _CODE_SCANCODES:
+                        # 按住 Ctrl/Alt/Meta 時改用 scancode（unicode 字元不會與 scancode 修飾鍵組合）
+                        await conn.send_key_scancode(_CODE_SCANCODES[code], pressed, False)
                     else:
                         ch = msg.get("ch", "")
                         if len(ch) == 1:
                             await conn.send_key_char(ch, pressed)
+                elif t == "clip":
+                    # 控制端貼上：把文字寫進被控端剪貼簿（單向、純文字、長度上限 100k）
+                    if clip_enabled:
+                        text = str(msg.get("text", ""))[:100000]
+                        ok = False
+                        if text:
+                            try:
+                                await conn.set_current_clipboard_text(text)
+                                ok = True
+                            except Exception as e:
+                                logging.getLogger("jt-ipam.rdp").warning("clip set failed: %r", e)
+                        # 回報實際收到/設定的字數，前端據此提示
+                        with contextlib.suppress(Exception):
+                            await send({"type": "clip_ack", "n": len(text), "ok": ok})
                 elif t == "ping":
                     await send({"type": "pong"})
                 elif t == "close":

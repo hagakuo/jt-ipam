@@ -105,10 +105,17 @@ class DashboardOverview(StrictModel):
     sections: int
     subnets: int
     addresses: int
-    total_capacity: int     # 加總所有 visible subnet 的可用 host 數
+    total_capacity: int     # 加總所有 visible subnet 的可用 host 數（含 IPv6，數字可能極大）
     used: int               # 加總已配發 IP 數
     used_pct: float
+    # IPv6 位址數天文級、加總沒意義 → 容量/用量指標只對 IPv4 算，IPv6 另以網段數呈現
+    ipv4_capacity: int = 0  # 只加總 IPv4 subnet 的可用 host 數（真實可規劃）
+    ipv4_used: int = 0      # IPv4 subnet 已配發 IP 數
+    ipv4_used_pct: float = 0.0
+    ipv6_subnets: int = 0   # IPv6 子網路數（位址數極大，不加總）
     status: StatusCounts
+    # 實際有設定（enabled）的即時狀態來源 key：scanner / librenms / opnsense / pfsense
+    status_sources: list[str] = []
     top_full_subnets: list[TopSubnet]
     pinned_subnets: list[TopSubnet]  # 使用者釘選的子網路（依 user_preferences.pinned_subnet_ids）
     section_heat: list[SectionHeat]
@@ -170,14 +177,26 @@ async def overview(
         ).all()
         per_subnet_used = {str(r[0]): int(r[1]) for r in rows}
 
+    ipv4_capacity = 0
+    ipv6_subnets = 0
+    ipv4_subnet_ids: set[str] = set()
     for s in visible_subnets:
         try:
-            total_capacity += host_count(ipaddress.ip_network(str(s.cidr), strict=False))
+            net = ipaddress.ip_network(str(s.cidr), strict=False)
         except ValueError:
             continue
+        total_capacity += host_count(net)
+        if net.version == 6:
+            ipv6_subnets += 1                          # IPv6：位址數極大，只計網段數
+        else:
+            ipv4_capacity += host_count(net)
+            ipv4_subnet_ids.add(str(s.id))
 
     used = sum(per_subnet_used.values())
     used_pct = round((used / total_capacity * 100), 2) if total_capacity else 0.0
+    # 容量/用量比只對 IPv4 算（IPv6 永遠「用不完」）
+    ipv4_used = sum(v for k, v in per_subnet_used.items() if k in ipv4_subnet_ids)
+    ipv4_used_pct = round((ipv4_used / ipv4_capacity * 100), 2) if ipv4_capacity else 0.0
 
     # ── status counts ──
     status_counts = StatusCounts(online=0, offline=0, unknown=0)
@@ -202,6 +221,21 @@ async def overview(
                 status_counts.offline += cnt
             else:
                 status_counts.unknown += cnt
+
+    # ── 即時狀態「來源」文字依實際設定產生（只列有 enabled 實例的來源）──
+    from app.models.firewall import OPNsenseFirewall
+    from app.models.librenms import LibreNMSInstance
+    from app.models.pfsense import PfSenseFirewall
+    from app.models.scan_agent import ScanAgent
+    status_sources: list[str] = []
+    for key, model in (
+        ("scanner", ScanAgent), ("librenms", LibreNMSInstance),
+        ("opnsense", OPNsenseFirewall), ("pfsense", PfSenseFirewall),
+    ):
+        n = await session.scalar(
+            select(func.count()).select_from(model).where(model.enabled.is_(True)))
+        if n:
+            status_sources.append(key)
 
     # ── 先把所有用到的客戶名抓出來建 map ──
     from app.models.customer import Customer
@@ -414,7 +448,12 @@ async def overview(
         total_capacity=total_capacity,
         used=used,
         used_pct=used_pct,
+        ipv4_capacity=ipv4_capacity,
+        ipv4_used=ipv4_used,
+        ipv4_used_pct=ipv4_used_pct,
+        ipv6_subnets=ipv6_subnets,
         status=status_counts,
+        status_sources=status_sources,
         top_full_subnets=top_full,
         pinned_subnets=pinned,
         section_heat=section_heat,

@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.api_scope import enforce_method_scope
 from app.core.db import get_session
 from app.core.security import hash_api_token
 from app.models.user import APIToken, User
@@ -32,14 +33,13 @@ def phpipam_response(
     }
 
 
-async def phpipam_current_user(
+async def _resolve_token_user(
     request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
+    session: AsyncSession,
+    *,
+    check_scope: bool,
 ) -> User:
-    """phpIPAM 風格 token：HTTP header `token: <jt_...>`。
-
-    為了相容老腳本，也接 `phpipam-token`、`Authorization: Bearer ...`。
-    """
+    """phpIPAM 風格 token → User。`check_scope=False` 供「撤銷自己的 token」用。"""
     raw = (
         request.headers.get("token")
         or request.headers.get("phpipam-token")
@@ -64,7 +64,34 @@ async def phpipam_current_user(
     user = await session.get(User, token.user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Account inactive")
+    # scope 檢驗：唯讀 token 不得用會改資料的 HTTP 方法
+    if check_scope:
+        enforce_method_scope(token.scopes, request.method)
     return user
+
+
+async def phpipam_current_user(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> User:
+    """phpIPAM 風格 token：HTTP header `token: <jt_...>`。
+
+    為了相容老腳本，也接 `phpipam-token`、`Authorization: Bearer ...`。
+    唯讀（scope `read`）token 走到會改資料的方法會被擋成 403。
+    """
+    return await _resolve_token_user(request, session, check_scope=True)
+
+
+async def phpipam_current_user_selfservice(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> User:
+    """同上，但不做 scope 檢驗 —— 只給「撤銷自己的 token」（`DELETE /user/`）用。
+
+    撤銷自己的憑證是降權、不是異動資料，唯讀 token 也應該做得到；
+    否則老腳本的 login → 查詢 → logout 流程會在 logout 掛掉。
+    """
+    return await _resolve_token_user(request, session, check_scope=False)
 
 
 def _bearer(request: Request) -> str | None:

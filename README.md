@@ -1,4 +1,4 @@
-# jt-ipam v0.5.13
+# jt-ipam v0.5.122
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/jasoncheng7115/jt-ipam)](https://github.com/jasoncheng7115/jt-ipam/commits/main)
@@ -11,7 +11,7 @@
 
 **🌐 [Project site / 專案介紹網站 →](https://jasoncheng7115.github.io/jt-ipam/?lang=en)**
 
-> A self-hosted, integration-focused IPAM, independently developed with an operation flow familiar to phpIPAM users, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, Proxmox VE, Wazuh, and a local LLM.
+> A self-hosted, integration-focused IPAM, independently developed with an operation flow familiar to phpIPAM users, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, pfSense, FortiGate, Windows DHCP Server, Proxmox VE, Wazuh, and a local LLM.
 >
 > By Jason Tools Co., Ltd. · License: Apache-2.0 · 繁體中文: [README_zh-TW.md](README_zh-TW.md)
 
@@ -23,11 +23,12 @@ Familiar to phpIPAM users so they are productive from day one, but built from sc
 
 - **DNS** — PowerDNS, BIND 9, OPNsense Unbound, Univention UCS, Microsoft Windows DNS (reads forward/reverse status, optional record push)
 - **LibreNMS** — device sync, ARP / FDB harvesting, online-status reconciliation, auto-onboarding to monitoring
-- **Infrastructure** — Proxmox VE, Wazuh, OPNsense (alias / rule / NAT sync)
+- **Infrastructure** — Proxmox VE, Wazuh, OPNsense / pfSense (alias / rule / NAT sync), and **FortiGate (Beta)** — read-only over the FortiOS REST API (DHCP leases and ranges, ARP, IPsec tunnels and SSL-VPN sessions, policies, NAT, address objects; multi-VDOM)
+- **DHCP** — each server is configured on its own: OPNsense (Kea/ISC) and pfSense sync leases and address ranges over their REST APIs; **Windows DHCP Server (Beta)** is read-only over WinRM + PowerShell (`Get-*` only, needs WinRM reachable — 5986/HTTPS by default). Addresses inside a pool are flagged in the IP list and detail view.
 - **Graylog** — exposes an IP→hostname/FQDN DSV lookup endpoint for Graylog's "DSV File from HTTP" data adapter
 - **Local AI** — natural-language queries and semantic search over LLM Server (data never leaves the host), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM; `gemma4:26b` works well in our testing
 
-Also built in: a **browser-based remote console** — an SSH terminal plus RDP and VNC desktops (RDP/VNC are **Beta**), in the browser — credentials are not stored by default, with an optional per-user **encrypted credential vault**, object-level RBAC, single-use ticket→WebSocket sessions and full audit (RDP/VNC use an optional dependency that is installed only when a prebuilt wheel is available, so the base install is unchanged), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes), **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service — with encrypted private keys, expiry alerts and manual renew), **floor plans + rack U-diagrams** (half-U, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
+Also built in: a **browser-based remote console** — an SSH terminal plus RDP and VNC desktops and a **BMC out-of-band serial console** (IPMI SOL) (RDP/VNC/BMC are **Beta**), in the browser — credentials are not stored by default, with an optional per-user **encrypted credential vault**, object-level RBAC, single-use ticket→WebSocket sessions and full audit (RDP/VNC use an optional dependency that is installed only when a prebuilt wheel is available, so the base install is unchanged), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes), **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service — with encrypted private keys, expiry alerts and manual renew), **floor plans + rack U-diagrams** (half-U, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
 
 ## Graylog log enrichment (DSV lookup)
 
@@ -46,9 +47,34 @@ jt-ipam generates a **live** IP → hostname / FQDN lookup table that Graylog's 
 - In Graylog's "DSV File from HTTP" adapter: set the URL above, separator to comma or tab per format, and **Key column = 0, Value column = 1** (Graylog's column indices are 0-based)
 - The token is validated per request and can be regenerated anytime; the settings page shows a ready-to-copy full lookup URL
 
+## BMC out-of-band console (IPMI SOL, Beta)
+
+Open a keyboard + text console to a server's **BMC** (IPMI 2.0 Serial-over-LAN) straight from its IP — no vendor Java/HTML5 KVM. Enable it per IP (same RBAC level as SSH), keep the BMC credentials in the same encrypted vault, and every session is audited. It is **non-destructive**: keyboard + text screen only, no power control or mouse.
+
+SOL only relays the host's **serial port**, so the host needs a serial console configured or the screen stays blank. One-time host setup:
+
+1. **Find the port SOL maps to** — `dmesg | grep -iE 'ttyS|SPCR'` (e.g. `SPCR: console: uart,io,0x3f8,115200` → `0x3f8` = ttyS0, `0x2f8` = ttyS1). The wrong port stays blank.
+2. **Add the kernel console** (keep `tty0` so the physical monitor keeps its output):
+   - Generic Linux (GRUB): add `console=tty0 console=ttyS0,115200n8` to `GRUB_CMDLINE_LINUX` in `/etc/default/grub`, then `update-grub`.
+   - Proxmox VE (systemd-boot / ZFS): append the same to `/etc/kernel/cmdline`, then `proxmox-boot-tool refresh`.
+3. **Enable serial login** (immediate, no reboot): `systemctl enable --now serial-getty@ttyS0`.
+4. **(Optional) BIOS Console Redirection** — point it at the same COM port (115200 8N1) to also see POST / BIOS over SOL.
+5. **Reboot** so `console=` takes effect — then SOL shows the whole boot and kernel panics. The physical monitor is unaffected.
+
+Just want a login now? Step 3 alone is enough. The same guide is built into the app, from the BMC console's **Setup guide** button.
+
+**Troubleshooting (gotchas seen in the field):**
+
+- **Connected but blank / Enter does nothing** — SOL may not map to the port SPCR declares. With SOL connected, `echo test > /dev/ttyS0` (and `/dev/ttyS1`) and see which appears; or check `/proc/tty/driver/serial` — the ttyS with a non-zero `rx` is the SOL port.
+- **Login prompt shows but no boot messages** — the kernel console landed on the wrong ttyS (a non-SOL port) while `serial-getty` is on the right one. Put **only** the SOL port in `console=` (e.g. `console=tty0 console=ttyS1,115200n8`), not multiple `ttyS` — the kernel may pick the wrong one. Verify with `cat /proc/consoles`.
+- **Output appears but is garbled** — the serial baud doesn't match SOL. Check `ipmitool -I open sol info 1 | grep 'Bit Rate'` and set `serial-getty` to the same baud.
+- **Boxes / colors look broken (e.g. glances)** — set the serial login's `TERM` to `xterm-256color` (serial-getty often defaults to `vt220`).
+- **Emoji (⚠️ etc.) in the OS boot messages** — those are systemd's own glyphs; add `systemd.setenv=SYSTEMD_EMOJI=0` to the kernel cmdline. For emoji on the **BIOS** screen, set the BIOS Console Redirection **Terminal Type = VT100+** (not VT-UTF8).
+- **Console area is tiny with black margins** — serial can't auto-negotiate window size; use the console's **Fit to window** button (it sends an `stty rows/cols` command — press it at a shell prompt), or run `stty rows N cols N` yourself.
+
 ## Core entities
 
-`Section → Subnet → IPAddress`, plus `Device` / `Rack` / `Location`, `Customer` (managing unit), `VLAN` / `VRF`, `NAT`, OPNsense firewalls, and an IEEE OUI vendor table (monthly refresh).
+`Section → Subnet → IPAddress`, plus `Device` / `Rack` / `Location`, `Customer` (managing unit), `VLAN` / `VRF`, `NAT`, OPNsense / pfSense / FortiGate firewalls, and an IEEE OUI vendor table (monthly refresh).
 
 ## Access control (RBAC)
 
@@ -93,6 +119,8 @@ Security is a day-one requirement; every module and PR is checked against **OWAS
 > The optional local LLM (Ollama) is **not** included in these figures — run it on a separate host; it needs its own RAM/VRAM sized to the chosen model.
 
 ```bash
+# Prerequisite: a minimal system may not ship curl (the one-liner needs it):
+sudo apt-get update && sudo apt-get install -y curl
 # One line — auto-clones to /opt/jt-ipam and installs (no manual git needed):
 curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-ipam/main/scripts/bootstrap.sh | sudo bash
 ```
@@ -169,6 +197,14 @@ sudo cp deploy/nginx/jt-ipam-external-proxy-snippet.conf /etc/nginx/snippets/jt-
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
+> ⚠️ **Required — security headers at the public edge.** The proxy that **terminates TLS for users** must
+> emit the security headers (HSTS, CSP `frame-src 'self'`, X-Frame-Options, nosniff, Referrer-Policy,
+> Permissions-Policy, COOP, CORP) and `server_tokens off`. They do **not** survive an extra proxy hop, so if
+> your edge box is a *different* machine than the one above, **set the headers on that edge box too**
+> (the bundled templates already do; replicate them on a non-nginx LB). Verify through the real public URL:
+> `curl -skI https://your-domain/ | grep -iE 'strict-transport|content-security|x-frame|cross-origin|^server'`
+> — each header should appear **exactly once**, `Server: nginx` (no version).
+
 An external proxy does **not** break OIDC / M365 (Entra ID) login, but three things must be right or you'll be redirected to `ipam.example.com` or stuck on the login page:
 1. Set `APP_PUBLIC_URL` / `API_PUBLIC_URL` / `CORS_ORIGINS` in `/etc/jt-ipam/backend.env` to your public domain (not the default `ipam.example.com`), then `systemctl restart jt-ipam-backend`.
 2. The external proxy must forward `X-Forwarded-Proto $scheme` (=https) and `Host $host`; the template passes them through so the backend sees https (Secure cookies work).
@@ -197,7 +233,7 @@ jt-ipam/
 
 - **Phase 1 (done)** — phpIPAM-equivalent features + improvements (Section/Subnet/IP/VLAN/VRF/NAT/Devices/Racks/Locations/IP-Requests, TOTP/API-Token/RBAC, phpIPAM import, CSV/RIPE/TWNIC, visual subnet grid, forced TLS)
 - **Phase 2 (done)** — multi-vendor DNS + deep LibreNMS integration (device/ARP/FDB/effective-status) + anomaly detection + SHA-256 audit chain + pgvector AI semantic search
-- **Phase 3 (done)** — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox VE sync + Cytoscape topology + OIDC/SAML SSO + OPNsense firewall sync + Wazuh agent inventory
+- **Phase 3 (done)** — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox VE sync + Cytoscape topology + OIDC/SAML SSO + OPNsense / pfSense / FortiGate firewall sync + Wazuh agent inventory
 - **Phase 4 (done, scoped)** — MCP server + local-LLM natural language (LLM Server) + plugin mechanism
 
 ## License

@@ -16,6 +16,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.api_scope import enforce_method_scope
 from app.core.db import get_session
 from app.core.security import hash_api_token
 from app.models.user import APIToken, User
@@ -72,7 +73,8 @@ async def get_current_user(
         user = await session.get(User, token.user_id)
         if user is None or not user.is_active:
             raise HTTPException(status_code=401, detail="Account inactive")
-        # 把 token 暫存給 endpoint 用（scope 檢查）
+        # scope 檢驗：唯讀 token 不得用會改資料的 HTTP 方法
+        enforce_method_scope(token.scopes, request.method)
         request.state.api_token = token
         return user
 

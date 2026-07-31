@@ -14,7 +14,7 @@ import {
 } from "naive-ui";
 import { useI18n } from "vue-i18n";
 import { useRoute } from "vue-router";
-import { apiClient } from "@/api/client";
+import { apiClient, apiErrMsg } from "@/api/client";
 import {
   listUsers, listGroups, getUserGroups, addGroupMember, removeGroupMember,
   type User, type Group,
@@ -46,8 +46,13 @@ const TYPE_CFG: Record<string, { ep: string; label: string }> = {
   section:  { ep: "/api/v1/sections", label: "name" },
   subnet:   { ep: "/api/v1/subnets", label: "cidr" },
   device:   { ep: "/api/v1/devices", label: "name" },
-  rack:     { ep: "/api/v1/locations/racks", label: "name" },
-  location: { ep: "/api/v1/locations/locations", label: "name" },
+  // 機櫃／地點的端點是 /api/v1/racks 與 /api/v1/locations —— 雖然兩者實作在後端
+  // endpoints/locations.py 同一個檔案，但那個 router 沒有 /locations 前綴。
+  // 原本誤寫成 /api/v1/locations/racks 與 /api/v1/locations/locations，會被
+  // /locations/{location_id} 接走、UUID 解析失敗回 400 → 清單載不出來，
+  // 結果是「無法對機櫃／地點授權」。
+  rack:     { ep: "/api/v1/racks", label: "name" },
+  location: { ep: "/api/v1/locations", label: "name" },
 };
 const labelMap = ref<Record<string, string>>({});
 const typeOptions = ref<Record<string, { label: string; value: string }[]>>({});
@@ -83,7 +88,7 @@ async function loadLists() {
     roles.value = gs.items;
     objectTypes.value = r.object_types;
     levels.value = r.levels;
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
   for (const [tt, cfg] of Object.entries(TYPE_CFG)) {
     try {
@@ -107,7 +112,7 @@ async function openUser(u: User) {
     ]);
     userRoleIds.value = new Set(gs.map((g) => g.id));
     grants.value = gr;
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
 }
 
 async function toggleRole(role: Group, on: boolean) {
@@ -120,7 +125,7 @@ async function toggleRole(role: Group, on: boolean) {
     if (on) next.add(role.id); else next.delete(role.id);
     userRoleIds.value = next;
     msg.success(t("common.ok"));
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { busyRole.value = null; }
 }
 
@@ -145,7 +150,7 @@ async function addGrant() {
 async function removeGrant(id: string) {
   if (!sel.value) return;
   try { await deletePermission(id); grants.value = await listPermissions("user", sel.value.id); }
-  catch { msg.error(t("errors.network")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
 }
 function targetLabel(g: PermissionGrant): string {
   if (g.object_id === null) return t("perm.all");

@@ -4,12 +4,13 @@
 定時抓取，key=IP、value=主機名稱 / FQDN。功能預設關閉，於管理區開啟並設定路徑。
 
   GET /api/v1/lookup/{name}?token=<token>   →  text/csv 或 text/tab-separated-values
-       192.168.1.10,host-a.example.com
+       192.0.2.10,host-a.example.com
        192.0.2.11,host-b.example.com
 """
 
 from __future__ import annotations
 
+import hmac
 import uuid
 from typing import Annotated, Any
 
@@ -30,6 +31,25 @@ from app.services.system_config import get_graylog_dsv, set_graylog_dsv
 
 # 單一 alias→成員 DSV 每列成員數上限（crowdsec 類 alias 可達數萬筆，避免單格爆量）
 _ALIAS_MEMBER_CAP = 1000
+
+
+def _token_ok(supplied: str, expected: str | None) -> bool:
+    """DSV 存取權杖比對 —— 常數時間（避免 timing side-channel 洩漏 token）。
+
+    這些是**公開、未登入、無 rate limit** 的端點（且可經明文 8088 抓取），token 是唯一
+    守門，故一律用 hmac.compare_digest；先 encode 成 bytes 讓非 ASCII 的惡意 token 也
+    安全比對（不會丟 TypeError → 500）。expected 為空一律拒絕。
+    """
+    if not expected:
+        return False
+    # surrogatepass：URL 解碼可能塞進 surrogate（如 %ED%B3%BF），純 utf-8 encode 會丟
+    # UnicodeEncodeError → 500；用 surrogatepass 讓任何輸入都能安全比對成 bytes（不匹配即拒）。
+    try:
+        a = (supplied or "").encode("utf-8", "surrogatepass")
+        b = expected.encode("utf-8", "surrogatepass")
+    except (UnicodeEncodeError, AttributeError):
+        return False
+    return hmac.compare_digest(a, b)
 
 
 def _dsv_lines(pairs: list[tuple[str, str]], fmt: str) -> str:
@@ -63,7 +83,7 @@ async def _fw_dsv_guard(
 ) -> tuple[OPNsenseFirewall, dict[str, Any]]:
     """防火牆 DSV 共用守門：token（沿用 graylog_dsv）+ 該防火牆 expose_dsv。"""
     cfg = await get_graylog_dsv(session)
-    if not cfg["token"] or token != cfg["token"]:
+    if not _token_ok(token, cfg["token"]):
         raise HTTPException(status_code=401, detail="Invalid token")
     fw = await session.get(OPNsenseFirewall, firewall_id)
     if fw is None or not fw.expose_dsv:
@@ -85,7 +105,7 @@ async def dsv_lookup(
     cfg = await get_graylog_dsv(session)
     if not cfg["enabled"] or name != cfg["path"]:
         raise HTTPException(status_code=404, detail="Not found")
-    if not cfg["token"] or token != cfg["token"]:
+    if not _token_ok(token, cfg["token"]):
         raise HTTPException(status_code=401, detail="Invalid token")
     sep = "\t" if cfg["fmt"] == "tsv" else ","
     rows = (await session.execute(
@@ -170,7 +190,7 @@ async def _pfsense_dsv_guard(
     firewall_id: uuid.UUID, token: str, session: AsyncSession,
 ) -> tuple[PfSenseFirewall, dict[str, Any]]:
     cfg = await get_graylog_dsv(session)
-    if not cfg["token"] or token != cfg["token"]:
+    if not _token_ok(token, cfg["token"]):
         raise HTTPException(status_code=401, detail="Invalid token")
     fw = await session.get(PfSenseFirewall, firewall_id)
     if fw is None or not fw.expose_dsv:
@@ -232,7 +252,7 @@ async def _proxmox_vms_pairs(
 ) -> tuple[list[tuple[str, str]], dict[str, Any]]:
     """共用：token 守門 + 撈 vmid→名稱。cluster_id=None 表示全部叢集（去重）。"""
     cfg = await get_graylog_dsv(session)
-    if not cfg["token"] or token != cfg["token"]:
+    if not _token_ok(token, cfg["token"]):
         raise HTTPException(status_code=401, detail="Invalid token")
     stmt = (
         select(VirtualMachine.legacy_vmid, VirtualMachine.name)

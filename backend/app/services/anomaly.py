@@ -2,7 +2,7 @@
 
 偵測規則：
 - IP 衝突：同 IP 在短時間（1h）內 ARP 看到不同 MAC
-- MAC 漂移：同 MAC 在多個 switch+port 跳動（1h 內）
+- MAC 變動：同 MAC 在多個 switch+port 跳動（1h 內）
 - 失聯 IP：IPAM 有 IP 紀錄但 ARP/FDB 從未看過超過 N 天
 - 未授權設備：ARP 出現的 IP 但 IPAM 沒有
 
@@ -106,7 +106,7 @@ async def detect_mac_drifts(
         for did, sysname, hostname in drows:
             name_by_id[str(did)] = sysname or hostname or str(did)[:8]
 
-    # 每個漂移 MAC → 對應的 IP / 主機名稱（先查 IPAddress.mac，補 ARP 表）
+    # 每個有變動的 MAC → 對應的 IP / 主機名稱（先查 IPAddress.mac，補 ARP 表）
     drift_macs = {mac for mac, locs in by_mac.items() if len({(d, p) for d, p, _ in locs}) >= 2}
     ips_by_mac: dict[str, list[dict[str, str | None]]] = defaultdict(list)
     if drift_macs:
@@ -226,11 +226,11 @@ async def run_detection(
         ).scalars().all()
 
         if ch.get("in_app") or ch.get("email"):
-            for category, items in (
-                ("IP 衝突", report.ip_conflicts),
-                ("MAC 變動", report.mac_drifts),
-                ("失聯 IP", report.ghost_ips),
-                ("未授權 IP", report.unauthorized_ips),
+            for category, tkey, items in (
+                ("IP 衝突", "notif.anom_ip_conflict", report.ip_conflicts),
+                ("MAC 變動", "notif.anom_mac_drift", report.mac_drifts),
+                ("失聯 IP", "notif.anom_ghost", report.ghost_ips),
+                ("未授權 IP", "notif.anom_unauthorized", report.unauthorized_ips),
             ):
                 if not items:
                     continue
@@ -240,10 +240,13 @@ async def run_detection(
                         await push_notification(
                             session, user_id=admin.id, severity="warning", title=title,
                             body="詳見「異常偵測」頁面。", link="/anomalies", object_type="anomaly",
+                            title_key=tkey, body_key="notif.anom_body", params={"count": len(items)},
                         )
                 if ch.get("email"):
                     await email_users(session, [a.email for a in admins],
                                       f"[jt-ipam] {title}", "詳見「異常偵測」頁面。")
+                from app.services.notify_channels import broadcast_channels
+                await broadcast_channels(session, subject=title, text="詳見「異常偵測」頁面。")
         await deliver_event(session, event="anomaly.detected", payload=report.to_dict())
 
     await session.commit()

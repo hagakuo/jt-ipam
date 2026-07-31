@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>jt-ipam — API 使用手冊 / API manual</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<meta name="description" content="jt-ipam API 使用手冊：API 權杖認證、REST 端點、phpIPAM 相容 API、Graylog DSV 查表、MCP。jt-ipam API manual: token auth, REST endpoints, phpIPAM-compatible API, Graylog DSV lookups, MCP." />
+<style>
+  :root{
+    --green:#18a058; --green-h:#36ad6a; --cyan:#22d3ee;
+    --ink:#0f172a; --body:#334155; --muted:#64748b;
+    --bg:#eef3ee; --card:#ffffff; --line:#e2e8e4;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;
+    color:var(--body);background:var(--bg);line-height:1.7}
+  a{color:inherit;text-decoration:none}
+  .en{display:none}
+  body.lang-en .zh{display:none}
+  body.lang-en .en{display:initial}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 20px}
+  /* ── 與首頁一致的頂列 ── */
+  nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.92);backdrop-filter:saturate(1.4) blur(8px);
+    border-bottom:1px solid var(--line)}
+  .nav-in{display:flex;align-items:center;gap:18px;height:60px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;color:var(--ink);font-size:18px}
+  .nav-links{display:flex;gap:16px;margin-left:auto;flex-wrap:wrap;align-items:center}
+  .nav-links a{color:var(--body);font-size:14px;font-weight:500}
+  .nav-links a:hover{color:var(--green)}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 18px;border-radius:10px;
+    font-weight:600;font-size:15px;line-height:1.3;border:1px solid transparent;cursor:pointer;font-family:inherit}
+  .btn-ghost{background:#fff;border-color:var(--line);color:var(--ink)}
+  .btn-ghost:hover{border-color:var(--green)}
+  .btn-sm{padding:6px 12px;font-size:13px}
+  @media(max-width:820px){.nav-links a:not(.btn){display:none}}
+
+  /* ── 版面：左側目錄 + 內容 ── */
+  .layout{display:grid;grid-template-columns:236px minmax(0,1fr);gap:34px;align-items:start;margin:28px 0 0}
+  .toc{position:sticky;top:78px;background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:14px 8px 14px 14px;font-size:13.5px;max-height:calc(100vh - 110px);overflow-y:auto}
+  .toc-t{font-weight:800;color:var(--ink);font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+    margin:0 0 8px;color:var(--muted)}
+  .toc ol{list-style:none;margin:0;padding:0;counter-reset:toc}
+  .toc li{counter-increment:toc;margin:1px 0}
+  .toc a{display:block;padding:5px 8px;border-radius:8px;color:var(--body);line-height:1.45}
+  .toc a::before{content:counter(toc) ". ";color:var(--muted);font-variant-numeric:tabular-nums}
+  .toc a:hover{background:#f1f5f2;color:var(--green)}
+  @media(max-width:940px){.layout{grid-template-columns:1fr}.toc{position:static;max-height:none}}
+
+  h1{font-size:clamp(26px,4vw,36px);color:var(--ink);margin:4px 0 6px}
+  .sub{color:var(--muted);font-size:14.5px;margin:0 0 10px}
+  h2{font-size:20px;color:var(--ink);margin:34px 0 10px;padding-top:8px;scroll-margin-top:74px;
+    display:flex;align-items:center;gap:10px}
+  h2 .n{flex:none;width:26px;height:26px;border-radius:50%;background:var(--green);color:#fff;
+    font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center}
+  h3{font-size:15.5px;color:var(--ink);margin:22px 0 6px}
+  p{margin:8px 0}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;
+    box-shadow:0 1px 3px rgba(15,23,42,.05);margin:12px 0}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+    background:#f1f5f2;border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+  pre{background:#0f172a;color:#e2e8f0;border-radius:12px;padding:14px 16px;overflow-x:auto;
+    font-size:12.8px;line-height:1.6;margin:10px 0}
+  pre code{background:none;border:none;padding:0;color:inherit;font-size:12.8px}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f6faf7;color:var(--ink);font-weight:700;white-space:nowrap}
+  td code{white-space:nowrap}
+  .m{display:inline-block;min-width:52px;text-align:center;border-radius:5px;padding:1px 6px;
+    font-size:11.5px;font-weight:700;color:#fff;font-family:ui-monospace,monospace}
+  .m-get{background:#0ea5e9}.m-post{background:#18a058}.m-patch{background:#f59e0b}
+  .m-put{background:#f59e0b}.m-del{background:#ef4444}
+  .note{border-left:4px solid var(--green);background:#f6faf7;border-radius:0 10px 10px 0;
+    padding:11px 15px;margin:12px 0;font-size:13.8px}
+  .warn{border-left-color:#f59e0b;background:#fffbeb}
+  .danger{border-left-color:#ef4444;background:#fef2f2}
+  ul,ol.body{margin:8px 0;padding-left:22px}
+  li{margin:3px 0}
+  footer{margin:44px 0 80px;font-size:12.5px;color:var(--muted);text-align:center}
+  footer a{color:var(--green)}
+</style>
+</head>
+<body>
+<script>
+  /* 在內容繪製前先決定語言（避免閃爍）。優先序：網址 ?lang= > localStorage 偏好 > 預設英文。 */
+  (function(){
+    try{
+      function norm(v){ v = (v || '').toLowerCase();
+        if (v === 'en' || v === 'en-us') return 'en';
+        if (v === 'zh' || v === 'zh-tw' || v === 'zh-hant') return 'zh';
+        return null; }
+      var u = null; try { u = norm(new URLSearchParams(location.search).get('lang')); } catch (e) {}
+      var lang = u || norm(localStorage.getItem('jtipam-doc-lang')) || 'en';
+      if (lang === 'en') document.body.classList.add('lang-en');
+      document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : 'zh-Hant');
+      if (u){ try {
+        localStorage.setItem('jtipam-doc-lang', u);
+        var url = new URL(location.href); url.searchParams.set('lang', u === 'en' ? 'en' : 'zh-TW');
+        history.replaceState(null, '', url);
+      } catch (e) {} }
+    } catch (e) {}
+  })();
+</script>
+<nav>
+  <div class="wrap nav-in">
+    <span class="brand">
+      <svg viewBox="0 0 64 64" width="28" height="28" aria-hidden="true">
+        <rect width="64" height="64" rx="14" fill="#18a058"/>
+        <g stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-opacity="0.9">
+          <line x1="18" y1="18" x2="32" y2="32"/><line x1="46" y1="18" x2="32" y2="32"/>
+          <line x1="18" y1="46" x2="32" y2="32"/><line x1="46" y1="46" x2="32" y2="32"/>
+        </g>
+        <g fill="#fff"><circle cx="18" cy="18" r="5"/><circle cx="46" cy="18" r="5"/>
+          <circle cx="18" cy="46" r="5"/><circle cx="46" cy="46" r="5"/></g>
+        <circle cx="32" cy="32" r="8" fill="#fff"/><circle cx="32" cy="32" r="3.5" fill="#18a058"/>
+      </svg>
+      jt-ipam
+    </span>
+    <div class="nav-links">
+      <a href="index.html#features"><span class="zh">特色</span><span class="en">Features</span></a>
+      <a href="index.html#integrations"><span class="zh">整合</span><span class="en">Integrations</span></a>
+      <a href="index.html#install"><span class="zh">安裝</span><span class="en">Install</span></a>
+      <a href="features.html"><span class="zh">功能地圖</span><span class="en">Feature map</span></a>
+      <a class="btn btn-ghost btn-sm" href="index.html"><span class="zh">回首頁</span><span class="en">Home</span></a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener">GitHub</a>
+      <button class="btn btn-ghost btn-sm" id="langBtn" type="button">English</button>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap">
+  <div class="layout">
+
+  <!-- ── 左側目錄 ── -->
+  <aside class="toc">
+    <div class="toc-t"><span class="zh">目錄</span><span class="en">Contents</span></div>
+    <ol>
+      <li><a href="#auth"><span class="zh">認證：API 權杖</span><span class="en">Auth: API tokens</span></a></li>
+      <li><a href="#conventions"><span class="zh">通用慣例</span><span class="en">Conventions</span></a></li>
+      <li><a href="#errors"><span class="zh">錯誤與狀態碼</span><span class="en">Errors &amp; status codes</span></a></li>
+      <li><a href="#rbac"><span class="zh">權限模型</span><span class="en">Permission model</span></a></li>
+      <li><a href="#sections"><span class="zh">區段</span><span class="en">Sections</span></a></li>
+      <li><a href="#subnets"><span class="zh">子網路</span><span class="en">Subnets</span></a></li>
+      <li><a href="#addresses"><span class="zh">IP 位址</span><span class="en">IP addresses</span></a></li>
+      <li><a href="#devices"><span class="zh">裝置</span><span class="en">Devices</span></a></li>
+      <li><a href="#search"><span class="zh">搜尋與工具</span><span class="en">Search &amp; tools</span></a></li>
+      <li><a href="#index"><span class="zh">完整資源索引</span><span class="en">Full resource index</span></a></li>
+      <li><a href="#phpipam">phpIPAM<span class="zh"> 相容 API</span><span class="en">-compatible API</span></a></li>
+      <li><a href="#dsv">Graylog DSV</a></li>
+      <li><a href="#mcp">MCP</a></li>
+      <li><a href="#agents"><span class="zh">代理協定</span><span class="en">Agent protocols</span></a></li>
+      <li><a href="#limits"><span class="zh">速率限制與 CORS</span><span class="en">Rate limits &amp; CORS</span></a></li>
+      <li><a href="#openapi">OpenAPI</a></li>
+    </ol>
+  </aside>
+
+  <!-- ── 內容 ── -->
+  <main>
+  <h1><span class="zh">API 使用手冊</span><span class="en">API manual</span></h1>
+  <p class="sub">
+    <span class="zh">jt-ipam 的 REST API、phpIPAM 相容層、Graylog 查表與 MCP。以下所有網址請把 <code>https://ipam.example.com</code> 換成你自己的位址。</span>
+    <span class="en">The jt-ipam REST API, phpIPAM compatibility layer, Graylog lookups and MCP. Replace <code>https://ipam.example.com</code> below with your own address.</span>
+  </p>
+
+  <div class="note">
+    <span class="zh"><b>API 一律走 HTTPS。</b>jt-ipam 強制 HTTPS，明文 HTTP 不會提供服務。若你的 jt-ipam 用自簽憑證，<code>curl</code> 要加 <code>-k</code>（或把 CA 加進信任庫）。</span>
+    <span class="en"><b>The API is HTTPS-only.</b> jt-ipam enforces HTTPS and does not serve plain HTTP. If your instance uses a self-signed certificate, add <code>-k</code> to <code>curl</code> (or add the CA to your trust store).</span>
+  </div>
+
+  <!-- 1 ───────────────────────────────────────────── -->
+  <h2 id="auth"><span class="n">1</span><span class="zh">認證：API 權杖</span><span class="en">Auth: API tokens</span></h2>
+
+  <p><span class="zh">外部程式一律用 <b>API 權杖</b>，不要用帳號密碼登入拿 JWT（JWT 只有 15 分鐘、是給網頁前端用的）。</span>
+     <span class="en">External programs should always use an <b>API token</b> rather than logging in for a JWT (JWTs last 15 minutes and exist for the web UI).</span></p>
+
+  <h3><span class="zh">怎麼取得權杖</span><span class="en">Getting a token</span></h3>
+  <p><span class="zh">登入 jt-ipam → 右上角使用者選單 → <b>API 權杖</b> → 新增。填名稱、有效天數（1～365，預設 90）、權限範圍，按儲存。</span>
+     <span class="en">Sign in to jt-ipam → user menu (top right) → <b>API tokens</b> → Add. Give it a name, a lifetime (1–365 days, default 90) and a scope, then save.</span></p>
+
+  <div class="warn note">
+    <span class="zh"><b>明文只出現一次。</b>建立完成的那個視窗是你唯一能看到完整權杖的機會 —— 資料庫只存 SHA-256 雜湊。沒抄到就撤銷重建，沒有別的辦法找回來。</span>
+    <span class="en"><b>The plaintext is shown once.</b> The dialog right after creation is your only chance to see the full token — only its SHA-256 hash is stored. If you lose it, revoke and create a new one; there is no way to recover it.</span>
+  </div>
+
+  <h3><span class="zh">怎麼帶權杖</span><span class="en">Sending the token</span></h3>
+  <pre><code>curl -H "Authorization: Bearer jt_prod_xxxxxxxxxxxxxxxx" \
+  https://ipam.example.com/api/v1/subnets</code></pre>
+  <p><span class="zh">權杖首碼 <code>jt_</code> 會讓後端自動辨識為 API 權杖（沒有這個首碼則當成 JWT 解析）。</span>
+     <span class="en">The <code>jt_</code> prefix tells the backend this is an API token (without it, the value is parsed as a JWT).</span></p>
+
+  <h3><span class="zh">權限範圍（scope）</span><span class="en">Scopes</span></h3>
+  <table>
+    <thead><tr>
+      <th>scopes</th>
+      <th><span class="zh">效果</span><span class="en">Effect</span></th>
+    </tr></thead>
+    <tbody>
+      <tr><td><code>[]</code></td>
+        <td><span class="zh">不限制 —— 沿用權杖<b>擁有者</b>的權限，可讀可寫。</span>
+            <span class="en">Unrestricted — inherits the <b>owner's</b> permissions, read and write.</span></td></tr>
+      <tr><td><code>["read"]</code></td>
+        <td><span class="zh">唯讀 —— <code>GET</code>／<code>HEAD</code>／<code>OPTIONS</code> 可用；<code>POST</code>／<code>PATCH</code>／<code>PUT</code>／<code>DELETE</code> 一律回 <code>403</code>。</span>
+            <span class="en">Read-only — <code>GET</code>/<code>HEAD</code>/<code>OPTIONS</code> work; <code>POST</code>/<code>PATCH</code>/<code>PUT</code>/<code>DELETE</code> always return <code>403</code>.</span></td></tr>
+    </tbody>
+  </table>
+  <p><span class="zh">目前只支援這兩種。填其他值（例如 <code>write</code>、<code>subnets:read</code>）建立時就會被拒絕回 <code>422</code> —— 這是刻意的：不提供無法真正強制執行的權限旋鈕。</span>
+     <span class="en">These are the only two supported. Any other value (e.g. <code>write</code>, <code>subnets:read</code>) is rejected with <code>422</code> at creation — deliberately, so there is no knob that looks like a restriction but isn't enforced.</span></p>
+
+  <div class="danger note">
+    <span class="zh"><b>權杖繼承擁有者權限。</b>用 admin 帳號建的權杖就是一把 admin 全權金鑰。要給第三方受限的存取，正確做法是：<b>另建一個低權限使用者</b> → 在「管理 → 權限」把需要的物件（區段／子網路／裝置…）授權給它 → 用那個帳號登入建立權杖。<code>object_filters</code> 欄位目前保留但<b>不生效</b>，別依賴它。</span>
+    <span class="en"><b>A token inherits its owner's permissions.</b> A token created by an admin is a full-privilege admin key. To give a third party restricted access: <b>create a low-privilege user</b>, grant it the objects it needs (sections / subnets / devices…) under Admin → Permissions, then sign in as that user to create the token. The <code>object_filters</code> field is reserved but <b>not enforced</b> — do not rely on it.</span>
+  </div>
+
+  <h3><span class="zh">用 API 管理權杖</span><span class="en">Managing tokens via the API</span></h3>
+  <table>
+    <thead><tr><th><span class="zh">方法</span><span class="en">Method</span></th><th><span class="zh">路徑</span><span class="en">Path</span></th><th><span class="zh">說明</span><span class="en">Description</span></th></tr></thead>
+    <tbody>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/api-tokens</code></td>
+        <td><span class="zh">列出自己的權杖（admin 可加 <code>?user_id=</code> 看別人的）</span><span class="en">List your own tokens (admins may add <code>?user_id=</code>)</span></td></tr>
+      <tr><td><span class="m m-post">POST</span></td><td><code>/api/v1/api-tokens</code></td>
+        <td><span class="zh">建立，回應含一次性明文</span><span class="en">Create; the response carries the one-time plaintext</span></td></tr>
+      <tr><td><span class="m m-del">DELETE</span></td><td><code>/api/v1/api-tokens/{id}</code></td>
+        <td><span class="zh">撤銷（立即失效，不可復原）</span><span class="en">Revoke (immediate, irreversible)</span></td></tr>
+    </tbody>
+  </table>
+  <pre><code>curl -X POST https://ipam.example.com/api/v1/api-tokens \
+  -H "Authorization: Bearer &lt;jwt-or-token&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"monitoring","expires_in_days":180,"scopes":["read"]}'</code></pre>
+  <pre><code>{
+  "id": "3f1c...", "name": "monitoring",
+  "token": "jt_prod_XXXXXXXXXXXXXXXXXXXX",
+  "token_prefix": "jt_prod_", "expires_at": "2027-01-26T00:00:00Z",
+  "scopes": ["read"]
+}</code></pre>
+
+  <!-- 2 ───────────────────────────────────────────── -->
+  <h2 id="conventions"><span class="n">2</span><span class="zh">通用慣例</span><span class="en">Conventions</span></h2>
+  <ul>
+    <li><span class="zh"><b>基底路徑</b>：<code>/api/v1</code>。所有請求與回應都是 JSON（<code>Content-Type: application/json</code>），除少數明講的 CSV 端點。</span>
+        <span class="en"><b>Base path</b>: <code>/api/v1</code>. Requests and responses are JSON (<code>Content-Type: application/json</code>), apart from a few explicitly-CSV endpoints.</span></li>
+    <li><span class="zh"><b>識別碼是 UUID</b>，不是遞增整數。</span>
+        <span class="en"><b>Identifiers are UUIDs</b>, not incrementing integers.</span></li>
+    <li><span class="zh"><b>時間</b>一律 ISO 8601、UTC（<code>2026-07-30T12:34:56Z</code>）。</span>
+        <span class="en"><b>Timestamps</b> are ISO 8601 in UTC (<code>2026-07-30T12:34:56Z</code>).</span></li>
+    <li><span class="zh"><b>未知欄位會被拒絕。</b>寫入用的 schema 是嚴格模式（<code>extra=forbid</code>）—— 多送一個拼錯的欄位會回 <code>422</code>，而不是安靜忽略。</span>
+        <span class="en"><b>Unknown fields are rejected.</b> Write schemas are strict (<code>extra=forbid</code>) — a misspelled extra field returns <code>422</code> instead of being silently ignored.</span></li>
+    <li><span class="zh"><b>部分更新用 <code>PATCH</code></b>，只送要改的欄位。</span>
+        <span class="en"><b>Use <code>PATCH</code> for partial updates</b>, sending only the fields you want to change.</span></li>
+  </ul>
+
+  <h3><span class="zh">分頁</span><span class="en">Pagination</span></h3>
+  <p><span class="zh">列表端點吃 <code>page</code>（從 1 起算）與 <code>page_size</code>，回應固定是這個外層：</span>
+     <span class="en">List endpoints take <code>page</code> (1-based) and <code>page_size</code>, and always return this envelope:</span></p>
+  <pre><code>{ "items": [ … ], "total": 1234, "page": 1, "page_size": 50 }</code></pre>
+  <p><span class="zh"><code>page_size</code> 上限視端點而定（多數是 200）。要抓完整資料就依 <code>total</code> 逐頁取。</span>
+     <span class="en">The <code>page_size</code> cap depends on the endpoint (usually 200). To fetch everything, page through using <code>total</code>.</span></p>
+
+  <!-- 3 ───────────────────────────────────────────── -->
+  <h2 id="errors"><span class="n">3</span><span class="zh">錯誤與狀態碼</span><span class="en">Errors &amp; status codes</span></h2>
+  <p><span class="zh">錯誤回應一律是 <code>{"detail": "…"}</code>；<code>422</code> 另外附 <code>errors</code> 陣列指出哪個欄位不合法。伺服器端不會回 stack trace。</span>
+     <span class="en">Errors are always <code>{"detail": "…"}</code>; <code>422</code> additionally carries an <code>errors</code> array pinpointing the invalid fields. Stack traces are never returned.</span></p>
+  <pre><code>{ "detail": "Invalid request",
+  "errors": [ { "loc": ["body","cidr"], "msg": "value is not a valid IPv4 network", "type": "value_error" } ] }</code></pre>
+  <table>
+    <thead><tr><th><span class="zh">狀態</span><span class="en">Status</span></th><th><span class="zh">意義與常見原因</span><span class="en">Meaning &amp; common cause</span></th></tr></thead>
+    <tbody>
+      <tr><td><code>200</code> / <code>201</code> / <code>204</code></td><td><span class="zh">成功（<code>204</code> 用於刪除，無內容）</span><span class="en">Success (<code>204</code> for deletes, no body)</span></td></tr>
+      <tr><td><code>401</code></td><td><span class="zh">沒帶權杖、權杖無效、已撤銷或已到期</span><span class="en">Missing, invalid, revoked or expired token</span></td></tr>
+      <tr><td><code>403</code></td><td><span class="zh">認證過但不准 —— RBAC 不足，<b>或是唯讀權杖試圖寫入</b></span><span class="en">Authenticated but not allowed — insufficient RBAC, <b>or a read-only token attempting a write</b></span></td></tr>
+      <tr><td><code>404</code></td><td><span class="zh">不存在 —— 也用於「存在但你無權看見」，以免洩漏存在性</span><span class="en">Not found — also returned for "exists but you may not see it", to avoid leaking existence</span></td></tr>
+      <tr><td><code>409</code></td><td><span class="zh">衝突，例如重疊網段、或刪除仍被引用的物件</span><span class="en">Conflict, e.g. overlapping subnets, or deleting a still-referenced object</span></td></tr>
+      <tr><td><code>422</code></td><td><span class="zh">欄位驗證失敗（含未知欄位、不支援的 scope）</span><span class="en">Validation failed (including unknown fields and unsupported scopes)</span></td></tr>
+      <tr><td><code>429</code></td><td><span class="zh">超過速率限制，回應帶 <code>Retry-After</code></span><span class="en">Rate limited; the response carries <code>Retry-After</code></span></td></tr>
+    </tbody>
+  </table>
+
+  <!-- 4 ───────────────────────────────────────────── -->
+  <h2 id="rbac"><span class="n">4</span><span class="zh">權限模型</span><span class="en">Permission model</span></h2>
+  <p><span class="zh">jt-ipam 是<b>預設關閉</b>（deny by default）。你的權杖看得到什麼，完全取決於擁有者被授權了什麼：</span>
+     <span class="en">jt-ipam is <b>deny by default</b>. What your token can see depends entirely on what its owner has been granted:</span></p>
+  <ul>
+    <li><span class="zh"><b>可逐物件授權的資料</b>（區段／子網路／IP／裝置／機櫃／地點／客戶）→ 只回你可見範圍內的，<b>連 <code>total</code>、統計與趨勢都會跟著縮放</b>。</span>
+        <span class="en"><b>Per-object data</b> (sections / subnets / IPs / devices / racks / locations / customers) → only what you can see, and <b><code>total</code>, counts and trends scale with it</b>.</span></li>
+    <li><span class="zh"><b>全域基礎設施資料</b>（VLAN／VRF／NAT／防火牆／DNS／虛擬化／佈線／電力…）→ 需要「全域讀取」（admin 或萬用讀取授權）。只被指派特定物件的帳號會拿到 <code>403</code>。</span>
+        <span class="en"><b>Global infrastructure</b> (VLAN / VRF / NAT / firewalls / DNS / virtualization / cabling / power…) → requires global read (admin or a wildcard read grant). Accounts scoped to specific objects get <code>403</code>.</span></li>
+    <li><span class="zh"><b>純管理資料</b>（稽核記錄、使用者／群組／權限、系統與整合設定）→ 需要 admin。</span>
+        <span class="en"><b>Administrative data</b> (audit log, users / groups / permissions, system and integration settings) → requires admin.</span></li>
+  </ul>
+  <p><span class="zh">想知道自己這把權杖有什麼能力，打 <code>GET /api/v1/me</code>：回應含 <code>is_admin</code>、<code>has_visibility</code>、<code>has_global_read</code>。</span>
+     <span class="en">To discover what your token can do, call <code>GET /api/v1/me</code>: the response includes <code>is_admin</code>, <code>has_visibility</code> and <code>has_global_read</code>.</span></p>
+
+  <!-- 5 ───────────────────────────────────────────── -->
+  <h2 id="sections"><span class="n">5</span><span class="zh">區段（Sections）</span><span class="en">Sections</span></h2>
+  <p><span class="zh">最上層的分組容器，子網路掛在區段底下。可有父子階層。</span>
+     <span class="en">The top-level grouping container that subnets belong to. Supports parent/child nesting.</span></p>
+  <table>
+    <thead><tr><th><span class="zh">方法</span><span class="en">Method</span></th><th><span class="zh">路徑</span><span class="en">Path</span></th><th><span class="zh">說明</span><span class="en">Description</span></th></tr></thead>
+    <tbody>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/sections</code></td><td><span class="zh">列出（分頁）</span><span class="en">List (paginated)</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/sections/{id}</code></td><td><span class="zh">單筆詳情</span><span class="en">Get one</span></td></tr>
+      <tr><td><span class="m m-post">POST</span></td><td><code>/api/v1/sections</code></td><td><span class="zh">建立</span><span class="en">Create</span></td></tr>
+      <tr><td><span class="m m-patch">PATCH</span></td><td><code>/api/v1/sections/{id}</code></td><td><span class="zh">部分更新</span><span class="en">Partial update</span></td></tr>
+      <tr><td><span class="m m-del">DELETE</span></td><td><code>/api/v1/sections/{id}</code></td><td><span class="zh">刪除</span><span class="en">Delete</span></td></tr>
+      <tr><td><span class="m m-post">POST</span></td><td><code>/api/v1/sections/bulk-delete</code></td><td><span class="zh">批次刪除（<code>{"ids":[…]}</code>）</span><span class="en">Bulk delete (<code>{"ids":[…]}</code>)</span></td></tr>
+    </tbody>
+  </table>
+  <h3><span class="zh">建立區段</span><span class="en">Create a section</span></h3>
+  <table>
+    <thead><tr><th><span class="zh">欄位</span><span class="en">Field</span></th><th><span class="zh">型別</span><span class="en">Type</span></th><th><span class="zh">必填</span><span class="en">Required</span></th><th><span class="zh">說明</span><span class="en">Description</span></th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td>string</td><td><span class="zh">是</span><span class="en">yes</span></td><td><span class="zh">1～128 字</span><span class="en">1–128 chars</span></td></tr>
+      <tr><td><code>description</code></td><td>string</td><td>—</td><td><span class="zh">最多 1024 字</span><span class="en">up to 1024 chars</span></td></tr>
+      <tr><td><code>parent_id</code></td><td>uuid</td><td>—</td><td><span class="zh">上層區段</span><span class="en">Parent section</span></td></tr>
+      <tr><td><code>customer_id</code></td><td>uuid</td><td>—</td><td><span class="zh">歸屬客戶／管理單位</span><span class="en">Owning customer / managing unit</span></td></tr>
+      <tr><td><code>strict_mode</code></td><td>bool</td><td>—</td><td><span class="zh">嚴格模式</span><span class="en">Strict mode</span></td></tr>
+      <tr><td><code>display_order</code></td><td>int</td><td>—</td><td><span class="zh">顯示排序（0～10000）</span><span class="en">Display order (0–10000)</span></td></tr>
+    </tbody>
+  </table>
+  <pre><code>curl -X POST https://ipam.example.com/api/v1/sections \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"Taipei DC","description":"main site"}'</code></pre>
+
+  <!-- 6 ───────────────────────────────────────────── -->
+  <h2 id="subnets"><span class="n">6</span><span class="zh">子網路（Subnets）</span><span class="en">Subnets</span></h2>
+  <table>
+    <thead><tr><th><span class="zh">方法</span><span class="en">Method</span></th><th><span class="zh">路徑</span><span class="en">Path</span></th><th><span class="zh">說明</span><span class="en">Description</span></th></tr></thead>
+    <tbody>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/subnets</code></td><td><span class="zh">列出。可加 <code>section_id</code>、<code>archived</code>、<code>page</code>、<code>page_size</code></span><span class="en">List. Accepts <code>section_id</code>, <code>archived</code>, <code>page</code>, <code>page_size</code></span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/subnets/{id}</code></td><td><span class="zh">單筆詳情</span><span class="en">Get one</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/subnets/{id}/usage</code></td><td><span class="zh">使用率統計（已用／可用／可配發）</span><span class="en">Usage stats (used / free / usable)</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/subnets/{id}/first_free_address</code></td><td><span class="zh">第一個可用 IP</span><span class="en">First free IP</span></td></tr>
+      <tr><td><span class="m m-post">POST</span></td><td><code>/api/v1/subnets</code></td><td><span class="zh">建立</span><span class="en">Create</span></td></tr>
+      <tr><td><span class="m m-patch">PATCH</span></td><td><code>/api/v1/subnets/{id}</code></td><td><span class="zh">部分更新</span><span class="en">Partial update</span></td></tr>
+      <tr><td><span class="m m-post">POST</span></td><td><code>/api/v1/subnets/{id}/archive</code></td><td><span class="zh">封存 / <code>/unarchive</code> 取消封存</span><span class="en">Archive / <code>/unarchive</code> to restore</span></td></tr>
+      <tr><td><span class="m m-post">POST</span></td><td><code>/api/v1/subnets/{id}/scan</code></td><td><span class="zh">要求掃描代理立刻掃一次</span><span class="en">Ask the scan agent to sweep it now</span></td></tr>
+      <tr><td><span class="m m-del">DELETE</span></td><td><code>/api/v1/subnets/{id}</code></td><td><span class="zh">刪除（底下仍有 IP／下層時會被擋）</span><span class="en">Delete (blocked while it still holds IPs or children)</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/subnets/overlaps/exists</code></td><td><span class="zh">是否存在重疊網段（admin）</span><span class="en">Whether any overlapping subnets exist (admin)</span></td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <span class="zh"><b>使用率請用 <code>/usage</code>，不要自己算 CIDR。</b>jt-ipam 的「已用／可用」是依實際 IP 記錄與網段設定算的，跟純數學的 CIDR 容量不一樣（會扣掉網路位址、廣播位址、保留與 DHCP 範圍等）。</span>
+    <span class="en"><b>Use <code>/usage</code> rather than computing from the CIDR.</b> jt-ipam's used/free figures come from the actual IP records and subnet settings, which differ from raw CIDR arithmetic (network and broadcast addresses, reservations, DHCP pools and so on).</span>
+  </div>
+  <pre><code>curl -X POST https://ipam.example.com/api/v1/subnets \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"cidr":"192.0.2.0/24","section_id":"&lt;section-uuid&gt;","description":"office LAN"}'</code></pre>
+
+  <!-- 7 ───────────────────────────────────────────── -->
+  <h2 id="addresses"><span class="n">7</span><span class="zh">IP 位址（Addresses）</span><span class="en">IP addresses</span></h2>
+  <table>
+    <thead><tr><th><span class="zh">方法</span><span class="en">Method</span></th><th><span class="zh">路徑</span><span class="en">Path</span></th><th><span class="zh">說明</span><span class="en">Description</span></th></tr></thead>
+    <tbody>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/addresses</code></td><td><span class="zh">列出／查詢（見下方參數）</span><span class="en">List / query (parameters below)</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/addresses/{id}</code></td><td><span class="zh">單筆詳情</span><span class="en">Get one</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/addresses/{id}/history</code></td><td><span class="zh">異動記錄</span><span class="en">Change history</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/addresses/{id}/relations</code></td><td><span class="zh">關聯物件</span><span class="en">Related objects</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/addresses/{id}/switch-port</code></td><td><span class="zh">對應的交換器連接埠</span><span class="en">The switch port it is seen on</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/addresses/export.csv</code></td><td><span class="zh">匯出 CSV</span><span class="en">Export as CSV</span></td></tr>
+      <tr><td><span class="m m-post">POST</span></td><td><code>/api/v1/addresses</code></td><td><span class="zh">建立</span><span class="en">Create</span></td></tr>
+      <tr><td><span class="m m-post">POST</span></td><td><code>/api/v1/addresses/first_free</code></td><td><span class="zh">取得並配發第一個可用 IP</span><span class="en">Claim the first free IP</span></td></tr>
+      <tr><td><span class="m m-patch">PATCH</span></td><td><code>/api/v1/addresses/{id}</code></td><td><span class="zh">部分更新</span><span class="en">Partial update</span></td></tr>
+      <tr><td><span class="m m-del">DELETE</span></td><td><code>/api/v1/addresses/{id}</code></td><td><span class="zh">刪除</span><span class="en">Delete</span></td></tr>
+      <tr><td><span class="m m-post">POST</span></td><td><code>/api/v1/addresses/bulk-state</code></td><td><span class="zh">批次改狀態</span><span class="en">Bulk state change</span></td></tr>
+      <tr><td><span class="m m-post">POST</span></td><td><code>/api/v1/addresses/import</code></td><td><span class="zh">批次匯入</span><span class="en">Bulk import</span></td></tr>
+    </tbody>
+  </table>
+  <h3><span class="zh">查詢參數</span><span class="en">Query parameters</span></h3>
+  <table>
+    <thead><tr><th><span class="zh">參數</span><span class="en">Parameter</span></th><th><span class="zh">說明</span><span class="en">Description</span></th></tr></thead>
+    <tbody>
+      <tr><td><code>subnet_id</code></td><td><span class="zh">限定某個子網路</span><span class="en">Restrict to one subnet</span></td></tr>
+      <tr><td><code>section_id</code></td><td><span class="zh">限定某個區段</span><span class="en">Restrict to one section</span></td></tr>
+      <tr><td><code>customer_id</code></td><td><span class="zh">限定某個客戶／管理單位</span><span class="en">Restrict to one customer</span></td></tr>
+      <tr><td><code>device_id</code></td><td><span class="zh">限定掛在某個裝置上</span><span class="en">Restrict to one device</span></td></tr>
+      <tr><td><code>q</code></td><td><span class="zh">關鍵字（IP、主機名稱、MAC、說明…）</span><span class="en">Free text (IP, hostname, MAC, description…)</span></td></tr>
+      <tr><td><code>exact</code></td><td><span class="zh">精準比對而非模糊</span><span class="en">Exact match instead of fuzzy</span></td></tr>
+      <tr><td><code>sort</code> / <code>order</code></td><td><span class="zh">排序欄位 / <code>asc</code>｜<code>desc</code></span><span class="en">Sort field / <code>asc</code>｜<code>desc</code></span></td></tr>
+    </tbody>
+  </table>
+  <pre><code># 查某網段裡所有 IP
+curl -G https://ipam.example.com/api/v1/addresses \
+  -H "Authorization: Bearer $TOKEN" \
+  --data-urlencode "subnet_id=&lt;subnet-uuid&gt;" --data-urlencode "page_size=200"
+
+# 依主機名稱找
+curl -G https://ipam.example.com/api/v1/addresses \
+  -H "Authorization: Bearer $TOKEN" --data-urlencode "q=web01"</code></pre>
+  <div class="note">
+    <span class="zh"><b>同一個 IP 字串可能出現多筆。</b>唯一鍵是「子網路 + IP」，所以在重疊網段（不同客戶共用 <code>192.168.1.0/24</code>）的環境裡，同一個 IP 會跨多個子網路各有一筆 —— 這是設計如此。用 <code>subnet_id</code> 限定範圍，不要假設 IP 唯一。</span>
+    <span class="en"><b>The same IP string may appear more than once.</b> The unique key is (subnet, IP), so with overlapping subnets (different customers sharing <code>192.168.1.0/24</code>) one IP legitimately has a row per subnet. Scope your queries with <code>subnet_id</code>; don't assume an IP is unique.</span>
+  </div>
+
+  <!-- 8 ───────────────────────────────────────────── -->
+  <h2 id="devices"><span class="n">8</span><span class="zh">裝置（Devices）</span><span class="en">Devices</span></h2>
+  <table>
+    <thead><tr><th><span class="zh">方法</span><span class="en">Method</span></th><th><span class="zh">路徑</span><span class="en">Path</span></th><th><span class="zh">說明</span><span class="en">Description</span></th></tr></thead>
+    <tbody>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/devices</code></td><td><span class="zh">列出</span><span class="en">List</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/devices/{id}</code></td><td><span class="zh">單筆詳情</span><span class="en">Get one</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/devices/{id}/relations</code></td><td><span class="zh">關聯（IP／機櫃／佈線…）</span><span class="en">Relations (IPs / rack / cabling…)</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/devices/{id}/integrations</code></td><td><span class="zh">各整合帶回的資料</span><span class="en">Data pulled in by integrations</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>/api/v1/devices/{id}/vlans</code></td><td><span class="zh">VLAN 對應</span><span class="en">VLAN mappings</span></td></tr>
+      <tr><td><span class="m m-post">POST</span></td><td><code>/api/v1/devices</code></td><td><span class="zh">建立</span><span class="en">Create</span></td></tr>
+      <tr><td><span class="m m-patch">PATCH</span></td><td><code>/api/v1/devices/{id}</code></td><td><span class="zh">部分更新</span><span class="en">Partial update</span></td></tr>
+      <tr><td><span class="m m-del">DELETE</span></td><td><code>/api/v1/devices/{id}</code></td><td><span class="zh">刪除</span><span class="en">Delete</span></td></tr>
+    </tbody>
+  </table>
+
+  <!-- 9 ───────────────────────────────────────────── -->
+  <h2 id="search"><span class="n">9</span><span class="zh">搜尋與 IP 工具</span><span class="en">Search &amp; IP tools</span></h2>
+  <p><span class="zh"><code>GET /api/v1/search?q=…&amp;limit_per_type=…</code> 是全域搜尋，跨區段／子網路／IP／裝置／客戶等型別，並依你的可見範圍過濾。支援部分 MAC 首碼（如 <code>bc:24</code>）。</span>
+     <span class="en"><code>GET /api/v1/search?q=…&amp;limit_per_type=…</code> searches across sections, subnets, IPs, devices, customers and more, filtered to what you may see. Partial MAC prefixes (e.g. <code>bc:24</code>) work.</span></p>
+  <p><span class="zh"><code>/api/v1/tools/*</code> 是一組無副作用的計算端點，適合腳本直接呼叫：</span>
+     <span class="en"><code>/api/v1/tools/*</code> is a set of side-effect-free calculators handy for scripts:</span></p>
+  <table>
+    <thead><tr><th><span class="zh">端點</span><span class="en">Endpoint</span></th><th><span class="zh">用途</span><span class="en">Purpose</span></th></tr></thead>
+    <tbody>
+      <tr><td><code>ip-info</code> / <code>cidr-info</code></td><td><span class="zh">IP／網段基本資訊</span><span class="en">IP / CIDR facts</span></td></tr>
+      <tr><td><code>cidr-split</code> / <code>aggregate</code></td><td><span class="zh">切分 / 聚合網段</span><span class="en">Split / aggregate prefixes</span></td></tr>
+      <tr><td><code>ip-in-cidr</code> / <code>cidr-relation</code></td><td><span class="zh">包含關係判斷</span><span class="en">Containment and relation checks</span></td></tr>
+      <tr><td><code>range-to-cidr</code> / <code>cidr-to-range</code></td><td><span class="zh">範圍 ↔ 網段互轉</span><span class="en">Range ↔ CIDR conversion</span></td></tr>
+      <tr><td><code>netmask</code> / <code>eui64</code> / <code>mac-format</code></td><td><span class="zh">遮罩換算、EUI-64、MAC 格式化</span><span class="en">Netmask conversion, EUI-64, MAC formatting</span></td></tr>
+      <tr><td><code>dns-lookup</code> / <code>fqdn</code> / <code>dns-mail</code> / <code>geoip</code></td><td><span class="zh">DNS 查詢、FQDN 解析、郵件記錄、GeoIP</span><span class="en">DNS lookups, FQDN parsing, mail records, GeoIP</span></td></tr>
+    </tbody>
+  </table>
+
+  <!-- 10 ──────────────────────────────────────────── -->
+  <h2 id="index"><span class="n">10</span><span class="zh">完整資源索引</span><span class="en">Full resource index</span></h2>
+  <p><span class="zh">API 共約 500 條路由。上面詳述的是最常用的核心資源；其餘資源大多遵循同一套 <code>GET</code> 列表 ／ <code>GET {id}</code> ／ <code>POST</code> ／ <code>PATCH</code> ／ <code>DELETE</code> 慣例。</span>
+     <span class="en">The API has roughly 500 routes. The sections above cover the core resources in detail; most others follow the same <code>GET</code> list / <code>GET {id}</code> / <code>POST</code> / <code>PATCH</code> / <code>DELETE</code> convention.</span></p>
+  <table>
+    <thead><tr><th><span class="zh">分類</span><span class="en">Area</span></th><th><span class="zh">基底路徑</span><span class="en">Base paths</span></th><th><span class="zh">權限</span><span class="en">Access</span></th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="zh">核心 IPAM</span><span class="en">Core IPAM</span></td>
+        <td><code>/sections</code> <code>/subnets</code> <code>/addresses</code> <code>/devices</code> <code>/customers</code> <code>/racks</code> <code>/locations</code></td>
+        <td><span class="zh">逐物件可見性</span><span class="en">Per-object visibility</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">網路資源</span><span class="en">Network resources</span></td>
+        <td><code>/vlans</code> <code>/vlan-domains</code> <code>/vrfs</code> <code>/asns</code> <code>/nat</code> <code>/dhcp-ranges</code> <code>/vpn-tunnels</code> <code>/wireless</code></td>
+        <td><span class="zh">全域讀取</span><span class="en">Global read</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">實體層</span><span class="en">Physical layer</span></td>
+        <td><code>/cables</code> <code>/cable-terminations</code> <code>/device-ports</code> <code>/ports</code> <code>/power-feeds</code> <code>/power-panels</code> <code>/power-outlets</code> <code>/device-power-ports</code></td>
+        <td><span class="zh">全域讀取</span><span class="en">Global read</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">商務／組織</span><span class="en">Business / org</span></td>
+        <td><code>/tenants</code> <code>/tenant-groups</code> <code>/providers</code> <code>/circuits</code> <code>/circuit-types</code> <code>/contacts</code> <code>/contact-groups</code> <code>/contact-assignments</code></td>
+        <td><span class="zh">全域讀取</span><span class="en">Global read</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">整合</span><span class="en">Integrations</span></td>
+        <td><code>/firewalls</code>（OPNsense）<code>/pfsense</code> <code>/fortigate</code> <code>/windows-dhcp</code> <code>/librenms</code> <code>/wazuh</code> <code>/adguard</code> <code>/dns</code> <code>/virt</code></td>
+        <td><span class="zh">設定需 admin；唯讀檢視需全域讀取</span><span class="en">admin to configure; global read to view</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">代理與憑證</span><span class="en">Agents &amp; certificates</span></td>
+        <td><code>/scan-agents</code> <code>/cert-agents</code> <code>/certificates</code> <code>/ssh-credentials</code></td>
+        <td>admin</td>
+      </tr>
+      <tr>
+        <td><span class="zh">流程與通知</span><span class="en">Workflow &amp; notifications</span></td>
+        <td><code>/ip-requests</code> <code>/notifications</code> <code>/webhooks</code> <code>/tasks</code> <code>/anomalies</code> <code>/ip-changes</code></td>
+        <td><span class="zh">視端點而定</span><span class="en">Varies</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">分析與 AI</span><span class="en">Analytics &amp; AI</span></td>
+        <td><code>/dashboard</code> <code>/topology</code> <code>/search</code> <code>/tools</code> <code>/oui</code> <code>/ai</code></td>
+        <td><span class="zh">視端點而定</span><span class="en">Varies</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">管理</span><span class="en">Administration</span></td>
+        <td><code>/users</code> <code>/groups</code> <code>/audit</code> <code>/system</code> <code>/custom-fields</code> <code>/plugins</code> <code>/import</code> <code>/migration</code></td>
+        <td>admin</td>
+      </tr>
+      <tr>
+        <td><span class="zh">自助</span><span class="en">Self-service</span></td>
+        <td><code>/me</code> <code>/me/preferences</code> <code>/api-tokens</code> <code>/auth</code></td>
+        <td><span class="zh">任何已認證帳號</span><span class="en">Any authenticated account</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- 11 ──────────────────────────────────────────── -->
+  <h2 id="phpipam"><span class="n">11</span>phpIPAM<span class="zh"> 相容 API</span><span class="en">-compatible API</span></h2>
+  <p><span class="zh">給既有的 phpIPAM 腳本用的相容層：換掉網址與權杖就能沿用，回應是 phpIPAM 的外層格式。</span>
+     <span class="en">A compatibility layer for existing phpIPAM scripts: change the URL and token and they keep working, with phpIPAM-shaped response envelopes.</span></p>
+  <p><span class="zh"><b>基底路徑</b>：<code>/api/phpipam/&lt;app_id&gt;/</code>。<code>&lt;app_id&gt;</code> 沿用你原本 phpIPAM 的 App ID 字串。</span>
+     <span class="en"><b>Base path</b>: <code>/api/phpipam/&lt;app_id&gt;/</code>, where <code>&lt;app_id&gt;</code> is whatever App ID string your scripts already use.</span></p>
+  <h3><span class="zh">認證</span><span class="en">Authentication</span></h3>
+  <p><span class="zh">三種標頭都收（挑一個就好）：<code>token: jt_…</code>、<code>phpipam-token: jt_…</code>、<code>Authorization: Bearer jt_…</code>。也可以用帳號密碼走 Basic Auth 換一把 30 天的權杖：</span>
+     <span class="en">Any one of three headers works: <code>token: jt_…</code>, <code>phpipam-token: jt_…</code>, or <code>Authorization: Bearer jt_…</code>. You can also exchange username/password over Basic Auth for a 30-day token:</span></p>
+  <pre><code>curl -X POST -u 'user:password' \
+  https://ipam.example.com/api/phpipam/myapp/user/</code></pre>
+  <pre><code>{ "code":200, "success":true, "data":{ "token":"jt_prod_…", "expires":"…" }, "time":0.01 }</code></pre>
+  <table>
+    <thead><tr><th><span class="zh">方法</span><span class="en">Method</span></th><th><span class="zh">路徑（接在基底之後）</span><span class="en">Path (after the base)</span></th><th><span class="zh">說明</span><span class="en">Description</span></th></tr></thead>
+    <tbody>
+      <tr><td><span class="m m-post">POST</span></td><td><code>user/</code></td><td><span class="zh">Basic Auth 換權杖</span><span class="en">Exchange Basic Auth for a token</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>user/</code></td><td><span class="zh">權杖資訊</span><span class="en">Token info</span></td></tr>
+      <tr><td><span class="m m-patch">PATCH</span></td><td><code>user/</code></td><td><span class="zh">延長權杖期限</span><span class="en">Extend the token</span></td></tr>
+      <tr><td><span class="m m-del">DELETE</span></td><td><code>user/</code></td><td><span class="zh">撤銷權杖（登出）</span><span class="en">Revoke the token (log out)</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>sections/</code> · <code>sections/{id}</code> · <code>sections/{id}/subnets/</code></td><td><span class="zh">區段</span><span class="en">Sections</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>subnets/{id}/</code> · <code>subnets/cidr/{cidr}/</code> · <code>subnets/{id}/usage/</code> · <code>subnets/{id}/first_free/</code> · <code>subnets/{id}/addresses/</code></td><td><span class="zh">子網路</span><span class="en">Subnets</span></td></tr>
+      <tr><td><span class="m m-get">GET</span></td><td><code>addresses/{id}/</code> · <code>addresses/{ip}/{subnet_id}/</code> · <code>addresses/search/{ip}/</code> · <code>addresses/search_hostname/{host}/</code> · <code>addresses/first_free/{subnet_id}/</code></td><td><span class="zh">IP 位址</span><span class="en">IP addresses</span></td></tr>
+      <tr><td colspan="2"><span class="m m-post">POST</span> <span class="m m-patch">PATCH</span> <span class="m m-del">DELETE</span> <code>sections/</code> · <code>subnets/</code> · <code>addresses/</code></td><td><span class="zh">建立／更新／刪除</span><span class="en">Create / update / delete</span></td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <span class="zh">相容層只覆蓋 phpIPAM API 的常用子集，不是逐一對應。完整對照見原始碼裡的 <code>docs/PHPIPAM_API_MAPPING.md</code>。新寫的整合建議直接用上面的原生 REST API。</span>
+    <span class="en">The layer covers the commonly-used subset of the phpIPAM API, not every call. See <code>docs/PHPIPAM_API_MAPPING.md</code> in the source for the full mapping. For new integrations, prefer the native REST API above.</span>
+  </div>
+  <div class="warn note">
+    <span class="zh">唯讀權杖在這一層同樣有效：<code>POST</code>／<code>PATCH</code> 會被擋成 <code>403</code>。唯一例外是 <code>DELETE user/</code>（撤銷自己的權杖）—— 那是降權、不是異動資料，所以照樣放行，老腳本的「登入 → 查詢 → 登出」流程不會斷。</span>
+    <span class="en">Read-only tokens are enforced here too: <code>POST</code>/<code>PATCH</code> get <code>403</code>. The one exception is <code>DELETE user/</code> (revoking your own token) — that reduces privilege rather than changing data, so it is allowed and the classic login → query → logout flow keeps working.</span>
+  </div>
+
+  <!-- 12 ──────────────────────────────────────────── -->
+  <h2 id="dsv"><span class="n">12</span>Graylog DSV<span class="zh"> 查表</span><span class="en"> lookups</span></h2>
+  <p><span class="zh">給 Graylog 的「DSV File from HTTP」配接器用的<b>免登入唯讀</b>端點，回 CSV。認證是一把系統層級的權杖，走網址參數 <code>?token=</code>（由 admin 在「管理 → Graylog DSV」產生），因為 Graylog 抓檔時不能帶自訂標頭。</span>
+     <span class="en"><b>Unauthenticated, read-only</b> CSV endpoints for Graylog's "DSV File from HTTP" adapter. They are gated by a system-level token passed as <code>?token=</code> (generated under Admin → Graylog DSV), because Graylog cannot send custom headers when fetching.</span></p>
+  <table>
+    <thead><tr><th><span class="zh">路徑</span><span class="en">Path</span></th><th><span class="zh">對照</span><span class="en">Mapping</span></th></tr></thead>
+    <tbody>
+      <tr><td><code>/api/v1/lookup/{name}</code></td><td><span class="zh">IP → 主機名稱</span><span class="en">IP → hostname</span></td></tr>
+      <tr><td><code>/api/v1/lookup/firewall/{id}/rule-aliases</code></td><td><span class="zh">OPNsense 規則 <code>rid</code> → 別名</span><span class="en">OPNsense rule <code>rid</code> → alias</span></td></tr>
+      <tr><td><code>/api/v1/lookup/firewall/{id}/aliases</code></td><td><span class="zh">OPNsense 別名 → 成員</span><span class="en">OPNsense alias → members</span></td></tr>
+      <tr><td><code>/api/v1/lookup/pfsense/{id}/rules</code></td><td><span class="zh">pfSense <code>tracker</code> → 說明</span><span class="en">pfSense <code>tracker</code> → description</span></td></tr>
+      <tr><td><code>/api/v1/lookup/pfsense/{id}/aliases</code></td><td><span class="zh">pfSense 別名 → 成員</span><span class="en">pfSense alias → members</span></td></tr>
+      <tr><td><code>/api/v1/lookup/proxmox/vms</code></td><td><span class="zh">全部叢集：<code>vmid</code> → VM 名稱</span><span class="en">All clusters: <code>vmid</code> → VM name</span></td></tr>
+      <tr><td><code>/api/v1/lookup/proxmox/{cluster_id}/vms</code></td><td><span class="zh">單一叢集：<code>vmid</code> → VM 名稱</span><span class="en">One cluster: <code>vmid</code> → VM name</span></td></tr>
+    </tbody>
+  </table>
+  <pre><code>curl "https://ipam.example.com/api/v1/lookup/hostnames?token=&lt;dsv-token&gt;"</code></pre>
+  <pre><code>"192.0.2.10","web01"
+"192.0.2.11","db01"</code></pre>
+  <p><span class="zh">在 Graylog 的 DSV 配接器裡，<b>Key column = 0、Value column = 1</b>（欄位索引從 0 起算）。防火牆相關端點要先在該台整合設定裡勾選「提供防火牆 DSV」才會有資料。</span>
+     <span class="en">In Graylog's DSV adapter set <b>Key column = 0 and Value column = 1</b> (indices are 0-based). The firewall endpoints only return data once "expose firewall DSV" is enabled on that instance.</span></p>
+
+  <!-- 13 ──────────────────────────────────────────── -->
+  <h2 id="mcp"><span class="n">13</span>MCP<span class="zh">（給 LLM 用）</span><span class="en"> (for LLMs)</span></h2>
+  <p><span class="zh">jt-ipam 內建 MCP（Model Context Protocol）伺服器，讓 LLM 用自然語言查 IPAM。走 JSON-RPC 2.0：</span>
+     <span class="en">jt-ipam ships an MCP (Model Context Protocol) server so an LLM can query the IPAM in natural language, over JSON-RPC 2.0:</span></p>
+  <ul>
+    <li><span class="zh"><b>Streamable HTTP</b>：<code>POST /api/mcp</code>。<code>initialize</code> 的回應會帶 <code>Mcp-Session-Id</code> 標頭。支援 <code>initialize</code>、<code>ping</code>、<code>tools/list</code>、<code>tools/call</code>。</span>
+        <span class="en"><b>Streamable HTTP</b>: <code>POST /api/mcp</code>. The <code>initialize</code> response carries an <code>Mcp-Session-Id</code> header. Supports <code>initialize</code>, <code>ping</code>, <code>tools/list</code> and <code>tools/call</code>.</span></li>
+    <li><span class="zh"><b>stdio</b>（本機用，例如 Claude Desktop）：<code>python -m app.mcp.stdio_server</code>，權杖放環境變數 <code>JT_IPAM_MCP_TOKEN</code>。</span>
+        <span class="en"><b>stdio</b> (local, e.g. Claude Desktop): <code>python -m app.mcp.stdio_server</code>, with the token in <code>JT_IPAM_MCP_TOKEN</code>.</span></li>
+  </ul>
+  <p><span class="zh"><b>認證</b>用 <code>X-Auth-Token</code> 或 <code>Authorization: Bearer</code>，可以是：</span>
+     <span class="en"><b>Authentication</b> uses <code>X-Auth-Token</code> or <code>Authorization: Bearer</code>, with either:</span></p>
+  <ul>
+    <li><span class="zh"><b>對外唯讀 MCP 金鑰</b>（<code>jtmcp_…</code>，admin 在「管理 → LLM／AI」產生並輪替）—— 只看得到唯讀工具，異動類工具會被隱藏並擋下。要先啟用「對外 MCP」才會生效。</span>
+        <span class="en"><b>A read-only external MCP key</b> (<code>jtmcp_…</code>, generated and rotated by an admin under Admin → LLM/AI) — read-only tools only; mutating tools are hidden and blocked. External MCP must be enabled first.</span></li>
+    <li><span class="zh"><b>一般 API 權杖</b>（<code>jt_…</code>）—— 依該權杖擁有者的權限。若這把權杖是唯讀 scope，MCP 同樣只給唯讀工具。</span>
+        <span class="en"><b>A regular API token</b> (<code>jt_…</code>) — scoped to its owner's permissions. If the token is read-only, MCP likewise exposes only read-only tools.</span></li>
+  </ul>
+  <pre><code>curl -X POST https://ipam.example.com/api/mcp \
+  -H "X-Auth-Token: jtmcp_xxxxxxxx" -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'</code></pre>
+
+  <!-- 14 ──────────────────────────────────────────── -->
+  <h2 id="agents"><span class="n">14</span><span class="zh">代理協定</span><span class="en">Agent protocols</span></h2>
+  <p><span class="zh">掃描代理與憑證派送代理有自己的通道，用<b>各自獨立的金鑰</b>（<code>X-Agent-Key</code> 標頭，建立代理時產生、只存雜湊），不是 API 權杖。這些端點是給代理程式用的，一般整合不需要碰。</span>
+     <span class="en">The scan agent and certificate-distribution agent have their own channel, authenticated by <b>per-agent keys</b> (the <code>X-Agent-Key</code> header, issued when the agent is created and stored only as a hash) rather than API tokens. These endpoints are for the agents themselves; normal integrations don't need them.</span></p>
+  <table>
+    <thead><tr><th><span class="zh">路徑</span><span class="en">Path</span></th><th><span class="zh">用途</span><span class="en">Purpose</span></th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /api/v1/scan-agents/poll</code></td><td><span class="zh">代理取得要掃的子網路與方法</span><span class="en">Agent fetches the subnets and probes to run</span></td></tr>
+      <tr><td><code>POST /api/v1/scan-agents/report</code></td><td><span class="zh">代理回報存活 IP、MAC、主機名稱</span><span class="en">Agent reports live IPs, MACs and hostnames</span></td></tr>
+      <tr><td><code>GET /api/v1/cert-agents/check</code></td><td><span class="zh">代理比對指紋與到期日</span><span class="en">Agent compares fingerprints and expiry</span></td></tr>
+      <tr><td><code>GET /api/v1/cert-agents/bundle/raw</code></td><td><span class="zh">代理取憑證內容（多種格式）</span><span class="en">Agent fetches certificate material (several formats)</span></td></tr>
+      <tr><td><code>POST /api/v1/cert-agents/report</code></td><td><span class="zh">代理回報派送結果</span><span class="en">Agent reports deployment results</span></td></tr>
+    </tbody>
+  </table>
+  <div class="danger note">
+    <span class="zh">憑證代理的取檔端點會<b>即時解密並回傳私鑰</b>（強制 HTTPS、逐次寫稽核）。那把 <code>X-Agent-Key</code> 等同於它 scope 內所有憑證的私鑰，請當成最高敏感憑證保管。</span>
+    <span class="en">The certificate bundle endpoint <b>decrypts and returns private keys</b> (HTTPS-only, audited on every fetch). That <code>X-Agent-Key</code> is equivalent to the private keys of every certificate in its scope — treat it as a top-tier secret.</span>
+  </div>
+  <p><span class="zh">另有兩支完全免認證的健康檢查端點，給負載平衡器用：<code>GET /healthz</code>（存活）與 <code>GET /readyz</code>（就緒，DB／Redis 不通時回 <code>503</code>）。</span>
+     <span class="en">Two entirely unauthenticated health endpoints exist for load balancers: <code>GET /healthz</code> (liveness) and <code>GET /readyz</code> (readiness, returning <code>503</code> when the DB or Redis is unreachable).</span></p>
+
+  <!-- 15 ──────────────────────────────────────────── -->
+  <h2 id="limits"><span class="n">15</span><span class="zh">速率限制與 CORS</span><span class="en">Rate limits &amp; CORS</span></h2>
+  <p><span class="zh">依來源 IP 分桶限流，超過回 <code>429</code> 並帶 <code>Retry-After</code>（秒）。預設值（可在後端設定調整）：</span>
+     <span class="en">Rate limits are bucketed per source IP; exceeding one returns <code>429</code> with <code>Retry-After</code> (seconds). Defaults (configurable in the backend):</span></p>
+  <table>
+    <thead><tr><th><span class="zh">分桶</span><span class="en">Bucket</span></th><th><span class="zh">預設</span><span class="en">Default</span></th><th><span class="zh">適用</span><span class="en">Applies to</span></th></tr></thead>
+    <tbody>
+      <tr><td><code>api_token</code></td><td>600 / min</td><td><span class="zh">用 API 權杖呼叫</span><span class="en">API-token calls</span></td></tr>
+      <tr><td><code>default</code></td><td>100 / min</td><td><span class="zh">一般請求</span><span class="en">General requests</span></td></tr>
+      <tr><td><code>auth</code></td><td>10 / min</td><td><span class="zh">登入等認證端點</span><span class="en">Login and other auth endpoints</span></td></tr>
+      <tr><td><code>ai</code></td><td>20 / min</td><td><span class="zh">LLM 推論（昂貴，較嚴格）</span><span class="en">LLM inference (expensive, tighter)</span></td></tr>
+    </tbody>
+  </table>
+  <p><span class="zh"><b>CORS</b>：正式環境只允許明確列出的 HTTPS 來源（不接受 <code>*</code>、不接受 HTTP）。因此<b>瀏覽器端的跨網域呼叫預設不會通</b> —— 第三方整合請走伺服器對伺服器。</span>
+     <span class="en"><b>CORS</b>: in production only explicitly-listed HTTPS origins are allowed (no <code>*</code>, no HTTP). So <b>cross-origin browser calls will not work by default</b> — do third-party integrations server-to-server.</span></p>
+
+  <!-- 16 ──────────────────────────────────────────── -->
+  <h2 id="openapi"><span class="n">16</span>OpenAPI</h2>
+  <p><span class="zh">後端是 FastAPI，會自動產生 OpenAPI 規格。但<b>正式環境（<code>APP_ENV=production</code>）一律關閉</b> <code>/docs</code>、<code>/redoc</code> 與 <code>/openapi.json</code>，避免對外洩漏完整攻擊面。</span>
+     <span class="en">The backend is FastAPI and generates an OpenAPI spec automatically. However <code>/docs</code>, <code>/redoc</code> and <code>/openapi.json</code> are <b>disabled in production (<code>APP_ENV=production</code>)</b> so the full attack surface isn't published.</span></p>
+  <p><span class="zh">要拿完整的機器可讀規格（含每個端點的全部欄位），在非正式環境的實例上開一台即可：</span>
+     <span class="en">To get the complete machine-readable spec (every field of every endpoint), run a non-production instance:</span></p>
+  <pre><code>APP_ENV=development uvicorn app.main:app
+curl http://127.0.0.1:8000/openapi.json &gt; jt-ipam-openapi.json</code></pre>
+  <p><span class="zh">拿到 <code>openapi.json</code> 之後可以直接餵給 <code>openapi-generator</code> 產出各語言的 client。</span>
+     <span class="en">Feed that <code>openapi.json</code> to <code>openapi-generator</code> to produce a client in your language of choice.</span></p>
+
+  <footer>
+    <span class="zh">jt-ipam — 可自架、以整合為核心的 IPAM。完整原始碼與文件見 </span>
+    <span class="en">jt-ipam — a self-hosted, integration-focused IPAM. Full source &amp; docs at </span>
+    <a href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener">GitHub</a>
+  </footer>
+  </main>
+  </div>
+</div>
+
+<script>
+  // 初始語言已由 <body> 開頭的 inline script 決定（避免閃爍）；這裡只負責按鈕切換。
+  (function(){
+    var btn=document.getElementById('langBtn');
+    var KEY='jtipam-doc-lang';
+    function isEn(){ return document.body.classList.contains('lang-en'); }
+    function setBtn(){ btn.textContent = isEn() ? '繁體中文' : 'English'; }
+    setBtn();
+    btn.addEventListener('click',function(){
+      var en = !isEn();
+      document.body.classList.toggle('lang-en', en);
+      document.documentElement.setAttribute('lang', en ? 'en' : 'zh-Hant');
+      localStorage.setItem(KEY, en ? 'en' : 'zh');
+      try { var u = new URL(location.href); u.searchParams.set('lang', en ? 'en' : 'zh-TW'); history.replaceState(null, '', u); } catch (e) {}
+      setBtn();
+    });
+  })();
+</script>
+</body>
+</html>

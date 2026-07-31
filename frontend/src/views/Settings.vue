@@ -8,6 +8,7 @@
  *  - Preferences 即時儲存到 /api/v1/me/preferences，不需手動按 save
  */
 import { computed, onMounted, ref } from "vue";
+import { apiErrMsg } from "@/api/client";
 import { useI18n } from "vue-i18n";
 import {
   NCard,
@@ -22,7 +23,10 @@ import {
   NButton,
   NAlert,
   NCode,
-  NPopconfirm,
+  NModal,
+  NForm,
+  NFormItem,
+  NTag,
   useMessage,
 } from "naive-ui";
 import { NIcon } from "naive-ui";
@@ -85,6 +89,8 @@ const enrollment = ref<{ secret: string; otpauth_uri: string } | null>(null);
 const qrSvg = ref<string>("");
 const code = ref("");
 const totpBusy = ref(false);
+// 目前是否已啟用 TOTP（來自 /me；enroll confirm / disable 後會 fetchMe 更新）
+const totpEnabled = computed(() => me.value?.totp_enabled ?? false);
 
 async function startEnroll() {
   totpBusy.value = true;
@@ -120,14 +126,33 @@ async function confirmEnroll() {
   }
 }
 
+// 停用 2FA 需要升級驗證（後端強制）：本機帳號輸密碼，外部認證帳號輸當前驗證碼。
+const disableShow = ref(false);
+const disablePw = ref("");
+const disableCode = ref("");
+const isLocalAccount = computed(() => auth.me?.auth_provider === "local");
+function openDisable() {
+  disablePw.value = "";
+  disableCode.value = "";
+  disableShow.value = true;
+}
+
 async function disableTotp() {
+  const body = isLocalAccount.value
+    ? { password: disablePw.value }
+    : { code: disableCode.value };
+  if (!(isLocalAccount.value ? disablePw.value : disableCode.value)) {
+    msg.warning(t("settings.security.disable_reauth_required"));
+    return;
+  }
   totpBusy.value = true;
   try {
-    await totpApi.disable();
+    await totpApi.disable(body);
     await auth.fetchMe();
+    disableShow.value = false;
     msg.success(t("settings.security.totp_disabled_msg"));
-  } catch {
-    msg.error(t("errors.network"));
+  } catch (e) {
+    msg.error(apiErrMsg(e));
   } finally {
     totpBusy.value = false;
   }
@@ -200,19 +225,55 @@ onMounted(() => {
             <span v-html="t('settings.security.totp_intro_html')"></span>
           </n-alert>
 
-          <!-- 未在 enrollment 流程中：給「啟用 / 停用」按鈕 -->
-          <n-space v-if="!enrollment">
-            <n-button type="primary" :loading="totpBusy" @click="startEnroll">
+          <!-- 未在 enrollment 流程中：顯示目前狀態 + 對應的啟用 / 停用按鈕 -->
+          <n-space v-if="!enrollment" align="center" :size="12">
+            <span>{{ t("settings.security.totp_status") }}：</span>
+            <n-tag :type="totpEnabled ? 'success' : 'default'" size="small" round :bordered="false">
+              {{ totpEnabled ? t("settings.security.status_enabled") : t("settings.security.status_disabled") }}
+            </n-tag>
+            <n-button v-if="!totpEnabled" type="primary" :loading="totpBusy" @click="startEnroll">
               {{ t("settings.security.enable_totp") }}
             </n-button>
-            <n-popconfirm @positive-click="disableTotp">
-              <template #trigger>
-                <n-button :loading="totpBusy">
-                  {{ t("settings.security.disable_totp") }}
-                </n-button>
+            <n-button v-else type="error" :loading="totpBusy" @click="openDisable">
+              {{ t("settings.security.disable_totp") }}
+            </n-button>
+            <n-modal
+              v-model:show="disableShow"
+              preset="card"
+              style="max-width: 460px"
+              :title="t('settings.security.disable_totp')"
+            >
+              <n-alert type="warning" :show-icon="true" style="margin-bottom: 12px">
+                {{ t("settings.security.disable_confirm") }}
+              </n-alert>
+              <n-form label-placement="top">
+                <n-form-item v-if="isLocalAccount" :label="t('account.current_pw')">
+                  <n-input
+                    v-model:value="disablePw"
+                    type="password"
+                    show-password-on="click"
+                    :placeholder="t('settings.security.disable_pw_ph')"
+                    @keyup.enter="disableTotp"
+                  />
+                </n-form-item>
+                <n-form-item v-else :label="t('settings.security.disable_code_label')">
+                  <n-input
+                    v-model:value="disableCode"
+                    :maxlength="6"
+                    :placeholder="t('settings.security.disable_code_ph')"
+                    @keyup.enter="disableTotp"
+                  />
+                </n-form-item>
+              </n-form>
+              <template #footer>
+                <n-space justify="end">
+                  <n-button @click="disableShow = false">{{ t("common.cancel") }}</n-button>
+                  <n-button type="error" :loading="totpBusy" @click="disableTotp">
+                    {{ t("settings.security.disable_totp") }}
+                  </n-button>
+                </n-space>
               </template>
-              {{ t("settings.security.disable_confirm") }}
-            </n-popconfirm>
+            </n-modal>
           </n-space>
 
           <!-- enrollment 流程中：顯示 QR + 驗證碼輸入 -->

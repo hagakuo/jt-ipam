@@ -41,7 +41,7 @@ const { visibleKeys: usrVis, setVisible: usrSet, reset: usrReset } = useColumnPr
   ["username", "email", "display_name", "auth_provider", "is_active", "is_admin", "can_ssh", "last_login_at", "locked_until", "actions"],
   ["username", "email", "display_name", "auth_provider", "is_active", "is_admin", "can_ssh", "last_login_at", "locked_until", "actions"],
 );
-const usrPicker = [
+const usrPicker = computed(() => [
   { key: "username", label: t("cols.username") },
   { key: "email", label: "Email" },
   { key: "display_name", label: t("cols.display_name") },
@@ -52,7 +52,7 @@ const usrPicker = [
   { key: "last_login_at", label: t("cols.last_login") },
   { key: "locked_until", label: t("cols.locked_until") },
   { key: "actions", label: t("cols.actions") },
-];
+]);
 
 const msg = useMessage();
 
@@ -272,7 +272,7 @@ const allColumns = computed<DataTableColumns<User>>(() => autoSort([
       : "—",
   },
   {
-    title: t("common.actions"), key: "actions", className: "col-actions", width: 150,
+    title: t("common.actions"), key: "actions", className: "col-actions", width: 150, fixed: "right",
     render: (r) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
       iconAction(EditIcon, t("common.edit"), () => openEdit(r)),
       iconAction(AdminIcon, t("users.assign_perms"), () => goPerms(r)),

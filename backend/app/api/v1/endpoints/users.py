@@ -175,6 +175,22 @@ async def update_user(
     if user is None:
         raise HTTPException(404, detail="user not found")
     data = payload.model_dump(exclude_unset=True)
+
+    # 不能把最後一個「有效的 admin」降權或停用 —— 否則全系統再也沒有人能進管理區
+    # （稽核 / 使用者 / 整合 / 系統設定全鎖死），只能靠伺服器 shell 跑 CLI 救回來。
+    # DELETE 早就有這道保護，PATCH 漏了；這裡補齊，兩條路徑一致。
+    demoting = data.get("is_admin") is False or data.get("is_active") is False
+    if user.is_admin and user.is_active and demoting:
+        admin_count = (
+            await session.execute(
+                select(func.count()).select_from(User).where(
+                    User.is_admin.is_(True), User.is_active.is_(True)
+                )
+            )
+        ).scalar_one()
+        if admin_count <= 1:
+            raise HTTPException(409, detail="cannot demote or deactivate the last active admin")
+
     new_pwd = data.pop("password", None)
     unlock = data.pop("unlock", False)
     new_username = data.pop("username", None)

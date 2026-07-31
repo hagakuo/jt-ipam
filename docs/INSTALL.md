@@ -46,6 +46,8 @@ sudo systemctl reboot
 Fastest: one-shot bootstrap (auto-clones to /opt/jt-ipam, then runs the unified deploy script; install flags can be passed through):
 
 ```bash
+# prerequisite: a minimal system may not ship curl (the one-liner needs it)
+sudo apt-get update && sudo apt-get install -y curl
 curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-ipam/main/scripts/bootstrap.sh \
   | sudo bash -s -- --tls-mode nginx --public-fqdn ipam.example.com
 ```
@@ -182,15 +184,28 @@ app server is never exposed directly:
   hidden — no version or framework fingerprint.
 - Backend listens on `127.0.0.1` only; nginx is the sole public listener.
 
-> Do **not** expose uvicorn directly to the internet. `--tls-mode self-signed`/`direct` is for internal/dev,
-> or when a separate external proxy already provides these protections. If you front jt-ipam with your own
-> proxy (Mode C), replicate the same baseline — see `deploy/nginx/jt-ipam-external-proxy.conf`.
+> Do **not** expose uvicorn directly to the internet. `--tls-mode self-signed`/`direct` is for internal/dev.
 
-Verify the baseline after install:
+> ### ⚠️ Required when you put your OWN reverse proxy in front (Mode C)
+> The security headers above are applied by whatever nginx **terminates TLS at the public edge**. If you front
+> jt-ipam with a separate reverse proxy (e.g. a company edge nginx / load balancer), **that proxy MUST set the
+> security headers itself** — they will NOT automatically survive an extra hop, so the public site would ship
+> with *no* CSP / HSTS / Permissions-Policy. This is a **required** part of the deployment, not optional.
+>
+> Install the bundled hardened external-proxy config on that edge box —
+> [`deploy/nginx/jt-ipam-external-proxy.conf`](https://github.com/jasoncheng7115/jt-ipam/blob/main/deploy/nginx/jt-ipam-external-proxy.conf)
+> + [`jt-ipam-external-proxy-snippet.conf`](https://github.com/jasoncheng7115/jt-ipam/blob/main/deploy/nginx/jt-ipam-external-proxy-snippet.conf)
+> (sets HSTS preload, the tightened CSP, X-Frame-Options DENY, nosniff, Referrer-Policy, Permissions-Policy,
+> COOP + CORP, `server_tokens off`, and `proxy_hide_header`s the upstream copies so each header appears once).
+
+**Verify the headers are present *through the public URL the users actually hit*** (i.e. through your edge
+proxy, not just the local box):
 
 ```bash
 curl -skI https://ipam.example.com/ \
   | grep -iE 'strict-transport|content-security|x-frame|x-content|referrer|permissions|cross-origin|^server'
+# Must show: HSTS, Content-Security-Policy (frame-src 'self'), X-Frame-Options, X-Content-Type-Options,
+# Referrer-Policy, Permissions-Policy, COOP, CORP — each exactly ONCE, and Server: nginx (no version).
 ```
 
 ### 2.8 Optional: Docker Compose (NOT the preferred mode)
@@ -204,7 +219,16 @@ compose file brings up `postgres` (pgvector), `redis`, `backend` (FastAPI/uvicor
 loop that replaces the systemd timer), and `web` (nginx serving the frontend + reverse-proxying `/api`, with a
 self-signed HTTPS cert on first run).
 
+Prerequisites: **git** and **Docker Engine with the `docker compose` v2 plugin**. The official
+`get.docker.com` script installs both; **do not** use `apt install docker.io` — it lacks the `docker compose`
+subcommand. On non-Debian distros install git with your own package manager.
+
 ```bash
+# prerequisites: curl/git first, then Docker Engine (incl. the compose plugin)
+sudo apt-get update && sudo apt-get install -y curl git
+curl -fsSL https://get.docker.com | sudo sh
+docker compose version         # should print v2.x
+
 # clone the repo first — gen-env.sh / docker-compose.yml live inside it under deploy/docker/
 git clone https://github.com/jasoncheng7115/jt-ipam.git
 cd jt-ipam/deploy/docker
@@ -229,6 +253,24 @@ docker compose up -d --build   # build images and start the stack
 
 Database migrations run **automatically** when the backend container starts (its entrypoint runs
 `alembic upgrade head`), so there is no separate migration step.
+
+**Air-gapped / no-internet host** (build outside, run inside): build the images on an internet-connected
+host, carry them over, and load them — same flow for install and upgrade.
+
+```bash
+# on the internet-connected host: get the source, then build + pack
+git clone https://github.com/jasoncheng7115/jt-ipam.git
+cd jt-ipam/deploy/docker
+./offline-export.sh                    # -> jt-ipam-images-<sha>.tar.gz (app + postgres/redis images)
+                                       # (to upgrade later: git pull first, then re-run offline-export.sh)
+
+# copy that archive + the whole jt-ipam repo folder to the air-gapped host, then in deploy/docker/:
+./gen-env.sh                           # first install only (needs openssl, no internet)
+./offline-import.sh jt-ipam-images-<sha>.tar.gz   # docker load + up -d --no-build --pull never
+```
+
+To upgrade an air-gapped host, re-export on the online host after `git pull`, copy the newer archive over,
+and run `./offline-import.sh <newer-archive>` again (`.env` stays put).
 
 > Not bundled in the Compose setup: the plaintext Graylog DSV port 8088, and the GeoIP / OUI scheduled
 > refreshes. See [`deploy/docker/README.md`](https://github.com/jasoncheng7115/jt-ipam/blob/main/deploy/docker/README.md)
@@ -273,6 +315,16 @@ Once added, `jt-ipam-sync.timer` syncs them automatically every 5 minutes by def
 1. OPNsense → System → Access → Users → add a service user → get API key/secret
 2. jt-ipam → Firewall → Add → fill in `https://opnsense:443`, key, secret
 3. Add alias mappings (selector JSON example: `{"type":"section","section_id":"<uuid>"}`)
+
+### pfSense firewall
+
+pfSense has no built-in REST API, so install the third-party **pfSense-pkg-RESTAPI** package (pfrest.org):
+
+1. pfSense → System → Package Manager → install **pfSense-pkg-RESTAPI**
+2. System → REST API → Settings → add **API Key** to the auth methods (the default is BasicAuth only)
+3. System → REST API → Keys → create a key
+4. jt-ipam → Integrate pfSense → Add → fill in `https://pfsense`, the API key; turn off Verify TLS for a self-signed cert
+5. Syncs DHCP / ARP / aliases / rules / NAT (base path `/api/v2`, `X-API-Key` auth). pfSense has its own settings page (not shared with OPNsense)
 
 ### Wazuh
 

@@ -32,10 +32,12 @@ class LibreNMSInstanceCreate(StrictModel):
     api_url: HttpUrl
     api_token: Annotated[str, Field(min_length=8, max_length=512)]
     enabled: bool = True
+    verify_tls: bool = True   # 關閉＝接受自簽/主機名稱不符（等同 Wazuh 的 Verify TLS）
     sync_devices: bool = True
     sync_arp: bool = True
     sync_fdb: bool = True
     sync_vlans: bool = True
+    sync_links: bool = True
     use_for_status: bool = True
     auto_add_devices: bool = False
     auto_create_ips: bool = True
@@ -47,10 +49,12 @@ class LibreNMSInstanceUpdate(StrictModel):
     api_url: HttpUrl | None = None
     api_token: Annotated[str | None, Field(min_length=8, max_length=512)] = None
     enabled: bool | None = None
+    verify_tls: bool | None = None
     sync_devices: bool | None = None
     sync_arp: bool | None = None
     sync_fdb: bool | None = None
     sync_vlans: bool | None = None
+    sync_links: bool | None = None
     use_for_status: bool | None = None
     auto_add_devices: bool | None = None
     auto_create_ips: bool | None = None
@@ -63,10 +67,12 @@ class LibreNMSInstanceRead(StrictModel):
     name: str
     api_url: str
     enabled: bool
+    verify_tls: bool
     sync_devices: bool
     sync_arp: bool
     sync_fdb: bool
     sync_vlans: bool
+    sync_links: bool
     use_for_status: bool
     auto_add_devices: bool
     auto_create_ips: bool
@@ -162,10 +168,12 @@ async def create_instance(
         api_url=str(payload.api_url).rstrip("/"),
         api_token_enc=b"placeholder", api_token_nonce=b"placeholder",
         enabled=payload.enabled,
+        verify_tls=payload.verify_tls,
         sync_devices=payload.sync_devices,
         sync_arp=payload.sync_arp,
         sync_fdb=payload.sync_fdb,
         sync_vlans=payload.sync_vlans,
+        sync_links=payload.sync_links,
         scope_subnet_ids=payload.scope_subnet_ids,
         use_for_status=payload.use_for_status,
         auto_add_devices=payload.auto_add_devices,
@@ -214,7 +222,7 @@ async def update_instance(
     rotated = False
     if payload.api_url is not None:
         obj.api_url = str(payload.api_url).rstrip("/")
-    for field_name in ("enabled", "sync_devices", "sync_arp", "sync_fdb", "sync_vlans",
+    for field_name in ("enabled", "verify_tls", "sync_devices", "sync_arp", "sync_fdb", "sync_vlans", "sync_links",
                        "use_for_status", "auto_add_devices", "auto_create_ips",
                        "sync_interval_seconds", "scope_subnet_ids"):
         v = getattr(payload, field_name)
@@ -502,4 +510,51 @@ async def trace_ip(
             }
             if fdb else None
         ),
+    }
+
+
+@router.get("/links")
+async def list_links(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    instance_id: uuid.UUID | None = Query(None),
+    page: int = Query(1, ge=1, le=10_000),
+    page_size: int = Query(100, ge=1, le=500),
+) -> dict[str, Any]:
+    """LLDP / CDP 探到的鄰居連線。
+
+    與 FDB 推導的差別：這是對端自己宣告的，所以交換器之間的 trunk 也正確 ——
+    那正是 FDB 啟發法（該埠 MAC 數最少者為 access port）最不準的地方。
+    `remote_device_id` 為空表示對端沒有被 LibreNMS 監控，只有 LLDP 通報字串。
+    """
+    from app.models.librenms import LibreNMSLink
+
+    stmt = select(LibreNMSLink)
+    cnt = select(func.count()).select_from(LibreNMSLink)
+    if instance_id is not None:
+        stmt = stmt.where(LibreNMSLink.instance_id == instance_id)
+        cnt = cnt.where(LibreNMSLink.instance_id == instance_id)
+    rows = list((await session.execute(
+        stmt.order_by(LibreNMSLink.local_device_id, LibreNMSLink.local_port_name)
+        .offset((page - 1) * page_size).limit(page_size)
+    )).scalars().all())
+    return {
+        "items": [
+            {
+                "id": str(r.id),
+                "instance_id": str(r.instance_id),
+                "protocol": r.protocol,
+                "active": r.active,
+                "local_device_id": r.local_device_id,
+                "local_port": r.local_port_name,
+                "remote_device_id": r.remote_device_id,
+                "remote_hostname": r.remote_hostname,
+                "remote_port": r.remote_port,
+                "remote_platform": r.remote_platform,
+                "last_seen_at": r.last_seen_at,
+            }
+            for r in rows
+        ],
+        "total": int(await session.scalar(cnt) or 0),
+        "page": page,
+        "page_size": page_size,
     }

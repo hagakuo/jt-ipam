@@ -19,7 +19,11 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.phpipam.helpers import phpipam_current_user, phpipam_response
+from app.api.phpipam.helpers import (
+    phpipam_current_user,
+    phpipam_current_user_selfservice,
+    phpipam_response,
+)
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.security import generate_api_token
@@ -119,7 +123,8 @@ async def logout(
     app_id: str,
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
-    user: Annotated[User, Depends(phpipam_current_user)],
+    # 撤銷自己的 token 是降權，唯讀 token 也該做得到 → 不做 scope 檢驗
+    user: Annotated[User, Depends(phpipam_current_user_selfservice)],
 ) -> dict[str, Any]:
     started = time.perf_counter()
     raw = request.headers.get("token") or request.headers.get("phpipam-token")

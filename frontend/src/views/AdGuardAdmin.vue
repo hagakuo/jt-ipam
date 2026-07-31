@@ -19,6 +19,7 @@ import {
 import { autoSort } from "@/composables/useTableSort";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
+import { apiErrMsg } from "@/api/client";
 const { t } = useI18n();
 
 const { visibleKeys: agVis, setVisible: agSet, reset: agReset } = useColumnPrefs(
@@ -26,7 +27,7 @@ const { visibleKeys: agVis, setVisible: agSet, reset: agReset } = useColumnPrefs
   ["name", "api_url", "enabled", "sync_flags", "last_sync_at", "last_error", "actions"],
   ["name", "api_url", "enabled", "sync_flags", "last_sync_at", "last_error", "actions"],
 );
-const agPicker = [
+const agPicker = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "api_url", label: "API URL" },
   { key: "enabled", label: t("cols.status") },
@@ -34,7 +35,7 @@ const agPicker = [
   { key: "last_sync_at", label: t("cols.last_sync") },
   { key: "last_error", label: t("cols.last_error") },
   { key: "actions", label: t("cols.actions") },
-];
+]);
 
 const msg = useMessage();
 const rows = ref<AdGuardInstance[]>([]);
@@ -65,7 +66,7 @@ async function refresh() {
   try {
     const r = await listAdGuard();
     rows.value = r.items;
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 

@@ -44,7 +44,7 @@ export interface SshTicket {
   ttl: number;
 }
 
-// 換發短期一次性 ticket（之後用它開 WebSocket）。注意帶 /api/v1 前綴。
+// 換發短期一次性 ticket（之後用它開 WebSocket）。注意帶 /api/v1 首碼。
 export async function requestSshTicket(addressId: string): Promise<SshTicket> {
   const { data } = await apiClient.post<SshTicket>(
     `/api/v1/addresses/${addressId}/ssh/ticket`,

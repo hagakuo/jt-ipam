@@ -58,6 +58,7 @@ from app.services.permission import (
     filter_visible,
     get_object_permission,
     has_permission,
+    visible_ids,
 )
 
 router = APIRouter(prefix="/addresses", tags=["addresses"])
@@ -79,6 +80,49 @@ async def _require_subnet_perm(
         # A01：不洩漏存在性
         raise HTTPException(status_code=404, detail="Subnet not found")
     return subnet
+
+
+async def _enrich_special_flags(
+    session: AsyncSession, items: list[Any], rows: list[Any]
+) -> None:
+    """批次推導清單視覺化用的特殊角色旗標：閘道 / 在 DHCP 範圍 / DHCP 伺服器（對應防火牆 IP）。
+    來源資料（防火牆 / DHCP pool）本身受權限管控，但這裡只回布林旗標，故所有可見此 IP 的使用者都看得到標記。
+    """
+    import ipaddress as _ip
+    from urllib.parse import urlparse
+
+    from app.models.dhcp import DHCPPoolRange
+    from app.models.firewall import OPNsenseFirewall
+    from app.models.pfsense import PfSenseFirewall
+
+    if not rows:
+        return
+    subnet_ids = list({r.subnet_id for r in rows})
+    gw_map = dict((await session.execute(
+        select(Subnet.id, Subnet.gateway).where(Subnet.id.in_(subnet_ids))
+    )).all())
+    ranges: list[tuple[int, int]] = []
+    for s, e in (await session.execute(select(DHCPPoolRange.start_ip, DHCPPoolRange.end_ip))).all():
+        try:
+            ranges.append((int(_ip.ip_address(str(s))), int(_ip.ip_address(str(e)))))
+        except ValueError:
+            continue
+    fw_ips: set[str] = set()
+    for model in (OPNsenseFirewall, PfSenseFirewall):
+        for (url,) in (await session.execute(select(model.api_url))).all():
+            h = urlparse(url).hostname if url else None
+            if h:
+                fw_ips.add(h)
+    for it, r in zip(items, rows, strict=False):
+        ipstr = str(r.ip)
+        gw = gw_map.get(r.subnet_id)
+        it.is_gateway = bool(gw) and ipstr == str(gw)
+        it.dhcp_server_auto = ipstr in fw_ips
+        try:
+            n = int(_ip.ip_address(ipstr))
+            it.in_dhcp_range = any(a <= n <= b for a, b in ranges)
+        except ValueError:
+            it.in_dhcp_range = False
 
 
 @router.get("", response_model=Paginated[IPAddressRead])
@@ -122,6 +166,17 @@ async def list_addresses(
         active_subnets = select(Subnet.id).where(Subnet.archived_at.is_(None))
         stmt = stmt.where(IPAddress.subnet_id.in_(active_subnets))
         count_stmt = count_stmt.where(IPAddress.subnet_id.in_(active_subnets))
+        # A01：可見性要在查詢階段就套進去（含 count_stmt），不能只在分頁後篩 rows。
+        # 只篩 rows 的話 total 會是「全系統未歸檔子網路的 IP 總數」→ 受限帳號看到遠大於
+        # 自己可見的筆數（洩漏規模），而且每頁不足 page_size、後面幾頁可能整頁空白。
+        vis_subnets = await visible_ids(session, user=user, object_type="subnet", required="read")
+        if vis_subnets is not None:      # None＝全部可見（admin 或萬用授權）
+            if not vis_subnets:          # 空 set＝沒有任何可見子網路
+                return Paginated[IPAddressRead](
+                    items=[], total=0, page=page, page_size=page_size,
+                )
+            stmt = stmt.where(IPAddress.subnet_id.in_(vis_subnets))
+            count_stmt = count_stmt.where(IPAddress.subnet_id.in_(vis_subnets))
 
     if q:
         if exact:
@@ -202,6 +257,8 @@ async def list_addresses(
         it.subnet_scan_enabled = scan_map.get(r.subnet_id)
         if r.device_id:
             it.device_name = dev_map.get(r.device_id)
+    # 特殊角色旗標（閘道 / DHCP 範圍 / DHCP 伺服器）→ 清單視覺化
+    await _enrich_special_flags(session, items, rows)
     total = int(await session.scalar(count_stmt) or 0)
     return Paginated[IPAddressRead](items=items, total=total, page=page, page_size=page_size)
 
@@ -227,6 +284,18 @@ async def export_csv(
             "Cache-Control": "no-store",
         },
     )
+
+
+async def _fill_pve_console(session: AsyncSession, obj: IPAddress, out: Any, user: Any) -> None:
+    """填 out.novnc_available + out.pve（此 IP 對應的 Proxmox VE VM/CT；非 PVE 則 pve=None）。"""
+    from app.services.permission import can_use_bmc, can_use_novnc
+    from app.services.pve_console import resolve_pve_target
+    out.novnc_available = await can_use_novnc(session, user=user, ip=obj)
+    out.bmc_available = await can_use_bmc(session, user=user, ip=obj)
+    tgt = await resolve_pve_target(session, obj)
+    if tgt is not None:
+        from app.schemas.address import PveConsoleTarget
+        out.pve = PveConsoleTarget(kind=tgt.kind, node=tgt.node, vmid=tgt.vmid, cluster=tgt.cluster_name)
 
 
 async def _effective_probes_for(session: AsyncSession, obj: IPAddress) -> list[str]:
@@ -262,6 +331,7 @@ async def get_address(
     out.ssh_available = await can_use_ssh(session, user=user, ip=obj)
     out.rdp_available = await can_use_rdp(session, user=user, ip=obj)
     out.vnc_available = await can_use_vnc(session, user=user, ip=obj)
+    await _fill_pve_console(session, obj, out, user)
     # 算出此 IP 實際會被執行的探測（子網路要跑 − IP 略過 ∩ 代理能力）給詳情頁顯示
     out.effective_probes = await _effective_probes_for(session, obj)
     # OS 依來源優先序（scanner/librenms/wazuh）解析有效值 + 來源
@@ -303,12 +373,16 @@ async def get_address_relations(
     async def _device_tail(dev: Device, *, sub: str | None = None, node_type: str = "device") -> None:
         """把 device → rack → 機房 接到鏈尾（node_type=vmnode 時該裝置代表 PVE 節點）。"""
         chain.append({"type": node_type, "id": str(dev.id), "label": dev.name, "sub": sub})
+        # 地點優先用裝置自身的 location_id；裝置沒設但有掛機櫃時，繼承機櫃所在地點
+        loc_id = dev.location_id
         if dev.rack_id:
             rk = await session.get(Rack, dev.rack_id)
             if rk is not None:
                 chain.append({"type": "rack", "id": str(rk.id), "label": rk.name})
-        if dev.location_id:
-            loc = await session.get(Location, dev.location_id)
+                if loc_id is None:
+                    loc_id = rk.location_id
+        if loc_id:
+            loc = await session.get(Location, loc_id)
             if loc is not None:
                 chain.append({"type": "location", "id": str(loc.id), "label": loc.name})
 
@@ -706,6 +780,7 @@ async def update_address(
     out.ssh_available = await can_use_ssh(session, user=user, ip=obj)
     out.rdp_available = await can_use_rdp(session, user=user, ip=obj)
     out.vnc_available = await can_use_vnc(session, user=user, ip=obj)
+    await _fill_pve_console(session, obj, out, user)
     return out
 
 
@@ -881,6 +956,7 @@ async def notify_stale(
     )
     title = f"失聯 IP 提醒：{cidr}"
     body = f"子網路 {cidr} 有 {n} 個 IP 失聯超過 {payload.days} 天（由 {user.username} 提出）。"
+    _gp = {"cidr": cidr, "n": n, "days": payload.days, "user": user.username}
     for admin in admins:
         await push_notification(
             session,
@@ -891,7 +967,12 @@ async def notify_stale(
             link=f"/subnets/{payload.subnet_id}",
             object_type="subnet",
             object_id=payload.subnet_id,
+            title_key="notif.ghost_reminder",
+            body_key="notif.ghost_reminder_body",
+            params=_gp,
         )
+    from app.services.notify_channels import broadcast_channels
+    await broadcast_channels(session, subject=title, text=body)
     await session.commit()
     return {"notified_admins": len(admins), "ip_count": n}
 
@@ -979,3 +1060,23 @@ async def import_csv(
         runner=_runner,
     )
     return {"task_id": str(task.id), "status": task.status, "dry_run": False}
+
+
+@router.get("/{address_id}/uptime")
+async def get_address_uptime(
+    address_id: uuid.UUID,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    days: int = Query(90, ge=7, le=365),
+) -> dict[str, Any]:
+    """單一 IP 的每日存活狀態（status page 式長條圖用）。
+
+    重建規則與「沒資料不得算成正常」等原則見 `app/services/uptime.py`。
+    """
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "read")
+
+    from app.services.uptime import uptime_for_ips
+    return await uptime_for_ips(session, [address_id], days=days)

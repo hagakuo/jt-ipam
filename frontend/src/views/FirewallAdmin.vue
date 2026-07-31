@@ -34,43 +34,42 @@ const route = useRoute();
 const adminMode = computed(() => route.name === "firewall_admin");
 
 const fwPrefs = useColumnPrefs("opnsense_fws",
-  ["name", "api_url", "enabled", "verify_tls", "sync_dhcp", "sync_arp", "sync_openvpn", "sync_rules", "sync_nat", "last_sync_at", "actions"],
-  ["name", "api_url", "enabled", "verify_tls", "sync_dhcp", "sync_arp", "sync_openvpn", "sync_rules", "sync_nat", "last_sync_at", "actions"]);
-const fwPicker = [
+  ["name", "api_url", "verify_tls", "last_sync_at", "last_error", "actions"],
+  ["name", "api_url", "verify_tls", "last_sync_at", "actions"]);
+const fwPicker = computed(() => [
   { key: "name", label: t("cols.name") }, { key: "api_url", label: "API URL" },
-  { key: "enabled", label: t("cols.status") }, { key: "verify_tls", label: "Verify TLS" },
-  { key: "sync_dhcp", label: "DHCP" }, { key: "sync_arp", label: "ARP" },
-  { key: "sync_openvpn", label: "OpenVPN" }, { key: "sync_rules", label: "Rules" },
-  { key: "sync_nat", label: "NAT" }, { key: "last_sync_at", label: t("cols.last_sync") },
+  { key: "verify_tls", label: "TLS" },
+  { key: "last_sync_at", label: t("cols.last_sync") },
+  { key: "last_error", label: t("cols.last_error") },
   { key: "actions", label: t("cols.actions") },
-];
+]);
 const mapPrefs = useColumnPrefs("opnsense_maps",
   ["firewall_id", "object_type", "object_id", "alias_name", "mode", "last_synced_at", "actions"],
   ["firewall_id", "object_type", "object_id", "alias_name", "mode", "last_synced_at", "actions"]);
-const mapPicker = [
+const mapPicker = computed(() => [
   { key: "firewall_id", label: "Firewall" }, { key: "object_type", label: t("cols.object_type") },
   { key: "object_id", label: t("cols.object_id") }, { key: "alias_name", label: t("cols.alias_name") },
   { key: "mode", label: t("cols.mode") }, { key: "last_synced_at", label: t("cols.last_sync") },
   { key: "actions", label: t("cols.actions") },
-];
+]);
 const rulePrefs = useColumnPrefs("opnsense_rules",
   ["enabled", "sequence", "action", "interface", "direction", "protocol", "source_net", "destination_net", "description"],
   ["enabled", "sequence", "action", "interface", "direction", "protocol", "source_net", "destination_net", "description"]);
-const rulePicker = [
+const rulePicker = computed(() => [
   { key: "enabled", label: t("cols.enabled") }, { key: "sequence", label: t("cols.order") },
   { key: "action", label: t("cols.action") }, { key: "interface", label: t("cols.iface") },
   { key: "direction", label: t("cols.direction") }, { key: "protocol", label: t("cols.proto") },
   { key: "source_net", label: t("cols.source") }, { key: "destination_net", label: t("cols.destination") },
   { key: "description", label: t("cols.description") },
-];
+]);
 const aliasPrefs = useColumnPrefs("opnsense_aliases",
   ["name", "alias_type", "enabled", "member_count", "content", "description"],
   ["name", "alias_type", "enabled", "member_count", "content", "description"]);
-const aliasPicker = [
+const aliasPicker = computed(() => [
   { key: "name", label: t("common.name") }, { key: "alias_type", label: t("cols.type") },
   { key: "enabled", label: t("cols.enabled") }, { key: "member_count", label: t("firewall_admin.members") },
   { key: "content", label: t("firewall_admin.content") }, { key: "description", label: t("common.description") },
-];
+]);
 
 const msg = useMessage();
 const tab = ref<"firewalls" | "mappings" | "rules" | "aliases">("firewalls");
@@ -277,6 +276,7 @@ const newMap = ref({
 import { listSections } from "@/api/sections";
 import { listSubnets } from "@/api/subnets";
 import { useTablePagination } from "@/composables/useTablePagination";
+import { apiErrMsg } from "@/api/client";
 const pg = useTablePagination();
 const sectionOpts = ref<{ label: string; value: string }[]>([]);
 const subnetOpts = ref<{ label: string; value: string }[]>([]);
@@ -323,7 +323,7 @@ async function refresh() {
       if (!aliasesFw.value) { aliasesFw.value = f.items[0].id; void loadAliases(); }
       if (!rulesFw.value) { rulesFw.value = f.items[0].id; void loadRules(); }
     }
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 function scopePayload() {

@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser, require_admin
+from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.models.pfsense import PfSenseFirewall, PfSenseSyncedAlias
@@ -21,6 +21,13 @@ from app.services import pfsense as svc
 
 router = APIRouter(
     prefix="/pfsense", tags=["pfsense"], dependencies=[Depends(require_admin)],
+)
+# 已同步的規則／別名屬「全域基礎設施資料」→ 唯讀檢視給具全域讀取權者，
+# 與 FortiGate 一致（唯讀檢視頁「防火牆 (pfSense)」掛在「進階」而非管理區）。
+# 實例清單也在這裡：檢視頁要用它列出可選的防火牆；PfSenseRead 不含 API key
+# （只有 has_key 布林旗標）。異動與「即時連到設備抓 NAT」仍限 admin。
+view_router = APIRouter(
+    prefix="/pfsense", tags=["pfsense"], dependencies=[Depends(require_global_read)],
 )
 
 
@@ -33,6 +40,7 @@ class PfSenseRead(StrictModel):
     has_key: bool = False
     sync_interval_seconds: int
     sync_dhcp: bool
+    sync_dhcp_ranges: bool = False
     sync_arp: bool
     sync_aliases: bool
     sync_rules: bool
@@ -55,6 +63,7 @@ class PfSenseCreate(StrictModel):
     enabled: bool = True
     sync_interval_seconds: int = 300
     sync_dhcp: bool = False
+    sync_dhcp_ranges: bool = False
     sync_arp: bool = True
     sync_aliases: bool = False
     sync_rules: bool = False
@@ -71,6 +80,7 @@ class PfSenseUpdate(StrictModel):
     enabled: bool | None = None
     sync_interval_seconds: int | None = None
     sync_dhcp: bool | None = None
+    sync_dhcp_ranges: bool | None = None
     sync_arp: bool | None = None
     sync_aliases: bool | None = None
     sync_rules: bool | None = None
@@ -94,7 +104,7 @@ async def _get_or_404(session: AsyncSession, fw_id: uuid.UUID) -> PfSenseFirewal
     return fw
 
 
-@router.get("")
+@view_router.get("")
 async def list_firewalls(
     session: Annotated[AsyncSession, Depends(get_session)],
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
@@ -123,7 +133,8 @@ async def create_firewall(
         api_key_enc=enc, api_key_nonce=nonce,
         verify_tls=payload.verify_tls, enabled=payload.enabled,
         sync_interval_seconds=payload.sync_interval_seconds,
-        sync_dhcp=payload.sync_dhcp, sync_arp=payload.sync_arp, sync_aliases=payload.sync_aliases,
+        sync_dhcp=payload.sync_dhcp, sync_dhcp_ranges=payload.sync_dhcp_ranges,
+        sync_arp=payload.sync_arp, sync_aliases=payload.sync_aliases,
         scope_subnet_ids=payload.scope_subnet_ids, description=payload.description,
     )
     session.add(fw)
@@ -183,6 +194,13 @@ async def delete_firewall(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> None:
     fw = await _get_or_404(session, fw_id)
+    # dhcp_pool_ranges 已無外鍵 cascade → 自行清掉這台寫的列（不碰其他來源）
+    from sqlalchemy import delete as _delete
+
+    from app.models.dhcp import DHCPPoolRange
+    await session.execute(_delete(DHCPPoolRange).where(
+        DHCPPoolRange.source_type == "pfsense", DHCPPoolRange.source_id == fw_id,
+    ))
     await session.delete(fw)
     await append_audit(
         session, actor_user_id=str(user.id),
@@ -223,7 +241,7 @@ async def sync_firewall(
     return {"ok": True, "counts": counts}
 
 
-@router.get("/{fw_id}/rules")
+@view_router.get("/{fw_id}/rules")
 async def list_rules(
     fw_id: uuid.UUID, session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
@@ -244,7 +262,7 @@ async def get_nat(
         raise HTTPException(502, detail=str(exc)) from exc
 
 
-@router.get("/{fw_id}/aliases")
+@view_router.get("/{fw_id}/aliases")
 async def list_aliases(
     fw_id: uuid.UUID, session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:

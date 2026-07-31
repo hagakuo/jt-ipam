@@ -11,6 +11,7 @@ import {
   deleteDevicePowerPort, type DevicePowerPort,
 } from "@/api/phase3";
 import { PlusIcon, EditIcon, DeleteIcon, SaveIcon, CancelIcon } from "@/icons";
+import { apiErrMsg } from "@/api/client";
 
 const props = defineProps<{ deviceId: string; deviceName: string; admin: boolean }>();
 const { t } = useI18n();
@@ -26,7 +27,7 @@ async function refresh() {
   loading.value = true;
   try {
     ports.value = await listDevicePowerPorts(props.deviceId);
-  } catch { msg.error(t("errors.network")); }
+  } catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 async function loadOutlets() {

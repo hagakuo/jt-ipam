@@ -18,6 +18,7 @@ import {
   listSshCredentials, createSshCredential, deleteSshCredential, type SshCredential,
 } from "@/api/ssh";
 import { TerminalIcon, CancelIcon, RefreshIcon, DeleteIcon } from "@/icons";
+import ConsoleDisconnectedOverlay from "@/components/ConsoleDisconnectedOverlay.vue";
 
 const props = withDefaults(defineProps<{
   addressId: string;
@@ -110,15 +111,25 @@ function disposeTerm() {
   term?.dispose(); term = null; fit = null;
 }
 
+function onVisibility() {
+  // 分頁切回前景：重置計時窗，避免背景期間 lastRecv 變舊 → 一回前景就被 watchdog 誤判斷線
+  if (!document.hidden) lastRecv = Date.now();
+}
 function stopHeartbeat() {
   if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+  document.removeEventListener("visibilitychange", onVisibility);
 }
 function startHeartbeat() {
   stopHeartbeat();
   lastRecv = Date.now();
+  document.addEventListener("visibilitychange", onVisibility);
   pingTimer = setInterval(() => wsSend({ type: "ping" }), PING_MS);
   watchdogTimer = setInterval(() => {
+    // 背景分頁：瀏覽器會節流 setInterval、應用層 heartbeat 不準 → 不判定斷線。
+    // 連線由 WS 傳輸層維持（uvicorn ws-ping/pong，背景分頁也會回 protocol pong），
+    // 真正斷線走 ws.onclose。使用者切走再切回不會被誤斷。
+    if (document.hidden) return;
     if (phase.value === "connected" && Date.now() - lastRecv > DEAD_MS) {
       // 45s 沒收到任何訊息（含 pong）→ 視為斷線（靜默斷線：拔線/睡眠/對端斷電）
       term?.write(`\r\n\x1b[33m${t("ssh.disconnected")}\x1b[0m\r\n`);
@@ -167,6 +178,11 @@ async function connect() {
         passphrase: form.auth === "key" ? form.passphrase : undefined,
       });
       credId = saved.id;
+      // 記進本地狀態 → 同一分頁內「重新連線」直接沿用剛存的憑證，不再跳帳密輸入。
+      // （原本只在重新整理頁面時 loadCreds 才撿得到，故同頁重連仍要求輸入帳密。）
+      selectedCredId.value = saved.id;
+      remember.value = false;
+      void loadCreds();
     } catch (e: any) {
       phase.value = "error";
       errorMsg.value = e?.response?.data?.detail || t("ssh.err_save_cred");
@@ -386,7 +402,10 @@ onBeforeUnmount(teardown);
       <n-alert v-if="phase === 'error'" type="error" :show-icon="true" style="margin:8px 0">
         {{ errorMsg }}
       </n-alert>
-      <div ref="termEl" class="ssh-term" :class="{ 'ssh-full': fullHeight }" />
+      <div class="ssh-disp" :class="{ 'ssh-full': fullHeight }">
+        <div ref="termEl" class="ssh-term" :class="{ 'ssh-full': fullHeight, 'term-dim': phase === 'closed' }" />
+        <ConsoleDisconnectedOverlay :show="phase === 'closed' || phase === 'error'" :error="phase === 'error'" />
+      </div>
     </div>
 
     <!-- host key TOFU 確認 -->
@@ -412,6 +431,8 @@ onBeforeUnmount(teardown);
 .ssh-form { max-width: 560px; }
 .ssh-title { font-weight: 600; display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
 .ssh-term-area { display: flex; flex-direction: column; }
+.ssh-disp { position: relative; }
+.ssh-disp.ssh-full { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .ssh-term-area.ssh-full { flex: 1; min-height: 0; }
 .ssh-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 2px; gap: 8px; }
 .ssh-status { font-size: 13px; display: inline-flex; align-items: center; gap: 7px;
@@ -445,4 +466,6 @@ onBeforeUnmount(teardown);
 .conn-proto--ssh { color: #18a058; background: rgba(24,160,88,.16); }
 .ssh-fp { display: block; margin: 8px 0; padding: 6px 8px; background: rgba(128,128,128,.12);
   border-radius: 4px; word-break: break-all; font-size: 13px; }
+/* 已斷線：整個畫面反灰並停用互動，讓使用者一眼看出已中斷 */
+.term-dim { filter: grayscale(1) brightness(.45); pointer-events: none; transition: filter .25s; }
 </style>

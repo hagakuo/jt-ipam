@@ -66,7 +66,7 @@ function pickerItems(key: CatKey) {
 function pretty(k: string, val: any): string {
   if (val == null || val === "") return "";
   if (k.includes("device_id")) return String(val).slice(0, 8);
-  if (k.includes("last_seen") || k.includes("_at") || k.includes("time")) return String(val).replace("T", " ").slice(0, 16);
+  if (k.includes("last_seen") || k.includes("_at") || k.includes("time")) return fmtDateTime(String(val));   // 轉本地時區
   return String(val);
 }
 function objLine(o: Record<string, any>): string {

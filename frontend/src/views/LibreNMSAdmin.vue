@@ -29,7 +29,7 @@ const { visibleKeys: lnVis, setVisible: lnSet, reset: lnReset } = useColumnPrefs
   ["name", "api_url", "enabled", "sync_interval_seconds", "last_sync_at", "last_error", "actions"],
   ["name", "api_url", "enabled", "sync_interval_seconds", "last_sync_at", "last_error", "actions"],
 );
-const lnPicker = [
+const lnPicker = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "api_url", label: "API URL" },
   { key: "enabled", label: t("cols.status") },
@@ -37,11 +37,12 @@ const lnPicker = [
   { key: "last_sync_at", label: t("cols.last_sync") },
   { key: "last_error", label: t("cols.last_error") },
   { key: "actions", label: t("cols.actions") },
-];
+]);
 
 const msg = useMessage();
 const rows = ref<LibreNMSInstance[]>([]);
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
+import { apiErrMsg } from "@/api/client";
 const { query: filterQ, filtered: filteredRows } = useTableQuickFilter(rows);
 const loading = ref(false);
 const show = ref(false);
@@ -49,8 +50,9 @@ const editing = ref<LibreNMSInstance | null>(null);
 const form = ref({
   name: "", api_url: "", api_token: "",
   enabled: true,
-  sync_devices: true, sync_arp: true, sync_fdb: true, sync_vlans: true,
-  use_for_status: true, auto_add_devices: false, auto_create_ips: true,
+  verify_tls: true,
+  sync_devices: true, sync_arp: true, sync_fdb: true, sync_vlans: true, sync_links: true,
+  use_for_status: true, auto_add_devices: true, auto_create_ips: true,
   sync_interval_seconds: 300,
   scope_subnet_ids: [] as string[],
 });
@@ -66,7 +68,7 @@ async function loadSubnetOptions() {
 async function refresh() {
   loading.value = true;
   try { rows.value = (await listLibreNMS()).items; }
-  catch { msg.error(t("errors.network")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 function openCreate() {
@@ -74,8 +76,9 @@ function openCreate() {
   form.value = {
     name: "", api_url: "", api_token: "",
     enabled: true,
-    sync_devices: true, sync_arp: true, sync_fdb: true, sync_vlans: true,
-    use_for_status: true, auto_add_devices: false, auto_create_ips: true,
+    verify_tls: true,
+    sync_devices: true, sync_arp: true, sync_fdb: true, sync_vlans: true, sync_links: true,
+    use_for_status: true, auto_add_devices: true, auto_create_ips: true,
     sync_interval_seconds: 300, scope_subnet_ids: [],
   };
   show.value = true;
@@ -87,10 +90,12 @@ function openEdit(r: LibreNMSInstance) {
     api_url: r.api_url,
     api_token: "",  // 留空表示不變
     enabled: r.enabled,
+    verify_tls: r.verify_tls,
     sync_devices: r.sync_devices,
     sync_arp: r.sync_arp,
     sync_fdb: r.sync_fdb,
     sync_vlans: r.sync_vlans,
+    sync_links: r.sync_links ?? true,
     use_for_status: r.use_for_status,
     auto_add_devices: r.auto_add_devices,
     auto_create_ips: r.auto_create_ips,
@@ -112,10 +117,12 @@ async function submit() {
       const payload: Record<string, unknown> = {
         api_url: form.value.api_url,
         enabled: form.value.enabled,
+        verify_tls: form.value.verify_tls,
         sync_devices: form.value.sync_devices,
         sync_arp: form.value.sync_arp,
         sync_fdb: form.value.sync_fdb,
         sync_vlans: form.value.sync_vlans,
+        sync_links: form.value.sync_links,
         use_for_status: form.value.use_for_status,
         auto_add_devices: form.value.auto_add_devices,
         auto_create_ips: form.value.auto_create_ips,
@@ -258,11 +265,22 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         <n-form-item :label="t('common.enabled')">
           <n-switch v-model:value="form.enabled" />
         </n-form-item>
+        <n-form-item :label="t('librenms_admin.verify_tls')">
+          <n-space vertical :size="2" style="width:100%">
+            <n-switch v-model:value="form.verify_tls" />
+            <span class="hint">{{ t('librenms_admin.verify_tls_hint') }}</span>
+          </n-space>
+        </n-form-item>
         <div class="sync-toggles">
           <div class="row"><span>{{ t('librenms_admin.sync_devices') }}</span><n-switch size="small" v-model:value="form.sync_devices" /></div>
           <div class="row"><span>{{ t('librenms_admin.sync_arp') }}</span><n-switch size="small" v-model:value="form.sync_arp" /></div>
           <div class="row"><span>{{ t('librenms_admin.sync_fdb') }}</span><n-switch size="small" v-model:value="form.sync_fdb" /></div>
           <div class="row"><span>{{ t('librenms_admin.sync_vlans') }}</span><n-switch size="small" v-model:value="form.sync_vlans" /></div>
+          <div class="row">
+            <span>{{ t('librenms_admin.sync_links') }}</span>
+            <n-switch size="small" v-model:value="form.sync_links" />
+          </div>
+          <p class="hint">{{ t("librenms_admin.sync_links_hint") }}</p>
           <div class="row"><span>{{ t('librenms_admin.use_for_status') }}</span><n-switch size="small" v-model:value="form.use_for_status" /></div>
           <div class="row"><span>{{ t('librenms_admin.auto_add_devices') }}</span><n-switch size="small" v-model:value="form.auto_add_devices" /></div>
           <div class="row"><span>{{ t('librenms_admin.auto_create_ips') }}</span><n-switch size="small" v-model:value="form.auto_create_ips" /></div>

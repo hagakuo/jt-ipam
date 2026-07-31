@@ -111,11 +111,13 @@ const firewalls = ref<OPNsenseFirewall[]>([]);
 const sourceKindFilter = ref<string[]>([]);
 const sourceFwFilter = ref<string | null>(null);
 
-const sourceKindOpts = [
+const sourceKindOpts = computed(() => [
   { label: "OPNsense", value: "opnsense" },
+  { label: "pfSense",  value: "pfsense" },
+  { label: "FortiGate", value: "fortigate" },
   { label: "phpIPAM",  value: "phpipam" },
   { label: t("cols.manual"),     value: "manual" },
-];
+]);
 const firewallOpts = computed(() =>
   firewalls.value.map((f) => ({ label: f.name, value: f.id })),
 );
@@ -258,11 +260,12 @@ async function refresh() {
         : undefined,
     })).items;
   }
-  catch { msg.error(t("errors.network")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
   finally { loading.value = false; }
 }
 
 import { watch } from "vue";
+import { apiErrMsg } from "@/api/client";
 watch([filterDeviceId, sourceKindFilter, sourceFwFilter], () => { void refresh(); });
 function openCreate() {
   viewOnly.value = false;
@@ -364,6 +367,8 @@ const allCols = computed<DataTableColumns<NAT>>(() => autoSort([
     render: (r) => {
       if (!r.source_label) return "—";
       const type = r.source_kind === "opnsense" ? "info"
+                 : r.source_kind === "pfsense"  ? "success"
+                 : r.source_kind === "fortigate" ? "error"
                  : r.source_kind === "phpipam"  ? "warning"
                  : "default";
       return h(NTag, { size: "small", type, bordered: false }, () => r.source_label);

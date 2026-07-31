@@ -8,14 +8,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "v
 import { useI18n } from "vue-i18n";
 import {
   NForm, NFormItem, NInput, NButton, NSpace, NAlert, NIcon, NSpin, NTag,
-  NSelect, NSwitch, NPopconfirm, NCard, NDropdown, useMessage,
+  NSelect, NSwitch, NPopconfirm, NCard, NDropdown, NTooltip, useMessage,
 } from "naive-ui";
 import {
   requestRdpTicket, buildRdpWsUrl,
   listRdpCredentials, createRdpCredential, deleteRdpCredential, type RdpCredential,
 } from "@/api/rdp";
 import { buildSendKeysMenu, makeSendCombo } from "@/composables/useSendKeys";
-import { DisplayIcon, CancelIcon, RefreshIcon, DeleteIcon, ChevronDownIcon, ExpandIcon, KeyIcon } from "@/icons";
+import { DisplayIcon, CancelIcon, RefreshIcon, DeleteIcon, ChevronDownIcon, ExpandIcon, KeyIcon, PasteIcon } from "@/icons";
+import ConsoleDisconnectedOverlay from "@/components/ConsoleDisconnectedOverlay.vue";
 
 const props = withDefaults(defineProps<{
   addressId: string;
@@ -127,20 +128,40 @@ function wsSend(obj: Record<string, unknown>) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
+// 控制端貼上文字到被控端（需管理者於系統設定開啟；單向、純文字）
+const clipboardPaste = ref(false);
+async function pasteToRemote() {
+  let text = "";
+  try { text = await navigator.clipboard.readText(); }
+  catch { msg.error(t("rdp.paste_denied")); return; }
+  if (!text) { msg.warning(t("rdp.paste_empty")); return; }
+  wsSend({ type: "clip", text });   // 後端回 clip_ack 才提示實際送出字數
+  canvasEl.value?.focus();
+}
+
 // 送出特殊按鍵（RDP 一律 Windows 目標 → 不含 macOS 組合）
 const sendKeysMenu = buildSendKeysMenu(false);
 const _sendCombo = makeSendCombo(wsSend);
 function onSendKey(key: string) { _sendCombo(key); canvasEl.value?.focus(); }
 
+function onVisibility() {
+  // 分頁切回前景：重置計時窗，避免背景期間 lastRecv 變舊 → 一回前景就被 watchdog 誤判斷線
+  if (!document.hidden) lastRecv = Date.now();
+}
 function stopHeartbeat() {
   if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
   if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+  document.removeEventListener("visibilitychange", onVisibility);
 }
 function startHeartbeat() {
   stopHeartbeat();
   lastRecv = Date.now();
+  document.addEventListener("visibilitychange", onVisibility);
   pingTimer = setInterval(() => wsSend({ type: "ping" }), PING_MS);
   watchdogTimer = setInterval(() => {
+    // 背景分頁：瀏覽器節流 setInterval、heartbeat 不準 → 不判定斷線（連線由 WS 傳輸層
+    // uvicorn ws-ping/pong 維持，真正斷線走 ws.onclose）。切走再切回不會誤斷。
+    if (document.hidden) return;
     if (phase.value === "connected" && Date.now() - lastRecv > DEAD_MS) {
       teardown();
       phase.value = "closed";
@@ -179,7 +200,7 @@ function onWheel(e: WheelEvent) {
 }
 function onKey(e: KeyboardEvent, pressed: boolean) {
   e.preventDefault();
-  wsSend({ type: "k", key: e.key, ch: e.key && e.key.length === 1 ? e.key : "", p: pressed });
+  wsSend({ type: "k", key: e.key, code: e.code, ch: e.key && e.key.length === 1 ? e.key : "", p: pressed });
 }
 
 async function connect() {
@@ -198,6 +219,10 @@ async function connect() {
         password: form.password,
       });
       credId = saved.id;
+      // 記進本地狀態 → 同一分頁「重新連線」直接沿用剛存的憑證，不再跳帳密輸入
+      selectedCredId.value = saved.id;
+      remember.value = false;
+      void loadCreds();
     } catch (e: any) {
       phase.value = "error";
       errorMsg.value = e?.response?.data?.detail || t("rdp.err_save_cred");
@@ -225,6 +250,7 @@ async function startSession(w: number, h: number) {
     errorMsg.value = e?.response?.data?.detail || t("rdp.err_ticket");
     return;
   }
+  clipboardPaste.value = !!ticket.clipboard_paste;
   await nextTick();
   if (!canvasEl.value) { phase.value = "error"; errorMsg.value = t("rdp.err_ticket"); return; }
   canvasEl.value.width = w; canvasEl.value.height = h;
@@ -251,6 +277,10 @@ async function startSession(w: number, h: number) {
       case "status":
         if (payload.state === "connected") { phase.value = "connected"; nextTick(() => canvasEl.value?.focus()); }
         else if (payload.state === "disconnected") phase.value = "closed";
+        break;
+      case "clip_ack":
+        if (payload.ok && payload.n > 0) msg.success(t("rdp.paste_sent", { n: payload.n }));
+        else msg.warning(t("rdp.paste_empty"));
         break;
       case "error":
         phase.value = "error";
@@ -387,6 +417,15 @@ onBeforeUnmount(teardown);
               {{ t("rdp.send_keys") }}<n-icon :component="ChevronDownIcon" style="margin-left:2px" />
             </n-button>
           </n-dropdown>
+          <!-- 控制端貼上文字到被控端（管理者開啟才出現）：寫入被控端剪貼簿，再於遠端 Ctrl+V -->
+          <n-tooltip v-if="phase === 'connected' && clipboardPaste">
+            <template #trigger>
+              <n-button size="tiny" @click="pasteToRemote">
+                <template #icon><n-icon :component="PasteIcon" /></template>{{ t("rdp.paste") }}
+              </n-button>
+            </template>
+            {{ t("rdp.paste_hint") }}
+          </n-tooltip>
           <!-- 重新調整大小：以目前視窗大小重連，取得原生清晰畫面（RDP 無法連線中熱改解析度） -->
           <n-button v-if="phase === 'connected'" size="tiny" @click="reconnectFit">
             <template #icon><n-icon :component="ExpandIcon" /></template>{{ t("rdp.refit") }}
@@ -402,12 +441,15 @@ onBeforeUnmount(teardown);
       <n-alert v-if="phase === 'error'" type="error" :show-icon="true" style="margin:8px 0">
         {{ errorMsg }}
       </n-alert>
+      <div class="rdp-disp" :class="{ 'rdp-full': fullHeight }">
       <div ref="canvasBoxEl" class="rdp-canvas-box"
-           :class="{ 'rdp-full': fullHeight, 'rdp-fit': scaleMode === 'fit', 'rdp-native': scaleMode !== 'fit' }">
+           :class="{ 'rdp-full': fullHeight, 'rdp-fit': scaleMode === 'fit', 'rdp-native': scaleMode !== 'fit', 'term-dim': phase === 'closed' }">
         <canvas ref="canvasEl" class="rdp-canvas" tabindex="0"
                 @mousemove="onMouseMove" @mousedown="onMouseDown" @mouseup="onMouseUp"
                 @wheel.prevent="onWheel" @contextmenu.prevent
                 @keydown="onKey($event, true)" @keyup="onKey($event, false)" />
+      </div>
+      <ConsoleDisconnectedOverlay :show="phase === 'closed' || phase === 'error'" :error="phase === 'error'" />
       </div>
     </div>
   </div>
@@ -420,6 +462,8 @@ onBeforeUnmount(teardown);
 .rdp-wrap.rdp-center .rdp-form { width: 560px; max-width: 92vw; }
 .rdp-form { max-width: 560px; }
 .rdp-screen-area { display: flex; flex-direction: column; }
+.rdp-disp { position: relative; }
+.rdp-disp.rdp-full { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .rdp-screen-area.rdp-full { flex: 1; min-height: 0; }
 .rdp-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 2px; gap: 8px; }
 .rdp-status { font-size: 13px; display: inline-flex; align-items: center; gap: 7px;
@@ -454,4 +498,6 @@ onBeforeUnmount(teardown);
 .rdp-saved-label { width: 92px; flex: none; box-sizing: border-box; text-align: right;
   padding-right: 12px; font-size: 14px; }
 .rdp-saved-row :deep(.n-button) { margin-left: 6px; }
+/* 已斷線：整個畫面反灰並停用互動，讓使用者一眼看出已中斷 */
+.term-dim { filter: grayscale(1) brightness(.45); pointer-events: none; transition: filter .25s; }
 </style>
