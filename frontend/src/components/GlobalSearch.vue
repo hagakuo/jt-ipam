@@ -151,7 +151,7 @@ function navigateTo(value: string) {
       break;
     case "ip_address":
     case "vm":
-      // VM/CT 搜尋結果導到其主 IP 詳情頁（可開 PVE 主控台）
+      // VM/CT 搜尋結果導到其主 IP 詳細資料頁（可開 PVE 主控台）
       router.push({ name: "address-detail", params: { id } });
       break;
     case "device":

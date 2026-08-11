@@ -341,7 +341,7 @@ export interface DhcpPoolRange {
   start_ip: string; end_ip: string; family: number;
   source: string;                 // DHCP 引擎：kea / isc / pfsense / windows
 }
-// 所有來源的 DHCP 發放範圍（IP 清單／詳情用來標示 DHCP 動態區）。
+// 所有來源的 DHCP 發放範圍（IP 清單／詳細資料用來標示 DHCP 動態區）。
 // 需具全域讀取權；取不到時回空（只是少顯示標籤，不影響其他功能）。
 export async function listDhcpRanges(): Promise<DhcpPoolRange[]> {
   try {

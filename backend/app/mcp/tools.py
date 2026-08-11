@@ -508,7 +508,7 @@ async def get_device(
     session: AsyncSession, *, user: User,
     device_id: str | None = None, name: str | None = None,
 ) -> dict[str, Any]:
-    """裝置詳情：基本資料 + IP 清單 + （透過 LibreNMS）VLAN 與 switch port。"""
+    """裝置詳細資料：基本資料 + IP 清單 + （透過 LibreNMS）VLAN 與 switch port。"""
     dev: Device | None = None
     if device_id:
         dev = await session.get(Device, _as_uuid(device_id, "device_id"))
@@ -1040,13 +1040,90 @@ async def list_subnet_ips(
 
 
 async def list_firewalls(session: AsyncSession, *, user: User, limit: int = 200) -> dict[str, Any]:
-    """OPNsense 防火牆清單（不含密鑰）。"""
+    """所有防火牆清單（OPNsense / pfSense / FortiGate，不含密鑰）。每筆帶 `vendor` 標明廠牌。
+
+    三種廠牌一起回：只回其中一種的話，模型會拿一份不完整的清單當成全部去回答
+    「我們有哪些防火牆」—— 那比答不出來更糟。
+    """
     from app.models.firewall import OPNsenseFirewall
-    rows = (await session.execute(select(OPNsenseFirewall).limit(limit))).scalars().all()
-    return {"firewalls": [{
-        "id": str(f.id), "name": f.name, "api_url": f.api_url, "enabled": f.enabled,
-        "last_sync_at": f.last_sync_at, "last_error": f.last_error, "description": f.description,
-    } for f in rows]}
+    from app.models.fortigate import FortiGateFirewall
+    from app.models.pfsense import PfSenseFirewall
+
+    out: list[dict[str, Any]] = []
+    for vendor, model in (("opnsense", OPNsenseFirewall), ("pfsense", PfSenseFirewall),
+                          ("fortigate", FortiGateFirewall)):
+        rows = (await session.execute(select(model).limit(limit))).scalars().all()
+        out.extend({
+            "id": str(f.id), "vendor": vendor, "name": f.name,
+            "api_url": getattr(f, "api_url", None), "enabled": f.enabled,
+            "last_sync_at": f.last_sync_at, "last_error": f.last_error,
+            "description": getattr(f, "description", None),
+        } for f in rows)
+    return {"firewalls": out[:limit]}
+
+
+async def list_dhcp_ranges(
+    session: AsyncSession, *, user: User, limit: int = 300,
+) -> dict[str, Any]:
+    """各整合同步回來的 DHCP 發放範圍（OPNsense / pfSense / FortiGate / Windows DHCP）。
+
+    每筆帶來源整合（`source_type` / `source_name`）與 DHCP 引擎（`source`：kea / isc /
+    windows）。「這個 IP 是不是落在 DHCP 池裡」這種問題要靠它，不能拿子網路去猜。
+    """
+    from app.models.dhcp import DHCPPoolRange
+    rows = (await session.execute(
+        select(DHCPPoolRange).order_by(DHCPPoolRange.source_type, DHCPPoolRange.start_ip)
+        .limit(limit)
+    )).scalars().all()
+    return {"ranges": [{
+        "source_type": r.source_type, "source_name": r.source_name,
+        "subnet_cidr": str(r.subnet_cidr) if r.subnet_cidr else None,
+        "start_ip": str(r.start_ip), "end_ip": str(r.end_ip),
+        "family": r.family, "engine": r.source, "synced_at": r.synced_at,
+    } for r in rows]}
+
+
+async def list_fortigate_policies(
+    session: AsyncSession, *, user: User,
+    firewall_name: str | None = None, vdom: str | None = None, limit: int = 200,
+) -> dict[str, Any]:
+    """FortiGate 防火牆政策（唯讀鏡像）。可依防火牆名稱與 VDOM 篩選。"""
+    from app.models.fortigate import FortiGateFirewall, FortiGatePolicy
+    stmt = select(FortiGatePolicy, FortiGateFirewall.name).join(
+        FortiGateFirewall, FortiGateFirewall.id == FortiGatePolicy.firewall_id)
+    if firewall_name:
+        stmt = stmt.where(FortiGateFirewall.name == firewall_name)
+    if vdom:
+        stmt = stmt.where(FortiGatePolicy.vdom == vdom)
+    rows = (await session.execute(
+        stmt.order_by(FortiGatePolicy.vdom, FortiGatePolicy.policyid).limit(limit))).all()
+    return {"policies": [{
+        "firewall": fw_name, "vdom": p.vdom, "policyid": p.policyid, "name": p.name,
+        "status": p.status, "action": p.action, "srcintf": p.srcintf, "dstintf": p.dstintf,
+        "srcaddr": p.srcaddr, "dstaddr": p.dstaddr, "service": p.service, "nat": p.nat,
+        "comments": p.comments,
+    } for p, fw_name in rows]}
+
+
+async def list_fortigate_addresses(
+    session: AsyncSession, *, user: User,
+    firewall_name: str | None = None, vdom: str | None = None, limit: int = 300,
+) -> dict[str, Any]:
+    """FortiGate 位址物件與位址群組（唯讀鏡像）。群組的 `members` 是成員名稱清單。"""
+    from app.models.fortigate import FortiGateAddressObject, FortiGateFirewall
+    stmt = select(FortiGateAddressObject, FortiGateFirewall.name).join(
+        FortiGateFirewall, FortiGateFirewall.id == FortiGateAddressObject.firewall_id)
+    if firewall_name:
+        stmt = stmt.where(FortiGateFirewall.name == firewall_name)
+    if vdom:
+        stmt = stmt.where(FortiGateAddressObject.vdom == vdom)
+    rows = (await session.execute(
+        stmt.order_by(FortiGateAddressObject.vdom, FortiGateAddressObject.name)
+        .limit(limit))).all()
+    return {"addresses": [{
+        "firewall": fw_name, "vdom": a.vdom, "name": a.name, "kind": a.kind,
+        "obj_type": a.obj_type, "value": a.value, "members": a.members, "comment": a.comment,
+    } for a, fw_name in rows]}
 
 
 async def list_firewall_rules(
@@ -1907,6 +1984,112 @@ async def list_connection_targets(
     return {"items": items, "count": len(items)}
 
 
+async def list_ai_findings(
+    session: AsyncSession, user: User, *, severity: str | None = None, limit: int = 20,
+) -> dict[str, Any]:
+    """AI 巡檢的未處理發現。
+
+    這些是模型自己的推測，不是查核過的事實 —— 一併回傳 `evidence`，讓對話端有依據
+    可以轉述，而不是把推測講成結論。
+    """
+    from app.models.ai_finding import AIFinding
+    stmt = select(AIFinding).where(AIFinding.status == "open")
+    if severity in ("low", "medium", "high"):
+        stmt = stmt.where(AIFinding.severity == severity)
+    rows = (await session.execute(
+        stmt.order_by(AIFinding.created_at.desc()).limit(max(1, min(int(limit), 100)))
+    )).scalars().all()
+    return {"note": "These are AI inferences, not verified facts.",
+            "findings": [{
+                "severity": f.severity, "category": f.category, "title": f.title,
+                "detail": f.detail, "recommendation": f.recommendation,
+                "evidence": f.evidence,
+                "found_at": f.created_at.isoformat() if f.created_at else None,
+            } for f in rows]}
+
+async def list_anomalies(
+    session: AsyncSession, user: User, *, kind: str | None = None, limit: int = 20,
+) -> dict[str, Any]:
+    """異常偵測結果（IP 衝突／MAC 變動／失聯 IP／未授權 IP／非法 DHCP）。
+
+    與 AI 巡檢不同：這裡是量到的事實（ARP 真的看到兩個 MAC），不是模型的推測。
+    對話端可以直接轉述，不必加「可能」。
+
+    偵測是即時算出來的（沒有結果表）。這裡**逐條呼叫偵測函式，不走 run_detection** ——
+    那支除了發通知（使用者在對話裡問一句，不該讓全體管理員收到信）之外，結尾還會無條件
+    session.commit()，會把同一個 session 裡其他未定的異動一起送出去。查詢就只該查詢。
+    """
+    from app.services import anomaly as _an
+    detectors = {
+        "ip_conflicts": _an.detect_ip_conflicts,
+        "mac_drifts": _an.detect_mac_drifts,
+        "ghost_ips": _an.detect_ghost_ips,
+        "unauthorized_ips": _an.detect_unauthorized_ips,
+        "rogue_dhcp": _an.detect_rogue_dhcp,
+        "external_exposure": _an.detect_external_exposure,
+        "dangling_dns": _an.detect_dangling_dns,
+        "duplicate_ip_records": _an.detect_duplicate_ip_records,
+        "suspicious_changes": _an.detect_suspicious_changes,
+    }
+    n = max(1, min(int(limit), 100))
+    if kind:
+        key = kind.strip().lower()
+        if key not in detectors:
+            return {"error": f"unknown kind: {kind}", "available": sorted(detectors)}
+        detectors = {key: detectors[key]}
+    buckets = {k: list(await fn(session)) for k, fn in detectors.items()}
+    return {
+        "counts": {k: len(v) for k, v in buckets.items()},
+        "items": {k: v[:n] for k, v in buckets.items()},
+    }
+
+
+async def investigate_ip(
+    session: AsyncSession, user: User, *, ip: str,
+) -> dict[str, Any]:
+    """把一個位址散落在各處的線索收成一份檔案（只回事實，不做推論）。
+
+    可見性由 collect_dossier 依子網路授權處理；全域基礎設施那幾段（NAT／防火牆／DNS）
+    只有具全域讀取權限者才會拿到。
+    """
+    from app.services.investigate import collect_dossier
+    return await collect_dossier(session, user=user, ip=str(ip).strip())
+
+
+
+async def check_ip_exposure(session: AsyncSession, user: User, ip: str) -> dict[str, Any]:
+    """這個位址對外開了什麼 —— NAT 轉發與防火牆放行規則。
+
+    「調查」畫面本來就把這些湊在一起，但只有人點進去才看得到。使用者真正會問的是
+    「192.0.2.10 有對外開放嗎、開了哪些埠」，那是一句話的問題，不該要人先知道
+    要去哪一頁、再自己讀四張表。
+
+    只回事實：有哪些 NAT 轉發、哪些防火牆規則允許進入。**不下「安全或不安全」的結論**
+    —— 那取決於這台機器本來就該不該對外，而那件事只有人知道。
+    """
+    from app.services.investigate import collect_dossier
+
+    d = await collect_dossier(session, user=user, ip=ip)
+    if not d.get("found"):
+        return {"found": False, "ip": ip}
+    nat = d.get("nat") or []
+    fw = [r for r in (d.get("firewall") or []) if str(r.get("action", "")).lower() == "pass"]
+    ports = sorted({str(n.get("port")) for n in nat if n.get("port")}
+                   | {str(r.get("port")) for r in fw if r.get("port")})
+    return {
+        "found": True,
+        "ip": ip,
+        "hostname": d.get("hostname"),
+        # 有 NAT 轉發＝從外網打得到；沒有不代表安全（可能走反向代理或另一條路徑）
+        "reachable_from_wan": bool(nat),
+        "open_ports": ports,
+        "nat_rules": nat,
+        "firewall_allow_rules": fw,
+        "note": ("Facts only. NAT forwards and pass rules are listed; whether that is"
+                 " appropriate depends on what this host is meant to do."),
+    }
+
+
 TOOLS: dict[str, dict[str, Any]] = {
     "search_ip": {
         "fn": search_ip,
@@ -2177,6 +2360,14 @@ TOOLS: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "check_ip_exposure": {
+        "fn": check_ip_exposure,
+        "description": ("Whether an IP is reachable from the internet and which ports are open:"
+                        " NAT port-forwards plus firewall pass rules that target it."
+                        " Use for questions like 'is 10.0.0.5 exposed?' or 'what ports are open on X?'."),
+        "parameters": {"type": "object", "properties": {"ip": {"type": "string"}},
+                       "required": ["ip"]},
+    },
     "get_ip_detail": {
         "fn": get_ip_detail,
         "description": "Full record for one IP: state, hostname, MAC, owner, device, switch port, customer, last-seen sources.",
@@ -2199,8 +2390,32 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     "list_firewalls": {
         "fn": list_firewalls,
-        "description": "List OPNsense firewalls (no secrets).",
+        "description": ("List all firewalls across vendors — OPNsense, pfSense and FortiGate "
+                        "(no secrets). Each entry carries a `vendor` field."),
         "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200}}},
+    },
+    "list_dhcp_ranges": {
+        "fn": list_dhcp_ranges,
+        "description": ("List DHCP pool ranges synced from the firewall / DHCP integrations "
+                        "(OPNsense, pfSense, FortiGate, Windows DHCP). Use this to tell whether "
+                        "an address falls inside a DHCP pool — do not guess from the subnet."),
+        "parameters": {"type": "object", "properties": {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+    },
+    "list_fortigate_policies": {
+        "fn": list_fortigate_policies,
+        "description": "List FortiGate firewall policies. Filter by firewall_name and/or vdom.",
+        "parameters": {"type": "object", "properties": {
+            "firewall_name": {"type": "string"}, "vdom": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+    },
+    "list_fortigate_addresses": {
+        "fn": list_fortigate_addresses,
+        "description": ("List FortiGate address objects and address groups. "
+                        "Filter by firewall_name and/or vdom."),
+        "parameters": {"type": "object", "properties": {
+            "firewall_name": {"type": "string"}, "vdom": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
     },
     "list_firewall_rules": {
         "fn": list_firewall_rules,
@@ -2251,6 +2466,45 @@ TOOLS: dict[str, dict[str, Any]] = {
         "fn": list_scan_agents,
         "description": "List scan agents and their status.",
         "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200}}},
+    },
+    "investigate_ip": {
+        "fn": investigate_ip,
+        "description": "Everything known about one IP address in one place: the record, "
+                       "other records for the same address in overlapping subnets, what "
+                       "each source reports as its hostname and OS, monitoring coverage, "
+                       "ARP history, recent changes, and (for global readers) DNS, NAT "
+                       "and firewall rules. Facts only, no inference.",
+        "parameters": {
+            "type": "object",
+            "properties": {"ip": {"type": "string", "description": "IPv4 or IPv6"}},
+            "required": ["ip"],
+        },
+    },
+    "list_anomalies": {
+        "fn": list_anomalies,
+        "description": "Anomaly detection results (measured facts, not AI inference): IP "
+                       "conflicts, MAC drifts, ghost IPs, unauthorised IPs, rogue DHCP servers, and "
+                       "externally exposed hosts (NAT / WAN firewall rules, cross-checked "
+                       "against liveness, monitoring coverage and DNS).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "description":
+                         "ip_conflicts | mac_drifts | ghost_ips | unauthorized_ips | "
+                         "rogue_dhcp | external_exposure | dangling_dns | duplicate_ip_records | suspicious_changes"},
+                "limit": {"type": "integer", "description": "max items per kind (default 20)"},
+            },
+        },
+    },
+    "list_ai_findings": {
+        "fn": list_ai_findings,
+        "description": "Open findings from the scheduled AI inventory review: severity, category, "
+                       "title, detail, recommendation and the evidence the model cited. These are "
+                       "the model's own inferences, not verified facts -- always present them as "
+                       "such and cite the evidence when relaying them.",
+        "parameters": {"type": "object", "properties": {
+            "severity": {"type": "string", "enum": ["low", "medium", "high"]},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100}}},
     },
     "list_certificates": {
         "fn": list_certificates,
@@ -2526,6 +2780,8 @@ UTILITY_TOOLS: frozenset[str] = frozenset({
 
 # 全域基礎設施工具（無法逐物件授權）→ 僅 admin 或具萬用讀取權限者可呼叫。
 # 對應 CLAUDE.md 的 require_global_read 分類；只被指派特定物件的部門帳號一律擋。
+
+
 GLOBAL_READ_TOOLS: frozenset[str] = frozenset({
     "list_vlans", "list_vrfs", "list_nat", "list_firewalls", "list_firewall_rules",
     "list_firewall_aliases", "list_dns_servers", "list_dns_zones", "list_dns_records",
@@ -2535,6 +2791,19 @@ GLOBAL_READ_TOOLS: frozenset[str] = frozenset({
     "list_tenants", "list_contacts", "list_ssids", "list_cables", "cable_trace",
     "list_power", "list_wazuh_agents", "wazuh_missing_agents", "get_topology",
     "list_certificates", "list_cert_distribution",
+    "list_dhcp_ranges", "list_fortigate_policies", "list_fortigate_addresses",
+    # NAT 與防火牆規則是全域基礎設施資料 —— 與 list_nat / list_firewall_rules 同一層，
+    # 不能因為它是「以 IP 為單位查」就鬆一級（改端點權限時要同步收 MCP，這裡踩過）。
+    "check_ip_exposure",
+})
+
+
+# 僅管理員可呼叫的唯讀工具。
+# 對應 CLAUDE.md 的「純管理資料」分類：AI 巡檢結論與異常偵測清單本身就是一份跨部門的
+# 弱點盤點（哪些網段沒監測、哪裡有未授權裝置），REST 端已是 require_admin。
+# MCP 是同一份資料的另一道門，鎖不一樣就等於沒鎖 —— 這個專案在 get_topology 踩過一次。
+ADMIN_TOOLS: frozenset[str] = frozenset({
+    "list_ai_findings", "list_anomalies",
 })
 
 
@@ -2564,6 +2833,7 @@ async def authorize_tool(session: AsyncSession, user: User, name: str) -> str | 
 
     - 純計算工具：永遠放行
     - 異動工具：需 admin
+    - 管理資料唯讀工具（巡檢／異常）：需 admin
     - 全域基礎設施工具：需 admin 或萬用讀取
     - 其餘（逐物件資料）：需至少有可見範圍；工具內部再依 visible_ids 過濾
     """
@@ -2581,6 +2851,8 @@ async def authorize_tool(session: AsyncSession, user: User, name: str) -> str | 
         return None
     if name in MUTATING_TOOLS and not getattr(user, "is_admin", False):
         return "permission_denied: 此操作需要管理員權限。"
+    if name in ADMIN_TOOLS and not getattr(user, "is_admin", False):
+        return "permission_denied: 此為管理資料，僅限管理員檢視。"
     if await has_no_visibility(session, user):
         return "permission_denied: 你目前沒有可檢視的資源權限，請聯絡管理員指派。"
     if name in GLOBAL_READ_TOOLS and not await has_global_read(session, user):

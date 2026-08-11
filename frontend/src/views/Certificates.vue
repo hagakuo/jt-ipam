@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from "vue";
+import { computed, h, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { fmtDateTime } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
@@ -30,7 +30,16 @@ import {
   type Certificate, type CertAgent, type CertVersion,
 } from "@/api/certificates";
 
-const { t } = useI18n();
+const { t, te } = useI18n();
+// 安裝說明的文案大半兩邊共用，只有幾段（服務管理、需求、解除安裝）Linux/Windows 真的不同。
+// 只為那幾段建 certHelpWin.*，其餘自動落回 certHelp.* —— 免得整組文案複製兩份、日後各改各的。
+function ht(key: string): string { return osText("certHelp", key); }
+function gt(key: string): string { return osText("certGen", key); }
+// 兩邊大半文案共用，只有真的不同的那幾句建 <ns>Win.*，其餘自動落回 <ns>.*
+function osText(ns: string, key: string): string {
+  const win = `${ns}Win.${key}`;
+  return isWin.value && te(win) ? t(win) : t(`${ns}.${key}`);
+}
 const msg = useMessage();
 const router = useRouter();
 const links = useEntityLinks(router);
@@ -80,27 +89,54 @@ async function loadAgents() {
   catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
 const serverAgentVersion = ref<string | null>(null);
+// Linux(agent.sh) 與 Windows(agent.ps1) 是兩支各自演進的程式，最新版本要分開顯示
+const serverAgentVersionWin = ref<string | null>(null);
 async function loadServerVersion() {
-  try { serverAgentVersion.value = (await getServerAgentVersion()).version; }
+  try { const sv = await getServerAgentVersion();
+    serverAgentVersion.value = sv.version;
+    serverAgentVersionWin.value = sv.windows_version ?? null; }
   catch { /* 非致命 */ }
 }
 onMounted(() => { loadCerts(); loadAgents(); loadServerVersion(); loadDeviceOptions(); });
 
+// 代理有兩支（Linux 純 bash / Windows PowerShell）。這個選擇貫穿安裝說明、
+// 支援清單、profile 選項與設定檔產生器 —— 宣告放最前面，因為底下多個 computed 都靠它。
+type AgentOs = "linux" | "windows";
+const agentOs = ref<AgentOs>("linux");
+const isWin = computed(() => agentOs.value === "windows");
+
 // 安裝說明：支援的 OS / 發行版（醒目標籤呈現）
-const SUPPORTED_OS = [
+const SUPPORTED_OS_WINDOWS = [
+  "Windows Server 2019", "Windows Server 2022", "Windows Server 2025",
+  "Windows 10 / 11（IIS）",
+];
+const SUPPORTED_OS_LINUX = [
   "Debian 11 / 12 / 13", "Ubuntu 22.04 / 24.04 / 26.04",
   "RHEL / Rocky / AlmaLinux / CentOS 8 / 9", "Fedora 38+", "openSUSE Leap 15+ / SLES 15+",
 ];
+const SUPPORTED_OS = computed(() => isWin.value ? SUPPORTED_OS_WINDOWS : SUPPORTED_OS_LINUX);
 
 // ── 設定檔產生器 ──
-const PROFILE_OPTIONS = [
+// 代理有兩支：Linux 是純 bash（寫檔→測設定→reload），Windows 是 PowerShell。
+// IIS 不從檔案讀憑證，它綁的是憑證存放區裡的 thumbprint，所以 Windows 的 profile
+// 是「匯入存放區 + 換繫結」而不是「寫檔 + reload」——兩邊的選項不能混用。
+const PROFILE_OPTIONS_LINUX = [
   "nginx", "apache", "caddy", "traefik", "lighttpd", "haproxy", "zoraxy", "jetty",
   "postfix", "dovecot", "exim4", "mosquitto", "cockpit", "webmin", "wazuh-dashboard",
   "pve", "pmg", "pbs", "pdm", "zimbra",
   "files",
 ];
-const dryRunCmd = `${SUDO} bash /usr/local/lib/jt-ipam-cert-agent/jt_ipam_cert_agent.sh --config /etc/jt-ipam-cert-agent/config --dry-run`;
-const runCmd = `${SUDO} bash /usr/local/lib/jt-ipam-cert-agent/jt_ipam_cert_agent.sh --config /etc/jt-ipam-cert-agent/config`;
+const PROFILE_OPTIONS_WINDOWS = ["iis", "winrm", "rdp", "store", "files"];
+const PROFILE_OPTIONS = computed(() => isWin.value ? PROFILE_OPTIONS_WINDOWS : PROFILE_OPTIONS_LINUX);
+// IIS 繫結：位址:埠（位址是 IP → 非 SNI；是主機名稱 → SNI）
+const genWinBinding = ref("0.0.0.0:443");
+const WIN_AGENT = 'C:\\Program Files\\jt-ipam-cert-agent\\jt_ipam_cert_agent.ps1';
+const dryRunCmd = computed(() => isWin.value
+  ? `powershell -ExecutionPolicy Bypass -File "${WIN_AGENT}" -DryRun -DebugLog`
+  : `${SUDO} bash /usr/local/lib/jt-ipam-cert-agent/jt_ipam_cert_agent.sh --config /etc/jt-ipam-cert-agent/config --dry-run`);
+const runCmd = computed(() => isWin.value
+  ? "schtasks /Run /TN jt-ipam-cert-agent"
+  : `${SUDO} bash /usr/local/lib/jt-ipam-cert-agent/jt_ipam_cert_agent.sh --config /etc/jt-ipam-cert-agent/config`);
 const showGen = ref(false);
 const genAgentName = ref("");
 const genScopeIds = ref<string[]>([]);
@@ -110,6 +146,9 @@ const genManual = ref({ cert: "", fullchain: "", key: "", chain: "", crt: "", co
 // 此代理 scope 內的憑證（依名稱）
 const genCertOptions = computed(() =>
   certs.value.filter(c => genScopeIds.value.includes(c.id)).map(c => ({ label: c.name, value: c.name })));
+// 切換作業系統時，前一組勾選在另一邊不存在，留著會產出無效設定
+watch(agentOs, () => { genProfiles.value = []; });
+
 function openGen(a: CertAgent) {
   genAgentName.value = a.name;
   genScopeIds.value = (a.scope_cert_ids ?? []).map(String);
@@ -121,6 +160,25 @@ function openGen(a: CertAgent) {
 const TLS_BASE = "/etc/ssl/jt-ipam";
 function profileFiles(profile: string, cert: string): { kind: string; path: string }[] {
   const b = TLS_BASE;
+  if (isWin.value) {
+    switch (profile) {
+      case "iis": return [
+        { kind: "匯入憑證存放區", path: "LocalMachine\\My" },
+        { kind: "換上 HTTPS 繫結的憑證", path: genWinBinding.value },
+      ];
+      case "winrm": return [
+        { kind: "匯入憑證存放區", path: "LocalMachine\\My" },
+        { kind: "換上 WinRM HTTPS 接聽器憑證", path: "連接埠 5986" },
+      ];
+      case "rdp": return [
+        { kind: "匯入憑證存放區", path: "LocalMachine\\My" },
+        { kind: "換上遠端桌面憑證", path: "連接埠 3389" },
+      ];
+      case "store": return [{ kind: "只匯入憑證存放區（可指定，LDAPS 用 NTDS\\My）", path: "LocalMachine\\My" }];
+      case "files": return [{ kind: "寫檔（路徑在下方「進階」自訂）", path: "C:\\...\\site.pem / site.key" }];
+      default: return [];
+    }
+  }
   switch (profile) {
     case "nginx": case "caddy": case "traefik": return [{ kind: "cert+chain", path: `${b}/${cert}.fullchain.pem` }, { kind: "key", path: `${b}/${cert}.key` }];
     case "apache": case "mosquitto": return [{ kind: "cert", path: `${b}/${cert}.crt` }, { kind: "chain", path: `${b}/${cert}.chain.pem` }, { kind: "key", path: `${b}/${cert}.key` }];
@@ -145,6 +203,13 @@ function profileFiles(profile: string, cert: string): { kind: string; path: stri
 // 各 profile 對應的服務設定片段（指到上面寫入的路徑），給使用者貼進服務設定檔。
 function serviceSnippet(profile: string, cert: string): string {
   const b = TLS_BASE;
+  if (isWin.value) {
+    // Windows 這邊不需要改設定檔（IIS 綁的是存放區裡的憑證），給的是驗證指令
+    if (profile === "iis") {
+      return `# 確認繫結目前用的是哪張憑證：\nnetsh http show sslcert | findstr /i "${genWinBinding.value}"`;
+    }
+    return "";
+  }
   switch (profile) {
     case "nginx": return `ssl_certificate     ${b}/${cert}.fullchain.pem;\nssl_certificate_key ${b}/${cert}.key;`;
     case "apache": return `SSLCertificateFile      ${b}/${cert}.crt\nSSLCertificateKeyFile   ${b}/${cert}.key\nSSLCertificateChainFile ${b}/${cert}.chain.pem`;
@@ -172,6 +237,9 @@ const genConfig = computed(() => {
     for (const prof of genProfiles.value) {
       lines.push(`DEPLOY_${n}_CERT=${cert}`);
       lines.push(`DEPLOY_${n}_PROFILE=${prof}`);
+      if (isWin.value && prof === "iis" && genWinBinding.value) {
+        lines.push(`DEPLOY_${n}_BINDING=${genWinBinding.value}`);
+      }
       lines.push("");
       n++;
     }
@@ -488,11 +556,23 @@ const showHelp = ref(false);
 const showConfigHelp = ref(false);
 const serverOrigin = window.location.origin;
 // sudo 只在非 root 時加（見 utils/sudo）；帶環境變數一定要透過 env，否則 root 時 VAR=val 會被當成指令。
-const installerOneLiner = computed(() =>
-  `curl -fsSLk ${serverOrigin}/api/v1/cert-agents/installer.sh | ${SUDO} env `
-  + `JT_IPAM_URL=${serverOrigin} JT_IPAM_AGENT_KEY=${newKey.value || "<建立代理時的-KEY>"} JT_IPAM_INSECURE=1 bash`);
-const uninstallOneLiner = `curl -fsSLk ${serverOrigin}/api/v1/cert-agents/installer.sh | ${SUDO} env JT_IPAM_UNINSTALL=1 bash`;
-const configExample = `# ── 快速模式（優先）：只設憑證 + 服務 ──
+const installerOneLiner = computed(() => {
+  const key = newKey.value || "<建立代理時的-KEY>";
+  if (isWin.value) {
+    // iex 收不到 -switch，所以旗標一律走環境變數；自簽憑證要先關掉驗證才抓得到 installer
+    return `[Net.ServicePointManager]::ServerCertificateValidationCallback={$true}\n`
+      + `$env:JT_IPAM_SERVER='${serverOrigin}'; $env:JT_IPAM_AGENT_KEY='${key}'; $env:JT_IPAM_INSECURE='1'\n`
+      + `iwr -UseBasicParsing "$env:JT_IPAM_SERVER/api/v1/cert-agents/installer.ps1" | iex`;
+  }
+  return `curl -fsSLk ${serverOrigin}/api/v1/cert-agents/installer.sh | ${SUDO} env `
+    + `JT_IPAM_URL=${serverOrigin} JT_IPAM_AGENT_KEY=${key} JT_IPAM_INSECURE=1 bash`;
+});
+const uninstallOneLiner = computed(() => isWin.value
+  ? `[Net.ServicePointManager]::ServerCertificateValidationCallback={$true}\n`
+    + `$env:JT_IPAM_UNINSTALL='1'\n`
+    + `iwr -UseBasicParsing "${serverOrigin}/api/v1/cert-agents/installer.ps1" | iex`
+  : `curl -fsSLk ${serverOrigin}/api/v1/cert-agents/installer.sh | ${SUDO} env JT_IPAM_UNINSTALL=1 bash`);
+const configExampleLinux = `# ── 快速模式（優先）：只設憑證 + 服務 ──
 # 代理會把憑證寫到固定路徑並自動重載，你再把服務設定指過去：
 DEPLOY_1_CERT=wildcard-example-com
 DEPLOY_1_PROFILE=nginx
@@ -503,6 +583,24 @@ DEPLOY_2_CERT=mail-cert
 DEPLOY_2_FULLCHAIN=/etc/postfix/tls/mail.pem
 DEPLOY_2_KEY=/etc/postfix/tls/mail.key
 DEPLOY_2_RELOAD=systemctl reload postfix`;
+const configExampleWindows = `# ── IIS：匯入憑證存放區，再把 HTTPS 繫結換成新憑證 ──
+# 繫結本身要先在 IIS 建好，代理只換憑證、不改站台設定。
+DEPLOY_1_CERT=wildcard-example-com
+DEPLOY_1_PROFILE=iis
+DEPLOY_1_BINDING=0.0.0.0:443
+#   位址填 IP → 非 SNI 繫結；填主機名稱（www.example.com:443）→ SNI 繫結
+
+# ── 只匯入憑證存放區（Exchange／RD 閘道／自家程式自己指定 thumbprint）──
+DEPLOY_2_CERT=wildcard-example-com
+DEPLOY_2_PROFILE=store
+
+# ── 寫成檔案（給會讀 PEM／PFX 的軟體）──
+DEPLOY_3_CERT=wildcard-example-com
+DEPLOY_3_PROFILE=files
+DEPLOY_3_FULLCHAIN=C:\\apps\\ssl\\site.pem
+DEPLOY_3_KEY=C:\\apps\\ssl\\site.key
+DEPLOY_3_RELOAD=powershell -Command "Restart-Service MyApp"`;
+const configExample = computed(() => isWin.value ? configExampleWindows : configExampleLinux);
 
 // 來源類型選擇器：被選中的按鈕整顆填綠底白字，明顯看出目前選的是哪個。
 const radioGreen = {
@@ -636,7 +734,7 @@ const agentExportRows = computed(() => agentsFiltered.value.map((a) => {
 }));
 const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
   { title: t("cols.name"), key: "name", minWidth: 120, ellipsis: { tooltip: true },
-    // 有對應裝置時，名稱可點去裝置詳情；未對應則純文字
+    // 有對應裝置時，名稱可點去裝置詳細資料；未對應則純文字
     render: (a) => a.device_id
       ? h(NTooltip, null, {
           trigger: () => links.device(a.device_id, a.name),
@@ -678,7 +776,7 @@ const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
   { title: t("cols.source_ip"), key: "source_ip", minWidth: 150,
     render: (a) => a.last_source_ip
       ? h("div", { style: "display:flex;align-items:center;gap:4px;flex-wrap:wrap" }, [
-          // 來源 IP 若對到 IPAM 的 IPAddress → 可點進該位址詳情；否則純文字
+          // 來源 IP 若對到 IPAM 的 IPAddress → 可點進該位址詳細資料；否則純文字
           a.source_ip_id
             ? h("span", { style: "font-family:monospace" }, [links.ipById(a.source_ip_id, a.last_source_ip)])
             : h("span", { style: "font-family:monospace" }, a.last_source_ip),
@@ -786,6 +884,8 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
                       :placeholder="t('certs.filter_by_cert')" style="width: 200px" />
             <span v-if="serverAgentVersion" style="font-size:12px;opacity:.7">
               {{ t("certs.latest_agent_version") }}：<n-tag size="small" type="info" :bordered="false">v{{ serverAgentVersion }}</n-tag>
+              <n-tag v-if="serverAgentVersionWin" size="small" type="info" :bordered="false"
+                     style="margin-left:4px">v{{ serverAgentVersionWin }}</n-tag>
             </span>
           </n-space>
           <n-space :size="8">
@@ -1099,8 +1199,15 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
   <!-- 安裝說明 -->
   <n-modal v-model:show="showHelp" preset="card" :title="t('certHelp.title')"
            style="width: 760px; max-width: 94vw">
-    <n-alert type="info" :bordered="false" :show-icon="true" style="margin-bottom: 20px">
-      {{ t("certHelp.intro") }}
+    <n-alert type="info" :bordered="false" :show-icon="true" style="margin-bottom: 14px">
+      {{ ht("intro") }}
+    </n-alert>
+    <n-radio-group v-model:value="agentOs" size="small" style="margin-bottom: 14px">
+      <n-radio-button value="linux">{{ t("certOs.linux") }}</n-radio-button>
+      <n-radio-button value="windows">{{ t("certOs.windows") }}</n-radio-button>
+    </n-radio-group>
+    <n-alert v-if="isWin" type="warning" :bordered="false" :show-icon="true" style="margin-bottom: 16px">
+      {{ t("certOs.win_note") }}
     </n-alert>
 
     <!-- 步驟 1 -->
@@ -1115,7 +1222,7 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
     <div class="help-step">
       <div class="help-step-num">2</div>
       <div class="help-step-body">
-        <div class="help-step-title">{{ t("certHelp.step2") }}</div>
+        <div class="help-step-title">{{ ht("step2") }}</div>
         <div class="help-subtle" style="margin-top:10px;margin-bottom:5px">{{ t("certHelp.distros_title") }}</div>
         <n-space :size="[6, 6]">
           <n-tag v-for="os in SUPPORTED_OS" :key="os" size="small" type="success" :bordered="false" round>{{ os }}</n-tag>
@@ -1139,30 +1246,30 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
             <template #icon><n-icon :component="InfoIcon" /></template>{{ t("certConfigHelp.button") }}
           </n-button>
         </n-space>
-        <div class="help-note" style="margin-top: 6px">{{ t("certHelp.step3") }}</div>
+        <div class="help-note" style="margin-top: 6px">{{ ht("step3") }}</div>
         <div class="help-note" style="margin-top: 4px">{{ t("certHelp.step3_hint") }}</div>
       </div>
     </div>
 
     <n-divider style="margin: 6px 0 14px" />
-    <div class="help-subtle" style="font-weight: 600; margin-bottom: 6px">{{ t("certHelp.uninstall_label") }}</div>
+    <div class="help-subtle" style="font-weight: 600; margin-bottom: 6px">{{ ht("uninstall_label") }}</div>
     <n-space align="center" :wrap="false" :size="8">
       <code class="help-code">{{ uninstallOneLiner }}</code>
       <n-button size="small" secondary @click="copy(uninstallOneLiner)">
         <template #icon><n-icon :component="CopyIcon" /></template>{{ t("certHelp.copy") }}
       </n-button>
     </n-space>
-    <div class="help-note" style="margin-bottom: 14px">{{ t("certHelp.uninstall_note") }}</div>
+    <div class="help-note" style="margin-bottom: 14px">{{ ht("uninstall_note") }}</div>
 
     <n-space vertical :size="10">
       <n-alert type="warning" :bordered="true" :show-icon="true" style="font-size: 12px">
         {{ t("certs.one_key_per_host") }}
       </n-alert>
       <n-alert type="default" :bordered="true" :show-icon="false" style="font-size: 12px">
-        {{ t("certHelp.service_note") }}
+        {{ ht("service_note") }}
       </n-alert>
       <n-alert type="default" :bordered="true" :show-icon="false" style="font-size: 12px">
-        {{ t("certHelp.requirements") }}
+        {{ ht("requirements") }}
       </n-alert>
       <n-alert type="success" :bordered="true" :show-icon="false" style="font-size: 12px">
         {{ t("certHelp.autoupdate") }}
@@ -1185,9 +1292,13 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
   <!-- 設定檔產生器 -->
   <n-modal v-model:show="showGen" preset="card"
            :title="`${t('certGen.title')} — ${genAgentName}`" style="width: 680px; max-width: 94vw">
-    <n-alert type="info" :bordered="false" :show-icon="true" style="margin-bottom: 14px">
-      {{ t("certGen.intro") }}
+    <n-alert type="info" :bordered="false" :show-icon="true" style="margin-bottom: 12px">
+      {{ gt("intro") }}
     </n-alert>
+    <n-radio-group v-model:value="agentOs" size="small" style="margin-bottom: 14px">
+      <n-radio-button value="linux">{{ t("certOs.linux") }}</n-radio-button>
+      <n-radio-button value="windows">{{ t("certOs.windows") }}</n-radio-button>
+    </n-radio-group>
 
     <div style="font-weight:600;margin-bottom:6px">{{ t("certGen.quick") }}</div>
     <n-form-item :label="t('certGen.certs')" :show-feedback="false" style="margin-bottom:4px">
@@ -1195,13 +1306,20 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
                 :placeholder="genCertOptions.length ? t('certGen.certs_ph') : t('certGen.no_scope')" />
     </n-form-item>
     <div class="help-note" style="margin:0 0 10px">{{ t("certGen.scope_hint") }}</div>
-    <n-form-item :label="t('certGen.services')" :show-feedback="false">
+    <n-form-item :label="gt('services')" :show-feedback="false">
       <n-checkbox-group v-model:value="genProfiles" style="width:100%">
         <div class="gen-svc-grid">
           <n-checkbox v-for="p in PROFILE_OPTIONS" :key="p" :value="p"
                       :label="p === 'files' ? t('certGen.files_only') : p" />
         </div>
       </n-checkbox-group>
+    </n-form-item>
+    <n-form-item v-if="isWin && genProfiles.includes('iis')" :label="t('certGen.binding')"
+                 :show-feedback="false" style="margin-top:8px">
+      <div style="width:100%">
+        <n-input v-model:value="genWinBinding" placeholder="0.0.0.0:443" />
+        <div class="help-note" style="margin-top:4px">{{ t("certGen.binding_hint") }}</div>
+      </div>
     </n-form-item>
 
     <n-collapse style="margin-top:12px">
@@ -1233,7 +1351,7 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
     <!-- 步驟 1：產生的設定檔內容 -->
     <n-divider style="margin: 14px 0 10px" />
     <div style="font-weight:600;margin-bottom:6px">① {{ t("certGen.preview") }}</div>
-    <div class="help-note" style="margin-bottom:6px">{{ t("certGen.paste_hint") }}</div>
+    <div class="help-note" style="margin-bottom:6px">{{ gt("paste_hint") }}</div>
     <n-space align="start" :wrap="false" :size="8">
       <pre class="help-pre" style="min-height:54px;flex:1;margin:0">{{ genConfig || t("certGen.empty") }}</pre>
       <n-button size="small" type="primary" secondary :disabled="!genConfig" @click="copy(genConfig)">

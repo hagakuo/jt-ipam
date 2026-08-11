@@ -86,13 +86,16 @@ def _detect_query_kind(q: str) -> str:
 async def _search_ip_exact(
     session: AsyncSession, *, user: User, ip: str, limit: int
 ) -> list[SearchHit]:
-    rows = list(
-        (
-            await session.execute(
-                select(IPAddress).where(IPAddress.ip == ip, IPAddress.subnet_id.in_(select(Subnet.id).where(Subnet.archived_at.is_(None)))).limit(limit)
-            )
-        ).scalars().all()
-    )
+    # 帶出所屬子網路：重疊網段下同一個 IP 會有多筆，兩列長得一模一樣的話，
+    # 使用者是在猜自己點的是哪一筆 —— 而那些紀錄的存活狀態可能完全不同。
+    pairs = list((await session.execute(
+        select(IPAddress, Subnet.cidr)
+        .join(Subnet, IPAddress.subnet_id == Subnet.id)
+        .where(IPAddress.ip == ip, Subnet.archived_at.is_(None))
+        .limit(limit)
+    )).all())
+    rows = [r for r, _ in pairs]
+    cidr_by_id = {r.id: str(c) for r, c in pairs}
     if not rows:
         return []
     visible_subnets = set(
@@ -106,7 +109,7 @@ async def _search_ip_exact(
             type="ip_address",
             id=str(r.id),
             label=str(r.ip).split("/")[0],
-            sublabel=r.hostname,
+            sublabel=" · ".join(x for x in (r.hostname, cidr_by_id.get(r.id)) if x),
             score=1.0,
         )
         for r in rows
@@ -216,7 +219,7 @@ async def _search_vlan_number(
 async def _search_vmid(
     session: AsyncSession, *, user: User, vmid: int, limit: int
 ) -> list[SearchHit]:
-    """以 Proxmox VMID 找 VM/CT，回傳其主 IP（導到 IP 詳情，可開 PVE 主控台）。"""
+    """以 Proxmox VMID 找 VM/CT，回傳其主 IP（導到 IP 詳細資料，可開 PVE 主控台）。"""
     from app.models.address import IPAddress
     from app.models.virt import VirtualMachine
     rows = list((await session.execute(
@@ -240,7 +243,7 @@ async def _search_vmid(
         if ip is None or ip.subnet_id not in visible:
             continue
         kindlabel = "CT" if vm.kind == "ct" else "VM"
-        # type=vm → 前端歸「虛擬化」群組、以 VM 名稱為主標（點擊導到該 IP 詳情，可開主控台）
+        # type=vm → 前端歸「虛擬化」群組、以 VM 名稱為主標（點擊導到該 IP 詳細資料，可開主控台）
         hits.append(SearchHit(
             type="vm", id=str(ip.id), label=vm.name,
             sublabel=f"{kindlabel} · VMID {vmid} · {ip.ip}", score=0.99,

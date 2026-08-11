@@ -5,7 +5,7 @@ Revises: 0079_librenms_auto_create_ips
 Create Date: 2026-06-18
 
 cert_agents 加 device_id（可對應到 jt-ipam 裝置）：讓派送代理清單 / 唯讀現況頁的
-代理名稱可點去裝置詳情；裝置刪除時 SET NULL。
+代理名稱可點去裝置詳細資料；裝置刪除時 SET NULL。
 """
 
 from __future__ import annotations

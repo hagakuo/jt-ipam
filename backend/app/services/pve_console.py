@@ -95,14 +95,13 @@ def normalize_username(username: str, realm: str | None) -> str:
     return f"{username}@{(realm or 'pam').strip() or 'pam'}"
 
 
-async def pve_login(base_url: str, username: str, password: str, verify_tls: bool) -> tuple[str, str]:
-    """POST /access/ticket → (PVEAuthCookie ticket, CSRFPreventionToken)。"""
+async def _ticket_request(
+    base_url: str, body: dict[str, object], verify_tls: bool,
+) -> dict[str, object]:
+    """打一次 POST /access/ticket，回 data 區塊。"""
     url = f"{base_url}/api2/json/access/ticket"
     try:
-        resp = await safe_request(
-            "POST", url, json={"username": username, "password": password},
-            timeout=15.0, verify=verify_tls,
-        )
+        resp = await safe_request("POST", url, json=body, timeout=15.0, verify=verify_tls)
     except UnsafeOutboundURL as e:
         raise PveConsoleError(f"SSRF guard: {e}", code="ssrf", status=400) from e
     except httpx.HTTPError as e:
@@ -111,10 +110,53 @@ async def pve_login(base_url: str, username: str, password: str, verify_tls: boo
         raise PveConsoleError("PVE 認證失敗（帳號或密碼錯誤）", code="auth_failed", status=401)
     if resp.status_code != 200:
         raise PveConsoleError(f"PVE /access/ticket：{resp.status_code}", code="pve_error")
-    data = (resp.json() or {}).get("data") or {}
+    return (resp.json() or {}).get("data") or {}
+
+
+async def pve_login(
+    base_url: str, username: str, password: str, verify_tls: bool,
+    *, tfa_code: str | None = None,
+) -> tuple[str, str]:
+    """POST /access/ticket → (PVEAuthCookie ticket, CSRFPreventionToken)。
+
+    **兩階段驗證（TFA/MFA）**：PVE 對啟用 TFA 的帳號會回 HTTP 200，但內容是
+    「挑戰票證」——`{"ticket": "PVE:!tfa!…", "NeedTFA": 1}`。那個 ticket 不能當
+    PVEAuthCookie 用；直接拿去開 vncwebsocket 會失敗，而且錯誤訊息完全看不出
+    真正原因（GitHub issue #23）。
+
+    正確流程是再打一次 `/access/ticket`，帶 `tfa-challenge=<挑戰票證>` 與
+    `password=totp:<6 位數>`，才會換到真正的 ticket。
+    沒有提供驗證碼時，丟一個 `tfa_required` 讓上層去跟使用者要，
+    而不是讓它變成莫名其妙的連線失敗。
+    """
+    data = await _ticket_request(
+        base_url, {"username": username, "password": password}, verify_tls,
+    )
     ticket = data.get("ticket")
     if not ticket:
         raise PveConsoleError("PVE 未回傳登入 ticket", code="auth_failed", status=401)
+
+    # NeedTFA=1，或 ticket 長成挑戰票證的樣子（PVE:!tfa!…）
+    needs_tfa = bool(data.get("NeedTFA")) or str(ticket).startswith("PVE:!tfa!")
+    if needs_tfa:
+        if not tfa_code:
+            raise PveConsoleError(
+                "此 PVE 帳號啟用了兩階段驗證，請輸入驗證器上的 6 位數驗證碼",
+                code="tfa_required", status=401,
+            )
+        data = await _ticket_request(base_url, {
+            "username": username,
+            "tfa-challenge": ticket,
+            # PVE 以 "<型別>:<碼>" 表示第二因素；TOTP 是最常見的一種
+            "password": f"totp:{tfa_code.strip()}",
+        }, verify_tls)
+        ticket = data.get("ticket")
+        if not ticket or str(ticket).startswith("PVE:!tfa!"):
+            raise PveConsoleError(
+                "兩階段驗證碼不正確或已逾時，請重新輸入",
+                code="tfa_failed", status=401,
+            )
+
     return ticket, data.get("CSRFPreventionToken") or ""
 
 

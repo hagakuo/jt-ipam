@@ -28,6 +28,11 @@ class ScanAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # push 模型：agent 主動連 server，server 不需要 agent_url（保留給舊 pull 模型相容）
     agent_url: Mapped[str | None] = mapped_column(Text)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # 這個代理就跑在 jt-ipam 主機上（安裝時自動建立的那一個）。
+    # 掃描一律要有代理，而全新安裝會在本機順便裝一個；UI 要能分辨「本機這台有沒有代理」
+    # 才講得出「沒有的話請自行安裝」—— 靠 last_source_ip 猜不準（NAT／多網卡）。
+    is_local: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False,
+                                           server_default=text("false"))
 
     # AES-GCM 加密的 token（舊 pull 模型用）
     api_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary)

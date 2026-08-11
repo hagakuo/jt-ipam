@@ -17,6 +17,9 @@ import { getLdap, putLdap, testLdap, testLdapAuth, type LdapConfig,
   getConsoleSecurity, setConsoleSecurity,
   getUiDisplay, setUiDisplay } from "@/api/system";
 import { listGroups } from "@/api/admin";
+import { getAutolink, putAutolink, previewAutolink,
+  type AutolinkConfig, type AutolinkPreview } from "@/api/system";
+import { listSubnets } from "@/api/subnets";
 import { fmtDateTime, fmtRelative } from "@/utils/datetime";
 import { apiErrMsg } from "@/api/client";
 import {
@@ -298,7 +301,37 @@ onMounted(() => {
   void loadOidc();
   void loadSaml();
   void loadAf();
+  void loadAutolink();
 });
+
+// ── 依網卡 MAC 自動掛裝置（預設關閉）
+const autolink = ref<AutolinkConfig>({ enabled: false, scope_subnet_ids: null });
+const autolinkPreview = ref<AutolinkPreview | null>(null);
+const autolinkBusy = ref(false);
+const subnetOptions = ref<{ label: string; value: string }[]>([]);
+
+async function loadAutolink() {
+  try {
+    autolink.value = await getAutolink();
+    const subs = await listSubnets({ pageSize: 500 });
+    const rows = Array.isArray(subs) ? subs : (subs as any).items ?? [];
+    subnetOptions.value = rows.map((x: any) => ({ label: x.cidr, value: x.id }));
+  } catch { /* 沒權限或尚未設定：維持預設關閉 */ }
+}
+
+async function saveAutolink(patch: Partial<AutolinkConfig>) {
+  try {
+    autolink.value = await putAutolink(patch);
+    msg.success(t("common.saved"));
+  } catch (e) { msg.error(apiErrMsg(e)); }
+}
+
+async function doPreviewAutolink() {
+  autolinkBusy.value = true;
+  try { autolinkPreview.value = await previewAutolink(); }
+  catch (e) { msg.error(apiErrMsg(e)); }
+  finally { autolinkBusy.value = false; }
+}
 </script>
 
 <template>
@@ -659,6 +692,48 @@ onMounted(() => {
           </n-button>
         </n-space>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.af_hint") }}</div>
+      </section>
+      <!-- 依網卡 MAC 自動掛裝置。預設關閉：升級之後突然多出一個每 5 分鐘自動改
+           資料的作業，本身就是不該發生的事。開啟前可以先預覽會動到什麼。 -->
+      <section class="ss-group">
+        <h3 class="ss-h">{{ t("autolink.title") }}</h3>
+        <div class="ss-grid">
+          <div class="fld">
+            <label>{{ t("autolink.enable") }}</label>
+            <n-switch :value="autolink.enabled"
+                      @update:value="(v: boolean) => saveAutolink({ enabled: v })" />
+            <div class="hint">{{ t("autolink.enable_hint") }}</div>
+          </div>
+          <div class="fld">
+            <label>{{ t("autolink.scope") }}</label>
+            <n-select :value="autolink.scope_subnet_ids ?? []" multiple filterable
+                      :options="subnetOptions" :placeholder="t('autolink.scope_all')"
+                      @update:value="(v: string[]) => saveAutolink({ scope_subnet_ids: v })" />
+            <div class="hint">{{ t("autolink.scope_hint") }}</div>
+          </div>
+        </div>
+        <n-space align="center" style="margin-top:10px">
+          <n-button size="small" :loading="autolinkBusy" @click="doPreviewAutolink">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>
+            {{ t("autolink.preview") }}
+          </n-button>
+          <span v-if="autolinkPreview" class="hint" style="margin:0">
+            {{ t("autolink.preview_result", { n: autolinkPreview.would_link }) }}
+            <template v-if="Object.values(autolinkPreview.skipped).some((x) => x > 0)">
+              · {{ t("autolink.preview_skipped", {
+                    s: Object.entries(autolinkPreview.skipped)
+                         .filter(([, v]) => v > 0)
+                         .map(([k, v]) => `${t("autolink.skip_" + k)} ${v}`).join("、") }) }}
+            </template>
+          </span>
+        </n-space>
+        <div v-if="autolinkPreview?.samples?.length" class="hint" style="margin-top:6px">
+          <div v-for="s in autolinkPreview.samples.slice(0, 8)" :key="s.ip">
+            {{ s.ip }}<template v-if="s.hostname"> ({{ s.hostname }})</template> → {{ s.device }}
+          </div>
+          <div v-if="autolinkPreview.samples.length > 8">…</div>
+        </div>
+        <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("autolink.rules_hint") }}</div>
       </section>
     </div>
   </n-card>

@@ -55,6 +55,8 @@ export interface Subnet {
   vrf_id: string | null;
   is_pool: boolean;
   is_full: boolean;
+  ai_audit_enabled: boolean;
+  anomaly_enabled: boolean;
   scan_enabled: boolean;
   scan_method: string[];
   scan_agent_id: string | null;
@@ -106,6 +108,12 @@ export interface IPAddress {
   switch_port_confident: boolean | null;
   discovery_source: string;
   in_dhcp_lease?: boolean;
+  /** DHCP 上把這個位址綁給某張網卡（固定分配），不會被回收給別台 */
+  dhcp_reserved?: boolean;
+  dhcp_reservation?: {
+    mac?: string | null; hostname?: string | null; description?: string | null;
+    source_name?: string | null; source_type?: string | null; engine?: string | null;
+  } | null;
   is_dhcp_server?: boolean;     // 手動標記為 DHCP 伺服器
   dhcp_server_auto?: boolean;   // 自動：對應到已整合防火牆 IP
   is_gateway?: boolean;         // 所屬子網路閘道
@@ -117,6 +125,8 @@ export interface IPAddress {
   subnet_scan_enabled: boolean | null;
   ssh_enabled?: boolean;
   ssh_available?: boolean;
+  sftp_enabled?: boolean;
+  sftp_available?: boolean;
   rdp_enabled?: boolean;
   rdp_available?: boolean;
   vnc_enabled?: boolean;

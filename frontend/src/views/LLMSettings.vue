@@ -7,15 +7,19 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
-  NCard, NSpace, NIcon, NAlert, NSwitch, NInput, NInputNumber, NSelect, NButton, NTag,
+  NCard, NSpace, NIcon, NAlert, NSwitch, NInput, NInputNumber, NSelect, NButton, NTag, NTimePicker,
   NPopconfirm, NModal, useMessage,
 } from "naive-ui";
 import {
-  getLLMConfig, patchLLMConfig, listOllamaModels, revealMcpKey, rotateMcpKey,
-  type LLMConfig, type LLMConfigPatch, type OllamaModel,
+  getLLMConfig, patchLLMConfig, listOllamaModels, revealMcpKey, rotateMcpKey, checkEmbedding,
+  reindexEmbeddings,
+  type LLMConfig, type LLMConfigPatch, type OllamaModel, type EmbeddingCheck,
+  type ReindexResult,
 } from "@/api/system";
 import { listMcpTools, type McpTool } from "@/api/chat";
-import { SettingsIcon, RefreshIcon, ToolsIcon, KeyIcon, CopyIcon, EyeIcon, EyeOffIcon } from "@/icons";
+import { listSubnets, setAIAuditScope } from "@/api/subnets";
+import type { Subnet } from "@/types";
+import { SettingsIcon, RefreshIcon, ToolsIcon, KeyIcon, CopyIcon, EyeIcon, EyeOffIcon, AnomalyIcon, PlusIcon, DeleteIcon } from "@/icons";
 import { apiErrMsg } from "@/api/client";
 
 const { t } = useI18n();
@@ -53,6 +57,66 @@ const chatModelOptions = computed(() =>
     ...o,
     disabled: isEmbedModel(o.value) && o.value !== llm.value?.chat_model,
   })));
+// 巡檢模型下拉：同樣排除嵌入模型；清空＝沿用對話模型（不是「沒有模型」）
+const auditModelOptions = computed(() =>
+  modelOptions.value.map((o) => ({
+    ...o,
+    disabled: isEmbedModel(o.value) && o.value !== llm.value?.ai_audit_model,
+  })));
+
+// 巡檢範圍。存的是每個子網路的 ai_audit_enabled 欄位（跟子網路編輯頁同一個），
+// 不是另外存一份清單 —— 存兩份遲早會出現「這裡看是開的、那裡看是關的」。
+const subnets = ref<Subnet[]>([]);
+const subnetsLoading = ref(false);
+const auditScope = ref<string[]>([]);
+const subnetOptions = computed(() => subnets.value.map((s) => ({
+  label: s.description ? `${s.cidr} — ${s.description}` : s.cidr,
+  value: s.id,
+})));
+
+async function loadSubnets() {
+  subnetsLoading.value = true;
+  try {
+    const r = await listSubnets({ pageSize: 500 });
+    subnets.value = r.items;
+    auditScope.value = r.items.filter((s) => s.ai_audit_enabled).map((s) => s.id);
+  } catch { /* 沒權限或載入失敗 → 這一格留空，不擋整頁 */ } finally { subnetsLoading.value = false; }
+}
+
+async function saveScope(ids: string[]) {
+  try {
+    await setAIAuditScope(ids);
+    msg.success(t("common.saved"));
+  } catch (e) { msg.error(apiErrMsg(e)); await loadSubnets(); }
+}
+
+// 排程時刻。n-time-picker 吃毫秒時間戳，設定存的是 "HH:MM" —— 兩邊在這裡轉換。
+const auditTimes = computed(() => llm.value?.ai_audit_times?.length
+  ? [...llm.value.ai_audit_times] : ["03:30"]);
+
+function hhmmToMs(hhmm: string): number {
+  const [h, m] = hhmm.split(":").map((x) => Number(x) || 0);
+  const d = new Date();
+  d.setHours(h, m, 0, 0);
+  return d.getTime();
+}
+
+function setTime(index: number, formatted: string | null) {
+  if (!formatted) return;
+  const next = [...auditTimes.value];
+  next[index] = formatted;
+  patch({ ai_audit_times: next });
+}
+
+function addTime() {
+  patch({ ai_audit_times: [...auditTimes.value, "12:00"] });
+}
+
+function removeTime(index: number) {
+  const next = auditTimes.value.filter((_, i) => i !== index);
+  // 一個都不留等於安靜地把排程關掉，但開關還是開著 —— 後端也會擋，這裡先不讓它發生
+  if (next.length) patch({ ai_audit_times: next });
+}
 
 async function loadModels() {
   modelsLoading.value = true;
@@ -68,15 +132,42 @@ async function loadModels() {
   }
 }
 
+const providerOptions = computed(() => [
+  { label: t("llm_settings.provider_ollama"), value: "ollama" },
+  { label: t("llm_settings.provider_openai"), value: "openai" },
+]);
+
+// 嵌入維度檢查：模型回幾維、資料庫要幾維、通不通
+const embedBusy = ref(false);
+const embedResult = ref<EmbeddingCheck | null>(null);
+const reindexBusy = ref(false);
+const reindexResult = ref<ReindexResult | null>(null);
+async function doReindex() {
+  reindexBusy.value = true;
+  reindexResult.value = null;
+  try { reindexResult.value = await reindexEmbeddings(); }
+  catch (e) { msg.error(apiErrMsg(e)); }
+  finally { reindexBusy.value = false; }
+}
+
+async function doCheckEmbedding() {
+  embedBusy.value = true;
+  try { embedResult.value = await checkEmbedding(); }
+  catch (e) { msg.error(apiErrMsg(e)); }
+  finally { embedBusy.value = false; }
+}
+
 async function load() {
   try { llm.value = await getLLMConfig(); }
   catch (e) { msg.error(apiErrMsg(e)); }
-  // 未啟用 Ollama 連接時不要自動去抓清單（否則會冒出「無法連 Ollama」錯誤）
-  if (llm.value?.enabled) void loadModels();
+  // 未啟用連接時不要自動去抓清單（否則會冒出「無法連上 LLM 伺服器」錯誤）
+  if (llm.value?.enabled) { void loadModels(); void doCheckEmbedding(); }
 }
 
-// URL 改了也重新拉 model 清單 (換 Ollama 機器時可能不同)；僅在已啟用時
+// URL 改了也重新拉 model 清單 (換 LLM 伺服器時可能不同)；僅在已啟用時
 watch(() => llm.value?.url, () => { if (llm.value?.url && llm.value?.enabled) void loadModels(); });
+// 換供應商等於換端點（/api/tags ↔ /v1/models），清單一定要重拉，否則下拉會留著上一家的模型
+watch(() => llm.value?.provider, () => { if (llm.value?.url && llm.value?.enabled) void loadModels(); });
 // 啟用切換：開啟才去抓清單；關閉時清掉清單與錯誤（避免殘留「無法連」）
 watch(() => llm.value?.enabled, (en) => {
   if (en) { if (llm.value?.url) void loadModels(); }
@@ -167,7 +258,7 @@ async function loadTools() {
   catch { /* ignore */ }
 }
 
-onMounted(() => { void load(); void loadTools(); });
+onMounted(() => { void load(); void loadTools(); void loadSubnets(); });
 </script>
 
 <template>
@@ -178,7 +269,8 @@ onMounted(() => { void load(); void loadTools(); });
         <span>{{ t("llm_settings.title") }}</span>
       </n-space>
     </template>
-    <n-space v-if="llm" vertical :size="16" style="max-width: 640px">
+    <!-- 不限寬：說明文字在寬螢幕上只佔一半版面、右邊整片空白，讀起來被硬折行 -->
+    <n-space v-if="llm" vertical :size="16" style="width: 100%">
       <n-alert type="info" size="small">
         <span v-html="t('llm_settings.admin_note', { strong: `<strong>${t('llm_settings.admin_global_settings')}</strong>` })" />
       </n-alert>
@@ -187,12 +279,39 @@ onMounted(() => { void load(); void loadTools(); });
         <n-switch :value="llm.enabled" @update:value="(v: boolean) => patch({ enabled: v })" />
       </div>
       <div>
-        <label>Ollama URL</label>
+        <label>{{ t("llm_settings.provider") }}</label>
+        <n-select
+          :value="llm.provider ?? 'ollama'"
+          :options="providerOptions"
+          @update:value="(v: string) => patch({ provider: v })"
+        />
+        <p class="hint">{{ t("llm_settings.provider_hint") }}</p>
+      </div>
+      <!-- 選了外部供應商就要講清楚資料會離開自己的網路。
+           這個專案的賣點是「自架 LLM、資料不外流」，改成雲端是使用者的選擇，
+           但不能讓它悄悄發生。 -->
+      <n-alert v-if="(llm.provider ?? 'ollama') === 'openai'" type="warning"
+               :bordered="false" :show-icon="true">
+        {{ t("llm_settings.provider_egress_warn") }}
+      </n-alert>
+      <div>
+        <label>{{ (llm.provider ?? 'ollama') === 'openai' ? t("llm_settings.api_base") : "Ollama URL" }}</label>
         <n-input
           :value="llm.url"
-          placeholder="http://127.0.0.1:11434"
+          :placeholder="(llm.provider ?? 'ollama') === 'openai'
+            ? 'https://api.openai.com/v1' : 'http://127.0.0.1:11434'"
           @update:value="(v: string) => patch({ url: v })"
         />
+        <p v-if="(llm.provider ?? 'ollama') === 'openai'" class="hint">
+          {{ t("llm_settings.api_base_hint") }}
+        </p>
+      </div>
+      <div v-if="(llm.provider ?? 'ollama') === 'openai'">
+        <label>{{ t("llm_settings.api_key") }}</label>
+        <n-input type="password" show-password-on="click"
+                 :placeholder="llm.api_key_set ? t('llm_settings.api_key_set') : 'sk-…'"
+                 @update:value="(v: string) => patch({ api_key: v })" />
+        <p class="hint">{{ t("llm_settings.api_key_hint") }}</p>
       </div>
       <div>
         <n-space align="center" style="margin-bottom: 4px">
@@ -215,7 +334,13 @@ onMounted(() => { void load(); void loadTools(); });
         />
       </div>
       <div>
-        <label>{{ t("llm_settings.embedding_model") }}</label>
+        <n-space align="center" style="margin-bottom: 4px">
+          <label style="margin: 0">{{ t("llm_settings.embedding_model") }}</label>
+          <n-button text size="tiny" :loading="embedBusy" @click="doCheckEmbedding">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>
+            {{ t("llm_settings.embed_check") }}
+          </n-button>
+        </n-space>
         <n-select
           :value="llm.embedding_model"
           :options="embeddingModelOptions"
@@ -224,6 +349,33 @@ onMounted(() => { void load(); void loadTools(); });
           filterable
           @update:value="(v: string) => patch({ embedding_model: v })"
         />
+        <!-- 選錯嵌入模型時唯一的症狀是「語意搜尋永遠沒有結果」，畫面上沒有任何線索
+             指向維度不合 —— 所以要能當場問一次、把實際維度講出來。 -->
+        <p v-if="embedResult" class="hint" :style="embedResult.ok ? 'color:#18a058' : 'color:#e88080'">
+          {{ embedResult.ok
+            ? t("llm_settings.embed_ok", { dim: embedResult.dim })
+            : embedResult.dim
+              ? t("llm_settings.embed_dim_mismatch", { dim: embedResult.dim, expected: embedResult.expected })
+              : t("llm_settings.embed_failed", { err: String(embedResult.error).slice(0, 120) }) }}
+        </p>
+        <p class="hint">{{ t("llm_settings.embed_hint", { expected: embedResult?.expected ?? 768 }) }}</p>
+        <!-- 換過模型之後，既有物件的向量還是空的 —— 沒有這顆按鈕，使用者無從讓
+             語意搜尋真的開始運作（端點一直都在，只是畫面上沒有入口）。 -->
+        <n-space align="center" style="margin-top:8px">
+          <n-button size="small" :loading="reindexBusy" @click="doReindex">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>
+            {{ t("llm_settings.reindex") }}
+          </n-button>
+          <span v-if="reindexResult" class="hint" style="margin:0"
+                :style="reindexResult.failed ? 'color:#e88080' : 'color:#18a058'">
+            {{ reindexResult.failed
+              ? t("llm_settings.reindex_failed", { n: reindexResult.failed,
+                    err: String(reindexResult.error).slice(0, 100) })
+              : t("llm_settings.reindex_ok", { n: reindexResult.subnets
+                    + reindexResult.ip_addresses + reindexResult.devices }) }}
+          </span>
+        </n-space>
+        <p class="hint">{{ t("llm_settings.reindex_hint") }}</p>
       </div>
       <div>
         <label>{{ t("llm_settings.timeout_sec") }}</label>
@@ -250,6 +402,81 @@ onMounted(() => { void load(); void loadTools(); });
       </div>
     </n-space>
     <p v-else style="opacity: 0.7">{{ t("common.loading") }}</p>
+  </n-card>
+
+  <!-- AI 巡檢排程 -->
+  <n-card v-if="llm" style="margin-top:16px">
+    <template #header>
+      <n-space align="center" :size="8">
+        <n-icon :size="18" :component="AnomalyIcon" />
+        <span>{{ t("llm_settings.audit_title") }}</span>
+      </n-space>
+    </template>
+    <n-alert type="warning" :bordered="false" :show-icon="true" style="margin-bottom:14px">
+      {{ t("llm_settings.audit_warning") }}
+    </n-alert>
+    <n-space vertical :size="14">
+      <div>
+        <n-switch :value="llm.ai_audit_enabled"
+                  @update:value="(v: boolean) => patch({ ai_audit_enabled: v })" />
+        <span style="margin-left:10px">{{ t("llm_settings.audit_enabled") }}</span>
+        <p class="hint">{{ t("llm_settings.audit_enabled_hint") }}</p>
+      </div>
+      <div>
+        <label>{{ t("llm_settings.audit_model") }}</label>
+        <n-select
+          :value="llm.ai_audit_model"
+          :options="auditModelOptions"
+          :loading="modelsLoading"
+          :disabled="!llm.ai_audit_enabled"
+          :placeholder="t('llm_settings.audit_model_inherit', { model: llm.chat_model })"
+          clearable
+          filterable
+          style="width: 100%"
+          @update:value="(v: string | null) => patch({ ai_audit_model: v ?? '' })"
+        />
+        <p class="hint">{{ t("llm_settings.audit_model_hint") }}</p>
+      </div>
+      <div>
+        <label>{{ t("llm_settings.audit_num_ctx") }}</label>
+        <n-input-number :value="llm.ai_audit_num_ctx" :min="0" :max="131072" :step="2048"
+                        :disabled="!llm.ai_audit_enabled" clearable style="width: 220px"
+                        :placeholder="String(llm.num_ctx ?? 4096)"
+                        @update:value="(v: number | null) => patch({ ai_audit_num_ctx: v ?? 0 })" />
+        <p class="hint">{{ t("llm_settings.audit_num_ctx_hint", { n: llm.num_ctx ?? 4096 }) }}</p>
+      </div>
+      <div>
+        <label>{{ t("llm_settings.audit_scope") }}</label>
+        <n-select v-model:value="auditScope" multiple filterable clearable
+                  :options="subnetOptions" :loading="subnetsLoading"
+                  :disabled="!llm.ai_audit_enabled"
+                  :placeholder="t('llm_settings.audit_scope_none')"
+                  style="width: 100%" @update:value="saveScope" />
+        <p class="hint">{{ t("llm_settings.audit_scope_hint") }}</p>
+      </div>
+      <div>
+        <label>{{ t("llm_settings.audit_times") }}</label>
+        <div class="times">
+          <div v-for="(tm, i) in auditTimes" :key="i" class="time-row">
+            <n-time-picker :value="hhmmToMs(tm)" format="HH:mm" :disabled="!llm.ai_audit_enabled"
+                           style="width: 130px"
+                           @update:formatted-value="(v: string | null) => setTime(i, v)" />
+            <n-button quaternary size="small" :disabled="!llm.ai_audit_enabled || auditTimes.length <= 1"
+                      @click="removeTime(i)">
+              <template #icon><n-icon><DeleteIcon /></n-icon></template>
+            </n-button>
+          </div>
+          <n-button size="small" dashed :disabled="!llm.ai_audit_enabled || auditTimes.length >= 12"
+                    @click="addTime">
+            <template #icon><n-icon><PlusIcon /></n-icon></template>
+            {{ t("llm_settings.audit_add_time") }}
+          </n-button>
+        </div>
+        <p class="hint">
+          {{ t("llm_settings.audit_times_hint", { tz: llm.server_timezone || "—" }) }}
+        </p>
+      </div>
+    </n-space>
   </n-card>
 
   <!-- 對外提供 MCP：讓其它系統（外部 LLM 客戶端 / 自動化）以 HTTP 呼叫本站 MCP -->
@@ -283,18 +510,17 @@ onMounted(() => { void load(); void loadTools(); });
           <code class="mcp-v">Streamable HTTP（JSON-RPC 2.0, POST）</code>
           <span class="mcp-or">{{ t("llm_settings.mcp_transport_note") }}</span>
         </div>
-        <div class="mcp-info-row">
+        <div class="mcp-info-row mcp-auth-hd">
           <span class="mcp-k">{{ t("llm_settings.mcp_auth_header") }}</span>
           <span class="mcp-or">{{ t("llm_settings.mcp_auth_choose") }}</span>
         </div>
-        <div class="mcp-info-row mcp-info-sub">
+        <!-- 兩種寫法各一列，名稱與值各自對齊成欄；原本擠在同一行讀起來像一串亂碼 -->
+        <div class="mcp-auth-grid">
           <span class="mcp-kn">{{ t("llm_settings.mcp_header_name") }}</span>
           <code class="mcp-v">X-Auth-Token</code>
           <span class="mcp-kn">{{ t("llm_settings.mcp_header_value") }}</span>
           <code class="mcp-v">&lt;API KEY&gt;</code>
-        </div>
-        <div class="mcp-info-row mcp-info-sub">
-          <span class="mcp-or">{{ t("llm_settings.mcp_or") }}</span>
+
           <span class="mcp-kn">{{ t("llm_settings.mcp_header_name") }}</span>
           <code class="mcp-v">Authorization</code>
           <span class="mcp-kn">{{ t("llm_settings.mcp_header_value") }}</span>
@@ -397,7 +623,9 @@ label {
   margin-bottom: 4px;
   opacity: 0.8;
 }
-.hint { margin: 4px 0 0; font-size: 12px; opacity: 0.6; line-height: 1.5; max-width: 560px; }
+.times { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.time-row { display: flex; align-items: center; gap: 2px; }
+.hint { margin: 4px 0 0; font-size: 12px; opacity: 0.6; line-height: 1.5; }
 .tools-cap { margin: 0 0 12px; font-size: 13px; opacity: 0.7; }
 .tool-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
 .tool-item { border: 1px solid var(--n-border-color, #eee); border-radius: 8px; padding: 10px 12px; }
@@ -414,6 +642,12 @@ label {
 .mcp-info { margin: 14px 0 4px; border: 1px solid var(--n-border-color, #eee); border-radius: 8px;
   padding: 10px 12px; background: rgba(128,128,128,0.04); }
 .mcp-info-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 4px 0; font-size: 13px; }
+.mcp-auth-hd { margin-bottom: 2px; }
+/* 名稱／值 兩組欄位；auto 讓標籤只佔文字寬度，值欄可伸展 */
+.mcp-auth-grid {
+  display: grid; grid-template-columns: auto auto auto minmax(0, 1fr);
+  gap: 6px 8px; align-items: center; margin: 2px 0 8px 12px;
+}
 .mcp-k { min-width: 96px; opacity: 0.65; font-size: 12.5px; }
 .mcp-v { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px;
   background: rgba(128,128,128,0.12); border-radius: 5px; padding: 2px 7px; word-break: break-all; }

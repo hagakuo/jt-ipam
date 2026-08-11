@@ -1,12 +1,15 @@
-"""Ollama 語意搜尋：本地推論不外送（規格 §11.1 / §11.3）。
+"""語意搜尋與對話：預設走自架 Ollama，本地推論不外送（規格 §11.1 / §11.3）。
 
 設計：
-- 透過 Ollama HTTP API 取得 embedding（POST /api/embeddings）
+- 透過 LLM HTTP API 取得 embedding（Ollama `/api/embeddings`、OpenAI 相容 `/v1/embeddings`）
 - 寫入時 / 排程時對 Subnet / IPAddress / Device 的 description 計算向量
 - /api/v1/search/semantic?q=... 走 cosine 相似度（pgvector ivfflat）
 
-OWASP A04 / A06：ollama_url 走 safe_request（私網允許）；任何回到 Ollama
-之外的呼叫都會被擋住。
+供應商：`ollama`（預設）或 `openai`（OpenAI 相容端點）。**預設不變是刻意的** ——
+接外部服務等於把網段、主機名稱、拓樸送出去，那要使用者明確選擇。路徑、回應結構、
+可送的參數三處都不同，各自在 `chat_url` / `extract_reply` / `chat_body` 處理。
+
+OWASP A04 / A06：LLM URL 走 safe_request（私網允許）；任何回到該端點之外的呼叫都會被擋住。
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import json
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -46,19 +49,193 @@ def _chat_options(cfg: Any) -> dict[str, Any]:
         opts["num_ctx"] = int(n)
     return opts
 
+# ── 供應商抽象（Ollama 原生 vs OpenAI 相容）────────────────────────────
+#
+# 預設 ollama。改成可選 OpenAI 相容之後，同一份設定能接 ChatGPT、vLLM、LM Studio、
+# OpenRouter 等 —— Ollama 自己也提供 /v1 相容層。
+#
+# **這是資料出境的決定**：本專案的賣點是「自架 LLM、資料不外流」，接雲端等於把網段、
+# 主機名稱、拓樸送給外部服務。所以預設不變，要使用者明確選擇。
+
+def _openai_base(url: str) -> str:
+    """OpenAI 相容的 base。使用者填 `.../v1` 或不填都要正確 —— 直接接字串會變成
+    `/v1/v1/chat/completions`，那種錯誤只會在實際呼叫時才炸。"""
+    u = url.rstrip("/")
+    return u if u.endswith("/v1") else f"{u}/v1"
+
+
+def chat_url(url: str, provider: str) -> str:
+    if provider == "openai":
+        return f"{_openai_base(url)}/chat/completions"
+    return f"{url.rstrip('/')}/api/chat"
+
+
+def embedding_url(url: str, provider: str) -> str:
+    if provider == "openai":
+        return f"{_openai_base(url)}/embeddings"
+    return f"{url.rstrip('/')}/api/embeddings"
+
+
+def models_url(url: str, provider: str) -> str:
+    if provider == "openai":
+        return f"{_openai_base(url)}/models"
+    return f"{url.rstrip('/')}/api/tags"
+
+
+def parse_models(data: dict[str, Any], provider: str) -> list[dict[str, Any]]:
+    """把模型清單正規化成設定頁下拉要的形狀。
+
+    Ollama 回 `{"models":[{"name":..., "details":{...}}]}`，
+    OpenAI 相容回 `{"data":[{"id":...}]}`（沒有大小／參數量這些資訊）。
+    結構不如預期時回空清單，不要讓設定頁整頁掛掉。
+    """
+    if provider == "openai":
+        rows = data.get("data")
+        if not isinstance(rows, list):
+            return []
+        return [
+            {"name": m.get("id"), "size": None, "modified_at": None,
+             "family": m.get("owned_by"), "parameter_size": None}
+            for m in rows if isinstance(m, dict) and m.get("id")
+        ]
+    rows = data.get("models")
+    if not isinstance(rows, list):
+        return []
+    return [
+        {"name": m.get("name"), "size": m.get("size"), "modified_at": m.get("modified_at"),
+         "family": (m.get("details") or {}).get("family"),
+         "parameter_size": (m.get("details") or {}).get("parameter_size")}
+        for m in rows if isinstance(m, dict)
+    ]
+
+
+def auth_headers(provider: str, api_key: str | None) -> dict[str, str]:
+    """OpenAI 相容用 Bearer；Ollama 不需要。
+
+    沒填金鑰就不要送空的 Bearer —— 本地 vLLM／LM Studio 多半不需要金鑰，
+    送一個空的反而會被判成認證失敗。
+    """
+    h = {"Content-Type": "application/json"}
+    if provider == "openai" and api_key:
+        h["Authorization"] = f"Bearer {api_key}"
+    return h
+
+
+def extract_reply(data: dict[str, Any], provider: str) -> dict[str, Any]:
+    """把回應正規化成 `{"role":..., "content":..., "tool_calls":[...]}`。
+
+    兩家結構不同：Ollama 是 `message`，OpenAI 是 `choices[0].message`。
+    結構不如預期時回空 dict，不要讓 IndexError 變成 500。
+    """
+    if provider == "openai":
+        choices = data.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            return {}
+        return choices[0].get("message") or {}
+    return data.get("message") or {}
+
+
+def chat_body(cfg: Any, provider: str, *, messages: list[Any], tools: list[Any]) -> dict[str, Any]:
+    """組請求主體。`options`（num_ctx 等）是 Ollama 專屬 —— 送給 OpenAI 端點會被拒絕。"""
+    body: dict[str, Any] = {
+        "model": cfg.chat_model,
+        "messages": messages,
+        "stream": False,
+    }
+    if tools:
+        body["tools"] = tools
+    if provider == "ollama":
+        body["options"] = _chat_options(cfg)
+    return body
+
+
+def provider_label(provider: str) -> str:
+    """錯誤訊息裡的供應商名稱。
+
+    回「Ollama chat 401」但實際打的是 OpenAI 端點，只會把人送去查錯的地方。
+    """
+    return "OpenAI-compatible" if provider == "openai" else "Ollama"
+
+
+def json_chat_body(
+    cfg: Any,
+    provider: str,
+    *,
+    prompt: str,
+    stream: bool,
+    force_json: bool,
+    max_output_tokens: int | None,
+    num_ctx: int | None,
+    no_thinking: bool,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """JSON 模式（AI 巡檢用）的請求主體。
+
+    四個控制欄位在兩家的名字完全不同，而且送錯會被打回 400：
+    `options` / `format` / `think` / `num_predict` 是 Ollama 專屬，OpenAI 相容端點
+    對應的是 `response_format` 與 `max_tokens`（`think`、上下文長度則沒有對應，
+    只能省略）。巡檢是背景批次，失敗只會留在紀錄裡沒有人在看畫面 —— 更不能靠運氣。
+    """
+    body: dict[str, Any] = {
+        "model": model or cfg.chat_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": stream,
+    }
+    if provider == "openai":
+        if force_json:
+            body["response_format"] = {"type": "json_object"}
+        if max_output_tokens:
+            body["max_tokens"] = int(max_output_tokens)
+        return body
+    options = _chat_options(cfg)
+    if max_output_tokens:
+        options = {**options, "num_predict": int(max_output_tokens)}
+    if num_ctx:
+        options = {**options, "num_ctx": int(num_ctx)}
+    body["options"] = options
+    if force_json:
+        body["format"] = "json"
+    if no_thinking:
+        body["think"] = False
+    return body
+
+
+
+
+def embedding_body(cfg: Any, provider: str, text_in: str) -> dict[str, Any]:
+    """Ollama 收 `prompt`，OpenAI 相容收 `input`。"""
+    if provider == "openai":
+        return {"model": cfg.embedding_model, "input": text_in}
+    return {"model": cfg.embedding_model, "prompt": text_in}
+
+
+def extract_embedding(data: dict[str, Any], provider: str) -> list[float]:
+    """Ollama 回 `embedding`，OpenAI 相容回 `data[0].embedding`。
+
+    取不到就回空清單，讓呼叫端統一報「沒有拿到向量」，而不是 KeyError／IndexError。
+    """
+    vec: Any
+    if provider == "openai":
+        rows = data.get("data")
+        vec = rows[0].get("embedding") if isinstance(rows, list) and rows and isinstance(rows[0], dict) else None
+    else:
+        vec = data.get("embedding")
+    return vec if isinstance(vec, list) else []
+
+
 
 async def embed(session: AsyncSession, text_in: str) -> list[float]:
     """呼叫 Ollama 的 embedding endpoint。設定取自 system_settings (DB)，fallback 到 env。"""
     from app.services.system_config import get_llm_config
     cfg = await get_llm_config(session)
     if not cfg.enabled:
-        raise AINotConfigured("Ollama is disabled")
-    url = f"{cfg.url.rstrip('/')}/api/embeddings"
-    body = {"model": cfg.embedding_model, "prompt": text_in}
+        raise AINotConfigured("LLM is disabled")
+    url = embedding_url(cfg.url, cfg.provider)
+    body = embedding_body(cfg, cfg.provider, text_in)
     try:
         resp = await safe_request(
             "POST", url,
-            headers={"Content-Type": "application/json"},
+            headers=auth_headers(cfg.provider, cfg.api_key),
             json=body, timeout=cfg.timeout,
         )
     except UnsafeOutboundURL as exc:
@@ -66,11 +243,10 @@ async def embed(session: AsyncSession, text_in: str) -> list[float]:
     except httpx.HTTPError as exc:
         raise AIError(f"transport: {exc.__class__.__name__}") from exc
     if resp.status_code != 200:
-        raise AIError(f"Ollama {resp.status_code}: {resp.text[:200]}")
-    data = resp.json()
-    vec = data.get("embedding")
-    if not isinstance(vec, list) or not vec:
-        raise AIError("Ollama returned no embedding")
+        raise AIError(f"{provider_label(cfg.provider)} {resp.status_code}: {resp.text[:200]}")
+    vec = extract_embedding(resp.json(), cfg.provider)
+    if not vec:
+        raise AIError(f"{provider_label(cfg.provider)} returned no embedding")
     expected_dim = get_settings().embedding_dim
     if len(vec) != expected_dim:
         raise AIError(
@@ -88,7 +264,8 @@ def _vector_literal(vec: list[float]) -> str:
 # ─────────────────── 寫入：對單一物件描述產生向量 ───────────────────
 
 
-async def index_subnet(session: AsyncSession, subnet_id: str, description: str | None) -> bool:
+async def index_subnet(session: AsyncSession, subnet_id: str, description: str | None,
+                       *, raise_on_error: bool = False) -> bool:
     """為一個 subnet 產 embedding 並寫入 vector 欄位；description 為空則清空。"""
     if not description:
         await session.execute(
@@ -99,6 +276,10 @@ async def index_subnet(session: AsyncSession, subnet_id: str, description: str |
     try:
         vec = await embed(session, description)
     except (AIError, AINotConfigured):
+        # 單筆寫入路徑（存檔時順手索引）不因為 LLM 不通就讓存檔失敗；
+        # 批次 reindex 則要知道原因，否則「全失敗」會被當成「沒事可做」。
+        if raise_on_error:
+            raise
         return False
     await session.execute(
         text("UPDATE subnets SET description_embedding = (:v)::vector WHERE id = :id"),
@@ -107,7 +288,8 @@ async def index_subnet(session: AsyncSession, subnet_id: str, description: str |
     return True
 
 
-async def index_ip(session: AsyncSession, ip_id: str, description: str | None) -> bool:
+async def index_ip(session: AsyncSession, ip_id: str, description: str | None,
+                   *, raise_on_error: bool = False) -> bool:
     if not description:
         await session.execute(
             text("UPDATE ip_addresses SET description_embedding = NULL WHERE id = :id"),
@@ -117,6 +299,10 @@ async def index_ip(session: AsyncSession, ip_id: str, description: str | None) -
     try:
         vec = await embed(session, description)
     except (AIError, AINotConfigured):
+        # 單筆寫入路徑（存檔時順手索引）不因為 LLM 不通就讓存檔失敗；
+        # 批次 reindex 則要知道原因，否則「全失敗」會被當成「沒事可做」。
+        if raise_on_error:
+            raise
         return False
     await session.execute(
         text("UPDATE ip_addresses SET description_embedding = (:v)::vector WHERE id = :id"),
@@ -125,7 +311,8 @@ async def index_ip(session: AsyncSession, ip_id: str, description: str | None) -
     return True
 
 
-async def index_device(session: AsyncSession, device_id: str, description: str | None) -> bool:
+async def index_device(session: AsyncSession, device_id: str, description: str | None,
+                       *, raise_on_error: bool = False) -> bool:
     if not description:
         await session.execute(
             text("UPDATE devices SET description_embedding = NULL WHERE id = :id"),
@@ -135,6 +322,10 @@ async def index_device(session: AsyncSession, device_id: str, description: str |
     try:
         vec = await embed(session, description)
     except (AIError, AINotConfigured):
+        # 單筆寫入路徑（存檔時順手索引）不因為 LLM 不通就讓存檔失敗；
+        # 批次 reindex 則要知道原因，否則「全失敗」會被當成「沒事可做」。
+        if raise_on_error:
+            raise
         return False
     await session.execute(
         text("UPDATE devices SET description_embedding = (:v)::vector WHERE id = :id"),
@@ -144,6 +335,20 @@ async def index_device(session: AsyncSession, device_id: str, description: str |
 
 
 # ─────────────────── 查詢：跨表 cosine 最相近 ───────────────────
+
+
+async def probe_embedding(session: AsyncSession) -> dict[str, Any]:
+    """實際取一次向量，回報維度是否與資料庫欄位相符。
+
+    設定頁上，嵌入模型選錯的唯一症狀是「語意搜尋永遠沒有結果」—— 沒有任何訊息會說
+    是維度不合。這支就是把那件事講出來：模型回幾維、資料庫要幾維、通不通。
+    """
+    expected = get_settings().embedding_dim
+    try:
+        vec = await embed(session, "jt-ipam embedding dimension probe")
+    except (AIError, AINotConfigured) as exc:
+        return {"ok": False, "dim": None, "expected": expected, "error": str(exc)[:300]}
+    return {"ok": len(vec) == expected, "dim": len(vec), "expected": expected, "error": None}
 
 
 async def semantic_search(
@@ -406,12 +611,12 @@ async def chat(
     from app.services.system_config import get_llm_config
     cfg = await get_llm_config(session)
     if not cfg.enabled:
-        raise AINotConfigured("Ollama is disabled")
+        raise AINotConfigured("LLM is disabled")
 
     from app.mcp.tools import allowed_tool_names
     _allowed = await allowed_tool_names(session, user)
     ollama_tools, convo = _build_chat_context(messages, locale, page_context, _allowed)
-    url = f"{cfg.url.rstrip('/')}/api/chat"
+    url = chat_url(cfg.url, cfg.provider)
     started = time.monotonic()
 
     def _meta() -> dict[str, Any]:
@@ -429,7 +634,7 @@ async def chat(
         try:
             resp = await safe_request(
                 "POST", url,
-                headers={"Content-Type": "application/json"},
+                headers=auth_headers(cfg.provider, cfg.api_key),
                 json=body, timeout=cfg.timeout,
             )
         except UnsafeOutboundURL as exc:
@@ -437,10 +642,10 @@ async def chat(
         except httpx.HTTPError as exc:
             raise AIError(f"transport: {exc.__class__.__name__}") from exc
         if resp.status_code != 200:
-            raise AIError(f"Ollama chat {resp.status_code}: {resp.text[:200]}")
+            raise AIError(f"{provider_label(cfg.provider)} chat {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
 
-        msg = data.get("message") or {}
+        msg = extract_reply(data, cfg.provider)
         convo.append(msg)
 
         tool_calls = msg.get("tool_calls") or []
@@ -471,7 +676,7 @@ async def chat(
 
 async def _force_final_answer(cfg: Any, convo: list[dict[str, Any]]) -> str:
     """max_iterations 用完時的收尾：不帶 tools 再呼叫一次，要 LLM 直接作答。"""
-    url = f"{cfg.url.rstrip('/')}/api/chat"
+    url = chat_url(cfg.url, cfg.provider)
     # 明確指示：根據已取得的工具結果立刻作答，別再呼叫工具（否則模型常回空字串 → 落到 fallback）
     nudge = {
         "role": "user",
@@ -485,11 +690,11 @@ async def _force_final_answer(cfg: Any, convo: list[dict[str, Any]]) -> str:
             "stream": False, "options": _chat_options(cfg)}
     try:
         resp = await safe_request(
-            "POST", url, headers={"Content-Type": "application/json"},
+            "POST", url, headers=auth_headers(cfg.provider, cfg.api_key),
             json=body, timeout=cfg.timeout,
         )
         if resp.status_code == 200:
-            msg = (resp.json().get("message") or {})
+            msg = extract_reply(resp.json(), cfg.provider)
             content = msg.get("content")
             if content:
                 convo.append({"role": "assistant", "content": content})
@@ -555,8 +760,17 @@ def _build_chat_context(
                 "consistency), VPN tunnels (WireGuard / IPsec / OpenVPN, incl. site-to-"
                 "site), NAT, VLANs, VRFs, racks, sections, firewalls and their rules/"
                 "aliases, network topology (get_topology), ARP/FDB, IP-allocation "
-                "requests, scan agents, virtual machines, wireless links, customers, and "
-                "Wazuh security-coverage gaps (wazuh_missing_agents). Before saying you "
+                "requests, scan agents, virtual machines, wireless links, customers, "
+                "Wazuh security-coverage gaps (wazuh_missing_agents), TLS certificates and "
+                "their distribution to hosts (list_certificates / list_cert_distribution — "
+                "metadata only, private keys are never exposed), DHCP pool ranges "
+                "(list_dhcp_ranges), anomaly detection results (list_anomalies — IP "
+                "conflicts, MAC drifts, ghost IPs, unauthorised IPs, rogue DHCP servers; "
+                "these are measured facts and can be stated plainly), and AI review "
+                "findings (list_ai_findings — these are model inferences, not verified "
+                "facts; say so when you repeat them). Both are admin-only. "
+                "list_firewalls covers OPNsense, pfSense and FortiGate together; FortiGate "
+                "policies and address objects have their own tools. Before saying you "
                 "cannot determine something, check whether a relevant tool exists and "
                 "call it (e.g. list_vpn_tunnels for site-to-site VPN, get_topology for "
                 "how things connect, list_firewall_rules for firewall policy). "
@@ -682,13 +896,13 @@ async def chat_stream(
     from app.services.system_config import get_llm_config
     cfg = await get_llm_config(session)
     if not cfg.enabled:
-        yield {"type": "error", "detail": "Ollama is disabled"}
+        yield {"type": "error", "detail": "LLM is disabled"}
         return
 
     from app.mcp.tools import allowed_tool_names
     _allowed = await allowed_tool_names(session, user)
     ollama_tools, convo = _build_chat_context(messages, locale, page_context, _allowed)
-    url = f"{cfg.url.rstrip('/')}/api/chat"
+    url = chat_url(cfg.url, cfg.provider)
     started = time.monotonic()
 
     def _meta() -> dict[str, Any]:
@@ -707,12 +921,12 @@ async def chat_stream(
         try:
             async with safe_stream(
                 "POST", url,
-                headers={"Content-Type": "application/json"},
+                headers=auth_headers(cfg.provider, cfg.api_key),
                 json=body, timeout=cfg.timeout,
             ) as resp:
                 if resp.status_code != 200:
                     detail = (await resp.aread()).decode("utf-8", "replace")[:200]
-                    yield {"type": "error", "detail": f"Ollama chat {resp.status_code}: {detail}"}
+                    yield {"type": "error", "detail": f"{provider_label(cfg.provider)} chat {resp.status_code}: {detail}"}
                     return
                 async for line in resp.aiter_lines():
                     if not line.strip():
@@ -779,7 +993,7 @@ async def chat_stream(
     body = {"model": cfg.chat_model, "messages": convo, "stream": True, "options": _chat_options(cfg)}
     try:
         async with safe_stream(
-            "POST", url, headers={"Content-Type": "application/json"},
+            "POST", url, headers=auth_headers(cfg.provider, cfg.api_key),
             json=body, timeout=cfg.timeout,
         ) as resp:
             if resp.status_code == 200:
@@ -807,13 +1021,29 @@ async def chat_stream(
 # ─────────────────── 全表 reindex（admin 一次性） ───────────────────
 
 
-async def reindex_all(session: AsyncSession) -> dict[str, int]:
-    """重新計算所有有 description 的物件的 embedding。慢；只在初始化或換 model 時跑。"""
+async def reindex_all(session: AsyncSession) -> dict[str, Any]:
+    """重新計算所有有 description 的物件的 embedding。慢；只在初始化或換 model 時跑。
+
+    **失敗筆數與原因要一起回報。** 只回成功數的話，「全部失敗」看起來會跟「沒有東西
+    要索引」一模一樣 —— 實機上就是這樣：嵌入模型回 4096 維、欄位是 vector(768)，
+    每一筆都丟例外被吞掉，reindex 回 0/0/0，語意搜尋從頭到尾沒有真的運作過。
+    """
     from app.models.address import IPAddress
     from app.models.device import Device
     from app.models.subnet import Subnet
 
-    stats = {"subnets": 0, "ip_addresses": 0, "devices": 0}
+    stats: dict[str, Any] = {"subnets": 0, "ip_addresses": 0, "devices": 0,
+                             "failed": 0, "error": None}
+
+    def _note(exc: Exception) -> None:
+        stats["failed"] = int(stats["failed"]) + 1
+        if not stats["error"]:
+            stats["error"] = str(exc)[:300]
+
+    # 分批 commit：整表放在同一個交易裡，會跟同時在跑的整合同步（jt-ipam-sync 每 ~5 分鐘
+    # 更新同一批 ip_addresses）互鎖 —— 實機第一次真的跑得動 reindex 就撞到 deadlock，
+    # 整批因此中止。每 N 筆放掉一次鎖，衝突視窗就只剩下這 N 筆。
+    _BATCH = 25
 
     sub_rows = (
         await session.execute(
@@ -821,8 +1051,13 @@ async def reindex_all(session: AsyncSession) -> dict[str, int]:
         )
     ).all()
     for sid, desc in sub_rows:
-        if await index_subnet(session, str(sid), desc):
-            stats["subnets"] += 1
+        try:
+            if await index_subnet(session, str(sid), desc, raise_on_error=True):
+                stats["subnets"] += 1
+        except (AIError, AINotConfigured) as exc:
+            _note(exc)
+        if (stats["subnets"] + stats["failed"]) % _BATCH == 0:
+            await session.commit()
     await session.commit()
 
     ip_rows = (
@@ -833,8 +1068,13 @@ async def reindex_all(session: AsyncSession) -> dict[str, int]:
         )
     ).all()
     for iid, desc in ip_rows:
-        if await index_ip(session, str(iid), desc):
-            stats["ip_addresses"] += 1
+        try:
+            if await index_ip(session, str(iid), desc, raise_on_error=True):
+                stats["ip_addresses"] += 1
+        except (AIError, AINotConfigured) as exc:
+            _note(exc)
+        if (stats["ip_addresses"] + stats["failed"]) % _BATCH == 0:
+            await session.commit()
     await session.commit()
 
     dev_rows = (
@@ -843,8 +1083,141 @@ async def reindex_all(session: AsyncSession) -> dict[str, int]:
         )
     ).all()
     for did, desc in dev_rows:
-        if await index_device(session, str(did), desc):
-            stats["devices"] += 1
+        try:
+            if await index_device(session, str(did), desc, raise_on_error=True):
+                stats["devices"] += 1
+        except (AIError, AINotConfigured) as exc:
+            _note(exc)
+        if (stats["devices"] + stats["failed"]) % _BATCH == 0:
+            await session.commit()
     await session.commit()
 
     return stats
+
+
+async def raw_chat(session: AsyncSession, prompt: str, timeout: float | None = None,
+                   model: str | None = None, force_json: bool = False,
+                   max_output_tokens: int | None = None, no_thinking: bool = False,
+                   num_ctx: int | None = None,
+                   on_chunk: Callable[[str, str], Awaitable[None]] | None = None) -> str:
+    """單次、不帶工具的對話 —— 給 AI 巡檢這類「送一段提示詞、要一段結構化輸出」的用途。
+
+    刻意**不掛 IPAM 工具**：巡檢的資料已經由呼叫端依可見範圍取好並放進提示詞裡，
+    再讓模型去呼叫工具只會多一條繞過權限的路。
+
+    `timeout` 留空＝用 LLM 設定裡的值（那個是為互動對話調的）。背景批次要自己給一個
+    夠長的值 —— 幾百筆資料的提示詞用互動逾時去跑，幾乎每次都會逾時。
+    `model` 留空＝用設定的對話模型。
+    `force_json=True` 會要求 Ollama 只輸出 JSON —— 光靠提示詞說「只回 JSON」不夠，
+    模型（尤其提示詞很長時）常常改寫一段散文回來。
+    `max_output_tokens` 限制產出長度。沒有上限的話，模型有機會卡在重複輸出的迴圈裡，
+    把整個逾時燒完才失敗（實測看過一批產出 34,000 字還沒停）。
+    `no_thinking=True` 關掉思考模式。**思考過程也算在產出額度裡** —— 實測 gemma4 一批
+    寫了 10,401 字的思考，結果真正的答案被額度切斷。舊版 Ollama 不認這個欄位，
+    被拒絕時會自動退回不帶它重送。
+    `on_chunk(片段, 種類)` 有給就改走串流：一批要跑好幾分鐘，沒有中途訊號的話畫面上
+    完全看不出模型是在算還是已經卡死。種類是 "thinking"（思考過程）或 "content"
+    （最終輸出）—— 會思考的模型前幾分鐘只吐 thinking，兩者要分開才講得清楚現況。
+    """
+    from app.services.system_config import get_llm_config
+    cfg = await get_llm_config(session)
+    if not cfg.enabled:
+        raise AINotConfigured("LLM is disabled")
+    url = chat_url(cfg.url, cfg.provider)
+    body = json_chat_body(
+        cfg, cfg.provider, prompt=prompt, stream=on_chunk is not None,
+        force_json=force_json, max_output_tokens=max_output_tokens, num_ctx=num_ctx,
+        no_thinking=no_thinking, model=model,
+    )
+    wait = timeout or cfg.timeout
+    try:
+        if on_chunk is not None:
+            return await _raw_chat_streamed(url, body, wait, on_chunk,
+                                            auth_headers(cfg.provider, cfg.api_key),
+                                            cfg.provider)
+        resp = await safe_request("POST", url, headers=auth_headers(cfg.provider, cfg.api_key),
+                                  json=body, timeout=wait)
+        if _rejected_think(resp):
+            body.pop("think", None)
+            resp = await safe_request("POST", url, headers=auth_headers(cfg.provider, cfg.api_key),
+                                      json=body, timeout=wait)
+    except UnsafeOutboundURL as exc:
+        raise AIError(f"SSRF guard: {exc}") from exc
+    except httpx.ReadTimeout as exc:
+        raise AIError(
+            f"LLM 伺服器在 {int(wait)} 秒內沒有回覆完（模型太慢或資料量太大）"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise AIError(f"transport: {exc.__class__.__name__}") from exc
+    if resp.status_code != 200:
+        raise AIError(f"{provider_label(cfg.provider)} chat {resp.status_code}: {resp.text[:200]}")
+    # 兩家結構不同：Ollama 是 message、OpenAI 是 choices[0].message
+    data = resp.json()
+    msg = data.get("message") or {}
+    if not msg:
+        msg = ((data.get("choices") or [{}])[0]).get("message") or {}
+    return str(msg.get("content") or "")
+
+
+def _rejected_think(resp: Any) -> bool:
+    """舊版 Ollama 不認 `think` 欄位 —— 認出這種錯誤，好退回不帶它重送。"""
+    if resp.status_code == 200 or "think" not in (resp.text or "").lower():
+        return False
+    return True
+
+
+async def _raw_chat_streamed(
+    url: str, body: dict[str, Any], wait: float,
+    on_chunk: Callable[[str, str], Awaitable[None]],
+    headers: dict[str, str] | None = None,
+    provider: str = "ollama",
+) -> str:
+    """串流版：邊收邊回報，最後把整段內容拼回來給呼叫端解析。"""
+    try:
+        return await _stream_once(url, body, wait, on_chunk, headers, provider)
+    except AIError as exc:
+        # 舊版 Ollama 不認 `think`：拿掉重來一次，而不是整批失敗
+        if "think" not in str(exc).lower() or "think" not in body:
+            raise
+        body.pop("think", None)
+        return await _stream_once(url, body, wait, on_chunk, headers, provider)
+
+
+async def _stream_once(
+    url: str, body: dict[str, Any], wait: float,
+    on_chunk: Callable[[str, str], Awaitable[None]],
+    headers: dict[str, str] | None = None,
+    provider: str = "ollama",
+) -> str:
+    parts: list[str] = []
+    async with safe_stream("POST", url,
+                           headers=headers or {"Content-Type": "application/json"},
+                           json=body, timeout=wait) as resp:
+        if resp.status_code != 200:
+            detail = (await resp.aread()).decode("utf-8", "replace")[:200]
+            raise AIError(f"{provider_label(provider)} chat {resp.status_code}: {detail}")
+        async for line in resp.aiter_lines():
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+            except ValueError:
+                continue          # Ollama 偶爾夾非 JSON 行；跳過即可
+            # 串流每一行的結構兩家不同（Ollama: message；OpenAI: choices[0].delta）。
+            # 這支輔助函式拿不到 cfg，也不需要 —— 兩種都試，取到就用。
+            msg = data.get("message") or {}
+            if not msg:
+                ch = (data.get("choices") or [{}])[0]
+                msg = ch.get("delta") or ch.get("message") or {}
+            # 會思考的模型（gemma4 等）先吐一大段 thinking，content 要等到最後才出現。
+            # 只看 content 的話，畫面會停住好幾分鐘完全沒有動靜 —— 實際上模型正在想。
+            thinking = str(msg.get("thinking") or "")
+            if thinking:
+                await on_chunk(thinking, "thinking")
+            piece = str(msg.get("content") or "")
+            if piece:
+                parts.append(piece)
+                await on_chunk(piece, "content")
+            if data.get("error"):
+                raise AIError(f"LLM: {str(data['error'])[:200]}")
+    return "".join(parts)

@@ -51,6 +51,14 @@ const _menuActive = {
 };
 
 // 淺色：白卡 + 柔和冷灰底，三層對比；狀態色更鮮明
+// 表頭底色 —— n-data-table 與手刻表頭（AI 巡檢的發現清單）共用同一個值。
+// 深色模式下方另有一條 `.n-data-table-th` 的 !important 規則會蓋掉 naive 的 thColor，
+// 所以「深色實際看到的顏色」是 TH_DARK 這個半透明值，不是 thColor 的底色。
+// 兩處都引用同一個常數，不要各寫各的 —— 否則改了一邊、另一邊就悄悄不一致。
+const TH_LIGHT = "#f7f9fc";
+const TH_DARK = "rgba(148, 163, 184, 0.10)";
+const TH_DARK_BASE = "#1a212c";
+
 const lightOverrides = {
   common: {
     ..._common,
@@ -77,7 +85,7 @@ const lightOverrides = {
   LayoutHeader: { color: "#ffffff", borderColor: "#e6e9f0" },
   Card: { color: "#ffffff", borderColor: "#e8ebf2" },
   Menu: _menuActive,
-  DataTable: { thColor: "#f7f9fc", borderColor: "#eef1f6", tdColorHover: "#f7f9fc" },
+  DataTable: { thColor: TH_LIGHT, borderColor: "#eef1f6", tdColorHover: "#f7f9fc" },
   Tabs: { tabTextColorActiveLine: PRIMARY, barColor: PRIMARY },
 };
 
@@ -120,20 +128,28 @@ const darkOverrides = {
     itemTextColorChildActive: "#34d399",
     itemIconColorChildActive: "#34d399",
   },
-  DataTable: { thColor: "#1a212c", borderColor: "rgba(255,255,255,0.07)", tdColorHover: "rgba(255,255,255,0.04)" },
+  DataTable: { thColor: TH_DARK_BASE, borderColor: "rgba(255,255,255,0.07)", tdColorHover: "rgba(255,255,255,0.04)" },
   Tabs: { tabTextColorActiveLine: "#34d399", barColor: "#34d399" },
 };
 const themeOverrides = computed(() =>
   effectiveTheme.value === "dark" ? darkOverrides : lightOverrides,
 );
+
+// 同一個值也用 CSS 變數送出去，手刻表頭（AI 巡檢的發現清單）才能跟 n-data-table 一致。
+// 複製一份色碼到別的檔案的話，主題一改就會有一個地方沒跟上。
+const cssVars = computed(() => ({
+  "--table-th-color": effectiveTheme.value === "dark" ? TH_DARK : TH_LIGHT,
+}));
 </script>
 
 <template>
   <!-- inline-theme-disabled：把主題樣式從 inline style 屬性改寫進 <style> 區塊，縮小 CSP
        style-src 的 inline 面積（補償控制，見 SECURITY.md「Accepted risks」）＋ SSR/效能。 -->
   <n-config-provider :theme="naiveTheme" :theme-overrides="themeOverrides" :inline-theme-disabled="true"
-                     :locale="naiveLocale" :date-locale="naiveDateLocale">
+                     :locale="naiveLocale" :date-locale="naiveDateLocale"
+                     :style="cssVars">
     <n-loading-bar-provider>
+      <!-- 主題色以 CSS 變數往下送，手刻元件才不用自己複製一份色碼 -->
       <n-dialog-provider>
         <n-notification-provider>
           <n-message-provider>
@@ -250,7 +266,7 @@ html[data-theme="dark"] .n-card {
 }
 /* 深色模式：表格表頭帶底色 + 列分隔，讓表格不再「奄奄一息」 */
 html[data-theme="dark"] .n-data-table-th {
-  background-color: rgba(148, 163, 184, 0.10) !important;
+  background-color: var(--table-th-color) !important;
 }
 html[data-theme="dark"] .n-data-table-td {
   border-bottom: 1px solid rgba(148, 163, 184, 0.07);

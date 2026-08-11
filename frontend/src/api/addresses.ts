@@ -45,6 +45,7 @@ export interface IPAddressUpdate {
   customer_id?: string | null;
   hostname_source_pin?: string | null;
   ssh_enabled?: boolean | null;
+  sftp_enabled?: boolean | null;
   rdp_enabled?: boolean | null;
   vnc_enabled?: boolean | null;
   novnc_enabled?: boolean | null;

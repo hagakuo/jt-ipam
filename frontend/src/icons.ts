@@ -27,6 +27,9 @@ import {
   Refresh,
   RefreshDouble,
   ArrowUpCircle,
+  Percentage,
+  SortDown,
+  SortUp,
   Search,
   Xmark,
   LinkSlash,
@@ -44,6 +47,8 @@ import {
   Internet,
   IpAddressTag,
   Server,
+  Windows,
+  Text,
   ServerConnection,
   Settings,
   GraphUp,
@@ -75,7 +80,9 @@ import {
   SunLight,
   Database,
   Send,
+  Activity,
   Antenna,
+  BrainResearch,
   Flash,
   // Status
   CheckCircle,
@@ -91,6 +98,11 @@ import {
   List,
   ChatBubbleQuestion,
   Download,
+  Upload,
+  FolderPlus,
+  Filter,
+  ArrowRight,
+  ArrowUp,
   PasteClipboard,
 } from "@iconoir/vue";
 
@@ -113,6 +125,8 @@ export const UpgradeIcon = ArrowUpCircle;
 export const InfoIcon = InfoCircle;
 export const EyeIcon = Eye;
 export const EyeOffIcon = EyeClosed;
+// 「忽略」：判斷為誤報而收起來，不是刪除 —— 用閉眼比用叉叉貼切
+export const DismissIcon = EyeClosed;
 
 // ── 狀態 ──
 export const OkIcon = CheckCircle;
@@ -135,6 +149,11 @@ export const DashboardIcon = Home;
 export const SectionsIcon = Folder;
 export const SubnetsIcon = Network;
 export const AddressesIcon = IpAddressTag;
+// 排序控制項用：排序欄位（IP／主機名稱／可用率）與方向（遞增／遞減）
+export const HostnameIcon = Text;
+export const SlaIcon = Percentage;
+export const SortAscIcon = SortUp;
+export const SortDescIcon = SortDown;
 export const IPChangesIcon = ClockRotateRight;
 export const VlansIcon = Internet;
 export const VrfsIcon = Link;
@@ -145,10 +164,19 @@ export const RacksIcon = ServerConnection;
 // IP 角色標記（清單視覺化，緊湊 icon）：閘道 / DHCP 伺服器
 export const GatewayIcon = Internet;
 export const DhcpServerIcon = Server;
+// 「整合 Windows DHCP」選單用。不共用 DhcpServerIcon —— 那個是 IP 清單上的「DHCP 伺服器
+// 角色」標記，語意不同；而且 Server 這顆與 Proxmox／VMware 長得一樣，三個選單分不出來。
+export const WindowsDhcpIcon = Windows;
 export const LocationsIcon = MapPin;
+// DHCP 固定分配：這個位址被綁給某張網卡，不會被回收給別台
+export const ReservedIcon = Lock;
 export const PinIcon = Pin;
 export const RequestsIcon = MultiplePages;
 export const TopologyIcon = GraphUp;
+// 連線診斷（ping / traceroute / port…）：實際送封包的那一類工具。
+// 不能用 Antenna —— 那是「無線連線」與「掃描代理」在用的，選單上會撞在一起。
+// 用脈搏線：這一類工具量的就是「通不通、多快」。
+export const NetDiagIcon = Activity;
 export const FitIcon = ScaleFrameEnlarge;
 export const SendIcon = SendDiagonal;
 export const ToolsIcon = Hammer;
@@ -165,6 +193,9 @@ export const ThemeLightIcon = SunLight;
 export const GroupsIcon = Group;
 export const CustomFieldsIcon = Page;
 export const AnomalyIcon = ShieldAlert;
+// AI 巡檢：跟異常偵測分開的圖示 —— 一個是量到的事實、一個是模型的推測，
+// 選單上並排時要一眼分得出來
+export const AiAuditIcon = BrainResearch;
 export const DnsIcon = Globe;
 export const LibreNMSIcon = Cloud;
 export const FirewallIcon = Shield;
@@ -196,6 +227,12 @@ export const TestIcon = CheckCircle;
  */
 export const ChatHistoryIcon = ChatBubbleQuestion;
 export const ExportIcon = Download;
+export const DownloadIcon = Download;
+export const UploadIcon = Upload;
+export const NewFolderIcon = FolderPlus;
+export const FilterIcon = Filter;
+export const MoveIcon = ArrowRight;   // 搬移到其他目錄
+export const UpLevelIcon = ArrowUp;   // 回上一層目錄
 export const PasteIcon = PasteClipboard;
 export const CopyIcon = Copy;
 export const TerminalIcon = Terminal;
@@ -230,3 +267,5 @@ export const OpenNewWindowIcon = OpenNewWindow;
 export function renderIcon(Icon: any, size = 18) {
   return () => h(NIcon, { size }, () => h(Icon));
 }
+/** SFTP 檔案傳輸（沿用資料夾圖示 —— 這個功能就是在瀏覽遠端目錄） */
+export const FilesIcon = Folder;

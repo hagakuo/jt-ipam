@@ -30,6 +30,10 @@ class SubnetBase(StrictModel):
     vrf_id: uuid.UUID | None = None
     is_pool: bool = False
     is_full: bool = False
+    # 是否納入 AI 巡檢（預設納入；新網段自動被看顧，不用記得去開）
+    ai_audit_enabled: bool = True
+    # 是否納入異常偵測（預設納入）
+    anomaly_enabled: bool = True
     scan_enabled: bool = False
     scan_method: list[str] = Field(default_factory=lambda: ["icmp"])
     threshold_pct: Annotated[int | None, Field(ge=0, le=100)] = None
@@ -85,6 +89,8 @@ class SubnetUpdate(StrictModel):
     vrf_id: uuid.UUID | None = None
     is_pool: bool | None = None
     is_full: bool | None = None
+    ai_audit_enabled: bool | None = None
+    anomaly_enabled: bool | None = None
     scan_enabled: bool | None = None
     scan_method: list[str] | None = None
     threshold_pct: Annotated[int | None, Field(ge=0, le=100)] = None

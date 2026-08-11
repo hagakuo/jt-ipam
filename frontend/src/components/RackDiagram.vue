@@ -5,7 +5,7 @@
  * 比 phpIPAM 改進：
  *  - 顏色按 device type 區分 (router/switch/firewall/server/...)
  *  - 越界 / 重疊衝突明顯標示
- *  - 點 device 跳詳情
+ *  - 點 device 跳詳細資料
  *  - U 編號從上到下標示，符合機房現場認知
  */
 import { computed, ref, onMounted } from "vue";
@@ -202,8 +202,8 @@ interface Props {
   showLegend?: boolean;   // 多機櫃並排時可關掉，由頁面放一個共用圖例
   editable?: boolean;     // admin：點空 U 位可挑裝置放入
   floorAlignTo?: number;  // 多機櫃並排時傳入該排最高 U 數 → 矮櫃頂端補空白，使底部(U1)靠下對齊
-  highlightId?: string | null;  // 常駐高亮某裝置（裝置詳情頁標示本機在機櫃的位置）
-  compact?: boolean;            // 較小列高（嵌在裝置詳情等空間有限處）
+  highlightId?: string | null;  // 常駐高亮某裝置（裝置詳細資料頁標示本機在機櫃的位置）
+  compact?: boolean;            // 較小列高（嵌在裝置詳細資料等空間有限處）
   bare?: boolean;               // 去掉卡片外框與標題（嵌入用）
   face?: "front" | "rear" | null;  // 外部強制指定檢視面（合併卡共用切換用）；null = 用自身切換
   controls?: boolean;              // 是否顯示自身的面切換 + 匯出（合併卡傳 false 改由外層統一）
@@ -563,7 +563,7 @@ const cells = computed<Cell[]>(() => {
 /* 聚焦模式：設了 highlightId 時，其他裝置淡化，只突顯本裝置 */
 .u-dim { opacity: 0.32; filter: grayscale(0.4); }
 .u-dim .d-name { opacity: 0.7; }
-/* compact：較小列高，給裝置詳情側欄用 */
+/* compact：較小列高，給裝置詳細資料側欄用 */
 .rd-compact .u-row { height: 18px; font-size: 10px; }
 .rd-compact .u-num-out { height: 18px; font-size: 9px; }
 .rd-compact .d-name { font-size: 10px; max-width: 90px; }

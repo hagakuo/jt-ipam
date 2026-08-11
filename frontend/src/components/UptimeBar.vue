@@ -46,14 +46,14 @@ import { useI18n } from "vue-i18n";
 import { NTag, NTooltip } from "naive-ui";
 import { apiClient, apiErrMsg } from "@/api/client";
 
-// 同一個元件服務兩種來源：IP 詳情頁與裝置詳情頁（裝置會合併它名下所有 IP）
+// 同一個元件服務兩種來源：IP 詳細資料頁與裝置詳細資料頁（裝置會合併它名下所有 IP）
 const props = withDefaults(
   defineProps<{ addressId?: string; deviceId?: string; days?: number }>(),
   { addressId: undefined, deviceId: undefined, days: 90 },
 );
 const { t } = useI18n();
 
-interface UptimeDay { date: string; status: "up" | "down" | "unknown" }
+interface UptimeDay { date: string; status: "up" | "partial" | "down" | "unknown" }
 interface UptimeData {
   days: number;
   items: UptimeDay[];
@@ -94,10 +94,10 @@ watch(() => [props.addressId, props.deviceId], load);
 
 /* 每條等比壓縮：min-width:0 讓 flex item 可以縮到比內容窄，窄螢幕才不會撐破 */
 .uptime-bars { display: flex; gap: 2px; align-items: stretch; height: 34px; }
-/* 膠囊狀圓角（比照參考的 status page 樣式）：半徑取夠大讓兩端呈半圓，
-   實際圓角會被條寬夾住，所以窄螢幕壓縮時仍然好看 */
+/* 直角（使用者指定）：不做圓角，維持方正的色塊。
+   cursor: pointer —— 每一格 hover 都會出 tooltip，游標要提示「這裡可以互動」 */
 .bar {
-  flex: 1 1 0; min-width: 0; border-radius: 999px;
+  flex: 1 1 0; min-width: 0; border-radius: 0; cursor: pointer;
   transition: opacity .12s ease, transform .12s ease;
 }
 .bar:hover { opacity: .75; transform: scaleY(1.06); }
@@ -105,7 +105,10 @@ watch(() => [props.addressId, props.deviceId], load);
 /* 綠／橘是狀態語意色，深淺主題下都成立 → 固定色。
    「無資料」必須跟著主題走，否則深色模式會亮得刺眼。 */
 .bar-up { background: #18a058; }
-.bar-down { background: #f0a020; }
+/* 橘＝當天有斷也有通（短暫中斷）；紅＝整天都不通（持續離線）。
+   分開才看得出「一次長時間離線」與「多次短暫中斷」的差別。 */
+.bar-partial { background: #f0a020; }
+.bar-down { background: #d03050; }
 .bar-unknown { background: var(--n-border-color); }
 
 .uptime-foot {

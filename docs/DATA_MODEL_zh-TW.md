@@ -229,7 +229,7 @@ NetBox 風但精簡（一張多型 termination 表，不拆多表）。
 - `object_type` ∈ `customer / section / subnet / ip / device / rack / location`（7 種可授權物件）。
 - `object_id` NULL = 萬用（該類型全部）。
 - `principal_type` ∈ `user / group`；`level` ∈ `read / write / admin`。
-- `(object_type, object_id, principal_type, principal_id)` 唯一。未授權 = 無存取。`visible_ids()` 回 None（全部可見 — admin 或萬用）/ set（限定）/ 空 set（無）；列表 / 詳情 / 搜尋 / 儀表板彙總 / 計數全部都要依此縮放。
+- `(object_type, object_id, principal_type, principal_id)` 唯一。未授權 = 無存取。`visible_ids()` 回 None（全部可見 — admin 或萬用）/ set（限定）/ 空 set（無）；列表 / 詳細資料 / 搜尋 / 儀表板彙總 / 計數全部都要依此縮放。
 
 ### 8.3 `audit_logs` — SHA-256 鏈（A08）
 `bigint` PK；`actor_user_id`/`actor_ip`/`actor_user_agent`、`object_type`/`object_id`（UUID）、`action`、`diff`（jsonb，敏感欄位 redact）、`request_id`。`prev_hash` + `this_hash` 構成可驗竄改的鏈；寫入用 advisory lock 序列化。`object_id` 必須是真正的 UUID（別塞非 UUID）。

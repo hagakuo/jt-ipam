@@ -199,7 +199,12 @@ class Settings(BaseSettings):
     # ── AI / Ollama（語意搜尋；本地推論不外送，符合規格 §11.1）──
     ollama_enabled: bool = False
     ollama_url: str = "http://127.0.0.1:11434"
-    ollama_embedding_model: str = "qwen3-embedding:8b"
+    # 嵌入模型的輸出維度必須等於 embedding_dim（資料庫欄位是 vector(N)）—— 不合的話
+    # 每一筆索引都會失敗，而症狀只有「語意搜尋永遠沒有結果」。原本的預設
+    # qwen3-embedding:8b 回 4096 維，與 768 的欄位對不上，等於出廠就是壞的。
+    # granite-embedding:278m 是 768 維且支援多語系（實測能分辨不同的中文描述，
+    # nomic-embed-text 這類英文專用模型會把不同中文塌成同一個向量）。
+    ollama_embedding_model: str = "granite-embedding:278m"
     ollama_chat_model: str = "gemma4:26b"
     ollama_timeout: float = 90.0  # 大型模型 + 工具結果上下文時 30s 太短會 ReadTimeout
     embedding_dim: int = 768

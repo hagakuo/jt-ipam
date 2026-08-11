@@ -115,6 +115,8 @@ export async function deleteVRF(id: string): Promise<void> {
 
 // Device
 export interface Device {
+  /** 虛擬機還是實體機（後端依虛擬機清單推導，不是可編輯欄位） */
+  is_virtual?: boolean;
   id: string; name: string; type: string;
   fqdn: string | null;
   ip?: string | null;     // 由清單 endpoint 解析 primary_ip 填入
@@ -130,10 +132,17 @@ export interface Device {
   created_at: string; updated_at: string;
 }
 export async function listDevices(
-  params?: { page?: number; pageSize?: number },
+  params?: { page?: number; pageSize?: number; q?: string; subnetId?: string | null },
 ): Promise<Paginated<Device>> {
   const { data } = await apiClient.get<Paginated<Device>>("/api/v1/devices", {
-    params: { page: params?.page ?? 1, page_size: params?.pageSize ?? 200 },
+    params: {
+      page: params?.page ?? 1,
+      page_size: params?.pageSize ?? 200,
+      // 伺服器端搜尋：畫面只載得下一頁，只在已載入的資料上過濾的話，
+      // 超過一頁的站台會「列表看不到、用名字也搜不到」（客戶回報過）
+      q: params?.q || undefined,
+      subnet_id: params?.subnetId || undefined,
+    },
   });
   return data;
 }

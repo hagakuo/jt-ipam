@@ -43,6 +43,9 @@ COLUMN_SECRETS: dict[str, list[tuple[str, str, str, Callable[[dict[str, Any]], b
     "wazuh_instances": [
         ("api_password", "api_password_enc", "api_password_nonce", _aad_id("wazuh_instance:{id}:api_password")),
     ],
+    "esxi_instances": [
+        ("password", "password_enc", "password_nonce", _aad_id("esxi_instance:{id}:password")),
+    ],
     "librenms_instances": [
         ("api_token", "api_token_enc", "api_token_nonce", _aad_id("librenms_instance:{id}:api_token")),
     ],
@@ -93,7 +96,7 @@ ENVELOPE_SECRETS: dict[str, tuple[str, str, Callable[[Any, str], bytes]]] = {
 # ─────────────────────────── 4. system_settings 內嵌機密 ───────────────────────────
 # key -> {enc_field: aad_bytes}；均為 "v1:b64nonce:b64ct" 格式（除 phpipam 為 b64 pair）
 _SETTINGS_V1: dict[str, dict[str, bytes]] = {
-    "llm": {"mcp_api_key_enc": b"llm:mcp_api_key"},
+    "llm": {"mcp_api_key_enc": b"llm:mcp_api_key", "api_key_enc": b"llm:api_key"},
     "ldap": {"bind_password_enc": b"ldap:bind_password"},
     "oidc": {"client_secret_enc": b"oidc:client_secret"},
     "saml": {"sp_private_key_enc": b"saml:sp_private_key"},

@@ -31,6 +31,7 @@ EP_DHCP_LEASES = "/api/v2/status/dhcp_server/leases"
 # 複數形才是列表端點（單數需要 id，會回 MODEL_REQUIRES_ID）——已對實機確認。
 EP_DHCP_SERVERS = "/api/v2/services/dhcp_servers"
 EP_DHCP_ADDRESS_POOLS = "/api/v2/services/dhcp_server/address_pools"
+EP_DHCP_STATIC_MAPPINGS = "/api/v2/services/dhcp_server/static_mappings"
 EP_ARP_TABLE = "/api/v2/diagnostics/arp_table"
 EP_ALIASES = "/api/v2/firewall/aliases"
 EP_RULES = "/api/v2/firewall/rules"
@@ -259,6 +260,35 @@ async def sync_dhcp_ranges(session: AsyncSession, fw: PfSenseFirewall) -> int:
     return len(parsed)
 
 
+async def sync_dhcp_reservations(session: AsyncSession, fw: PfSenseFirewall) -> int:
+    """pfSense 的 DHCP 固定分配（static mappings）。
+
+    欄名以 pfSense-pkg-RESTAPI 為準：`mac` / `ipaddr` / `hostname` / `descr`。
+    沒有 `ipaddr` 的項目略過 —— 那只是「認得這張網卡」，沒有保留位址。
+    """
+    from app.services.dhcp_reservations import Reservation, replace_reservations
+
+    rows: list[Reservation] = []
+    try:
+        data = await _api_get(fw, EP_DHCP_STATIC_MAPPINGS, timeout=10.0)
+    except PfSenseError:
+        data = []
+    for d in data if isinstance(data, list) else []:
+        if not isinstance(d, dict):
+            continue
+        ip = str(_first(d, "ipaddr", "ip_address", "ip") or "").strip()
+        if not ip:
+            continue
+        rows.append(Reservation(
+            ip=ip, mac=_first(d, "mac", "mac_address"),
+            hostname=_as_text(_first(d, "hostname", "cid")),
+            description=_as_text(_first(d, "descr", "description"))))
+    return await replace_reservations(
+        session, source_type="pfsense", source_id=fw.id, source_name=fw.name,
+        engine="pfsense", rows=rows,
+    )
+
+
 async def sync_arp_table(session: AsyncSession, fw: PfSenseFirewall) -> int:
     rows = await _api_get(fw, EP_ARP_TABLE)
     if not isinstance(rows, list):
@@ -405,6 +435,8 @@ async def sync_instance(session: AsyncSession, fw: PfSenseFirewall) -> dict[str,
         counts["dhcp"] = await sync_dhcp_leases(session, fw)
     if fw.sync_dhcp_ranges:
         counts["dhcp_ranges"] = await sync_dhcp_ranges(session, fw)
+        # 固定分配與發放範圍同屬「DHCP 設定」，沿用同一個開關，不再多一個設定項
+        counts["dhcp_reservations"] = await sync_dhcp_reservations(session, fw)
     if fw.sync_arp:
         counts["arp"] = await sync_arp_table(session, fw)
     if fw.sync_aliases:

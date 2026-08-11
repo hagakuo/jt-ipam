@@ -5,7 +5,7 @@ Revises: 0085_vm_unique_by_vmid
 Create Date: 2026-06-26
 
 掃描代理回報它相依的外部工具盤點（nmap / nmblookup / nbtscan / avahi-resolve / ping / ip…），
-每筆 {name, installed, version}，前端「掃描代理」頁顯示「相依套件 N/M」+ 詳情（哪些裝了什麼版本、哪些缺）。
+每筆 {name, installed, version}，前端「掃描代理」頁顯示「相依套件 N/M」+ 詳細資料（哪些裝了什麼版本、哪些缺）。
 """
 
 from __future__ import annotations

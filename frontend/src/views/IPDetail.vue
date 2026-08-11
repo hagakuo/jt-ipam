@@ -21,6 +21,11 @@ const loading = ref(false);
 function sshHref(): string {
   return router.resolve({ name: "ssh-console", params: { id: addr.value!.id } }).href;
 }
+function openSftp() {
+  if (!addr.value) return;
+  window.open(router.resolve({ name: "sftp-console",
+                              params: { id: addr.value.id } }).href, "_blank");
+}
 // 主按鈕 → 新分頁；下拉 → 新視窗（彈出）
 function openSsh() {
   if (!addr.value) return;
@@ -117,6 +122,7 @@ watch(() => route.params.id, (id) => { if (id) load(String(id)); });
         @deleted="onDeleted"
         @back="back"
         @ssh-open="openSsh"
+        @sftp-open="openSftp"
         @ssh-popout="openSshPopout"
         @rdp-open="openRdp"
         @rdp-popout="openRdpPopout"

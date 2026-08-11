@@ -117,6 +117,8 @@ class IPAddressUpdate(StrictModel):
     hostname_source_pin: Annotated[str | None, Field(max_length=16)] = None
     # SSH 連線管理開關（沿用 IP 編輯權限）
     ssh_enabled: bool | None = None
+    # SFTP 檔案傳輸開關（與 SSH 各自獨立：可以只開傳檔、不開終端機）
+    sftp_enabled: bool | None = None
     # RDP 連線管理開關（沿用 IP 編輯權限）
     rdp_enabled: bool | None = None
     # VNC 連線管理開關（沿用 IP 編輯權限）
@@ -142,11 +144,18 @@ class IPAddressRead(IPAddressBase):
     id: uuid.UUID
     discovery_source: str
     in_dhcp_lease: bool = False   # 自動判定：目前有 DHCP 租約（由 OPNsense lease 同步維護）
+    # DHCP 上有把這個位址固定綁給某張網卡。與「有租約」意義不同：有租約＝現在有人在用，
+    # 固定分配＝這個位址不會被換人用（位址被回收再發給別台，正是資料張冠李戴的來源）。
+    dhcp_reserved: bool = False
+    dhcp_reservation: dict[str, Any] | None = None   # 明細：綁哪張網卡、哪台 DHCP（詳細資料頁用）
     # ── 清單視覺化用的特殊角色旗標 ──
     is_dhcp_server: bool = False     # 手動標記為 DHCP 伺服器
     dhcp_server_auto: bool = False   # 自動：此 IP = 已整合 OPNsense/pfSense 防火牆的 IP（讀取端推導）
     is_gateway: bool = False         # 此 IP = 所屬子網路的閘道（讀取端推導）
     in_dhcp_range: bool = False      # 此 IP 落在 OPNsense DHCP pool 範圍內（讀取端推導）
+    # 掃描代理實際觀測到這個位址在回應 DHCP 的時間（讀取端推導）。
+    # 跟 is_dhcp_server 是兩回事：那個是「有沒有登記」，這個是「有沒有真的在發」。
+    dhcp_observed_at: str | None = None
     hostname_source_pin: str | None = None
     switch_port_confident: bool | None = None
     os_guess: str | None = None
@@ -164,6 +173,9 @@ class IPAddressRead(IPAddressBase):
     # SSH 連線管理：是否已啟用 + 目前使用者是否可用（後端依權限算好給前端顯示按鈕）
     ssh_enabled: bool = False
     ssh_available: bool = False
+    # SFTP 檔案傳輸：是否已啟用 + 目前使用者是否可用
+    sftp_enabled: bool = False
+    sftp_available: bool = False
     # RDP 連線管理：是否已啟用 + 目前使用者是否可用
     rdp_enabled: bool = False
     rdp_available: bool = False

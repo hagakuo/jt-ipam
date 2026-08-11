@@ -42,7 +42,7 @@ import sys
 import time
 import urllib.request
 
-AGENT_VERSION = "1.7.0"
+AGENT_VERSION = "1.8.0"
 SERVER = os.environ.get("JT_IPAM_URL", "").rstrip("/")
 KEY = os.environ.get("JT_IPAM_AGENT_KEY", "")
 INTERVAL = int(os.environ.get("JT_IPAM_INTERVAL", "300"))
@@ -53,7 +53,7 @@ PING_WORKERS = 128
 AGENT_PATH = os.path.realpath(__file__)
 
 # 所有已知探測鍵；server 沒指定 probes 時，向下相容用 icmp。
-ALL_PROBES = ("icmp", "tcp", "arp", "rdns", "netbios", "mdns", "os", "ports")
+ALL_PROBES = ("icmp", "tcp", "arp", "rdns", "netbios", "mdns", "dhcp", "os", "ports")
 DEFAULT_PROBES = ("icmp",)
 
 # tcp 探測掃的常見埠（也作為 alive 判定依據）
@@ -98,6 +98,9 @@ def _capabilities() -> list[str]:
         caps.append("netbios")
     if shutil.which("avahi-resolve"):
         caps.append("mdns")
+    # DHCP discovery needs to bind UDP/68 (privileged) — report the capability only if we can.
+    if _can_bind_dhcp_port():
+        caps.append("dhcp")
     # 去重並維持 ALL_PROBES 順序
     seen = set(caps)
     return [p for p in ALL_PROBES if p in seen]
@@ -266,6 +269,133 @@ def _netbios(ip: str) -> str | None:
         except Exception:
             pass
     return None
+
+
+# ─────────────────── DHCP server discovery ───────────────────
+# Sends one standard DHCPDISCOVER broadcast and collects every DHCPOFFER that comes
+# back. Anything answering is handing out addresses on this segment; the server then
+# compares that against the addresses marked as DHCP servers in IPAM, and whatever is
+# left over is a rogue DHCP server.
+#
+# We do NOT accept the offered lease (no REQUEST is sent), so nothing is consumed.
+# Some servers do reserve the offered address for a short while — that is inherent to
+# asking the question at all, and is why this probe is off by default.
+
+DHCP_MAGIC = b"\x63\x82\x53\x63"
+
+
+def _can_bind_dhcp_port() -> bool:
+    """Can we bind UDP/68? DHCP replies are sent there; without it we would miss them."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("", 68))
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
+def _dhcp_packet(xid: bytes, mac: bytes) -> bytes:
+    """Build a minimal DHCPDISCOVER (RFC 2131)."""
+    pkt = b"".join((
+        b"\x01",                     # op: BOOTREQUEST
+        b"\x01",                     # htype: ethernet
+        b"\x06",                     # hlen
+        b"\x00",                     # hops
+        xid,
+        b"\x00\x00",                 # secs
+        b"\x80\x00",                 # flags: broadcast
+        b"\x00" * 4 * 4,             # ciaddr / yiaddr / siaddr / giaddr
+        mac + b"\x00" * 10,          # chaddr (16 bytes)
+        b"\x00" * 64,                # sname
+        b"\x00" * 128,               # file
+        DHCP_MAGIC,
+        b"\x35\x01\x01",            # option 53: DHCPDISCOVER
+        b"\x37\x03\x01\x03\x06",    # option 55: request subnet/router/dns
+        b"\xff",                     # end
+    ))
+    return pkt
+
+
+def _dhcp_parse(data: bytes) -> dict | None:
+    """Pull the interesting bits out of a DHCP reply. Returns None if it is not one."""
+    if len(data) < 240 or data[236:240] != DHCP_MAGIC:
+        return None
+    out = {"offered_ip": socket.inet_ntoa(data[16:20]),
+           "relay": socket.inet_ntoa(data[24:28]),
+           "xid": data[4:8]}
+    i = 240
+    while i < len(data):
+        opt = data[i]
+        if opt == 255:                # end
+            break
+        if opt == 0:                  # pad
+            i += 1
+            continue
+        if i + 1 >= len(data):
+            break
+        ln = data[i + 1]
+        val = data[i + 2:i + 2 + ln]
+        if opt == 53 and ln == 1:
+            out["msg_type"] = val[0]
+        elif opt == 54 and ln == 4:   # server identifier
+            out["server_id"] = socket.inet_ntoa(val)
+        elif opt == 1 and ln == 4:
+            out["netmask"] = socket.inet_ntoa(val)
+        elif opt == 3 and ln >= 4:
+            out["router"] = socket.inet_ntoa(val[:4])
+        i += 2 + ln
+    return out
+
+
+def _dhcp_discover(wait: float = 4.0) -> list:
+    """Broadcast one DHCPDISCOVER, return every distinct server that answered.
+
+    Listens for the whole window rather than stopping at the first reply — the entire
+    point is to find the SECOND server answering on a segment that should only have one.
+    """
+    mac = os.urandom(6)
+    mac = bytes([(mac[0] | 0x02) & 0xFE]) + mac[1:]   # locally administered, unicast
+    xid = os.urandom(4)
+    found = {}
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.bind(("", 68))
+        sock.settimeout(0.5)
+        sock.sendto(_dhcp_packet(xid, mac), ("255.255.255.255", 67))
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            try:
+                data, addr = sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            info = _dhcp_parse(data)
+            # Only our own transaction, and only offers (2 = DHCPOFFER)
+            if not info or info.get("xid") != xid or info.get("msg_type") != 2:
+                continue
+            server_ip = info.get("server_id") or addr[0]
+            if server_ip in found:
+                continue
+            found[server_ip] = {
+                "server_ip": server_ip,
+                "from_ip": addr[0],
+                "offered_ip": info.get("offered_ip"),
+                "router": info.get("router"),
+                "netmask": info.get("netmask"),
+                "via_relay": info.get("relay") not in (None, "0.0.0.0"),
+            }
+    except OSError as exc:
+        print(f"[dhcp] discovery failed: {exc}", file=sys.stderr, flush=True)
+    finally:
+        if sock is not None:
+            sock.close()
+    return list(found.values())
 
 
 def _mdns(ip: str) -> str | None:
@@ -438,6 +568,7 @@ def scan_once() -> None:
     cap_set = set(caps)
     now = time.time()
     results: list[dict] = []
+    dhcp_servers: list[dict] = []
 
     for s in subnets:
         cidr = s.get("cidr")
@@ -459,6 +590,18 @@ def scan_once() -> None:
         if not due:
             print(f"  {cidr}: no probe due this cycle", flush=True)
             continue
+
+        # DHCP 偵測是「對整個網段問一次」，不是逐台問 —— 它找的是誰在發 IP。
+        if "dhcp" in due:
+            offers = _dhcp_discover()
+            # 先問完再讀 arp 表：剛跟我們講過話的主機這時才會在表裡
+            neigh = _arp_table() if offers else {}
+            for srv in offers:
+                srv["subnet_cidr"] = cidr
+                srv["mac"] = neigh.get(srv["server_ip"])
+                dhcp_servers.append(srv)
+            print(f"  {cidr}: dhcp offers={len([d for d in dhcp_servers if d.get('subnet_cidr') == cidr])}",
+                  flush=True)
 
         hosts = _hosts(cidr)
         # arp 表用於 arp 探測，也順手在其他探測時補 mac。
@@ -561,9 +704,13 @@ def scan_once() -> None:
         summary = "+".join(due)
         print(f"  {cidr}: probes={summary} alive={subnet_alive}/{len(hosts)}", flush=True)
 
-    if results:
-        r = _req("POST", "/api/v1/scan-agents/report", {"results": results})
-        print(f"[report] sent={len(results)} updated={r.get('updated')}", flush=True)
+    if results or dhcp_servers:
+        payload = {"results": results}
+        if dhcp_servers:
+            payload["dhcp_servers"] = dhcp_servers
+        r = _req("POST", "/api/v1/scan-agents/report", payload)
+        print(f"[report] sent={len(results)} dhcp={len(dhcp_servers)} "
+              f"updated={r.get('updated')}", flush=True)
     else:
         print("[report] nothing to report", flush=True)
 

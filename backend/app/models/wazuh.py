@@ -84,6 +84,16 @@ class WazuhAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     cve_high_count: Mapped[int | None] = mapped_column(Integer)
     cve_summary_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # SCA（資安組態評估）：拿現有的 manager API 帳號就讀得到，不需要額外憑證。
+    # 存「最差的那個政策」——一台機器可能跑多個基準（CIS、自訂），畫面只放一個數字時，
+    # 顯示最好看的那個等於自我安慰。
+    sca_policy: Mapped[str | None] = mapped_column(String(128))
+    sca_score: Mapped[int | None] = mapped_column(Integer)
+    sca_pass: Mapped[int | None] = mapped_column(Integer)
+    sca_fail: Mapped[int | None] = mapped_column(Integer)
+    sca_policy_count: Mapped[int | None] = mapped_column(Integer)
+    sca_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     __table_args__ = (
         UniqueConstraint("instance_id", "agent_id", name="wazuh_agent_unique"),
     )

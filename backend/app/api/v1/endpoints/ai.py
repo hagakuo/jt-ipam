@@ -205,7 +205,7 @@ async def chat_stream(
     from app.services.system_config import get_llm_config
     cfg = await get_llm_config(session)
     if not cfg.enabled:
-        raise HTTPException(status_code=503, detail="Ollama is disabled")
+        raise HTTPException(status_code=503, detail="LLM is disabled")
 
     async def event_gen() -> Any:
         iterations = 0
@@ -254,12 +254,24 @@ async def chat_stream(
     )
 
 
+@router.get("/embedding-check", dependencies=[Depends(require_admin)])
+async def embedding_check(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """實際取一次向量，回報維度是否與資料庫欄位相符。
+
+    嵌入模型選錯時唯一的症狀是「語意搜尋永遠沒有結果」，畫面上沒有任何線索指向
+    維度不合 —— 這支就是把那件事講出來。
+    """
+    return await ai_service.probe_embedding(session)
+
+
 @router.post("/reindex", dependencies=[Depends(require_admin)])
 async def reindex(
     user: CurrentUser,
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
-) -> dict[str, int]:
+) -> dict[str, Any]:
     try:
         stats = await ai_service.reindex_all(session)
     except ai_service.AINotConfigured as exc:

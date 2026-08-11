@@ -81,12 +81,21 @@ function probeInstall(key: string): string {
     "請確認掃描代理主機具備該探測所需的系統工具與權限（例如 root / cap_net_raw、可連到 DNS 等）。"
   );
 }
-// 已勾選的重型探測（需顯示間隔輸入）
-const heavyChecked = computed(() =>
-  catalog.value.probes.filter(
-    (p) => p.klass === "heavy" && enabledProbes.value.includes(p.key),
-  ),
+// 已勾選的探測（每一種都可以設自己的間隔）。
+// 原本只讓重型探測設間隔，但後端本來就吃全部七種 —— 輕型只是沒有畫面可設，
+// 使用者只能用預設值，也看不出「多久掃一次」是怎麼決定的。
+const intervalChecked = computed(() =>
+  catalog.value.probes.filter((p) => enabledProbes.value.includes(p.key)),
 );
+const lightChecked = computed(() => intervalChecked.value.filter((p) => p.klass === "light"));
+
+/** 快迴圈頻率＝所有輕型間隔的最小值（下限 60 秒）—— 與後端 fast_interval() 同一條規則。
+ *  這個數字就是「多久掃一次」，把它算給使用者看，不然改了輕型間隔也不知道影響什麼。 */
+const fastInterval = computed(() => {
+  const light = lightChecked.value.map(
+    (p) => probeIntervals.value[p.key] ?? p.default_interval_seconds);
+  return light.length ? Math.max(60, Math.min(...light)) : 300;
+});
 // 秒數 → 人類可讀（天 / 小時 / 分 / 秒），給間隔輸入框旁的換算提示
 function humanInterval(secs: number | null | undefined): string {
   const s = Number(secs || 0);
@@ -153,10 +162,10 @@ function openEdit(r: ScanAgent) {
   void getAgentSubnets(r.id).then((ids) => { form.value.subnet_ids = ids; }).catch(() => {});
   show.value = true;
 }
-// 只送出已勾選的重型探測間隔（輕型走預設，不送）
+// 送出所有已勾選探測的間隔（後端會再對各項的最小值做把關）
 function buildProbeIntervals(): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const p of heavyChecked.value) {
+  for (const p of intervalChecked.value) {
     const v = probeIntervals.value[p.key];
     out[p.key] = v != null ? v : p.default_interval_seconds;
   }
@@ -297,7 +306,7 @@ const cols = computed<DataTableColumns<ScanAgent>>(() =>
   allCols.value.filter((c: any) => saVis.value.includes(c.key)),
 );
 
-// 相依套件詳情
+// 相依套件詳細資料
 const toolsShow = ref(false);
 const toolsRow = ref<ScanAgent | null>(null);
 function openTools(r: ScanAgent) { toolsRow.value = r; toolsShow.value = true; }
@@ -353,7 +362,7 @@ onMounted(() => { void refresh(); });
     </n-space>
     <n-data-table :columns="cols" :data="filteredRows" :loading="loading" :bordered="false" :scroll-x="1080" :pagination="pg" />
 
-    <!-- 相依套件詳情 -->
+    <!-- 相依套件詳細資料 -->
     <n-modal v-model:show="toolsShow" preset="card" :title="t('scan_agent.deps_title')" style="width: 720px; max-width: 94vw">
       <p class="hint" style="margin-top:0">{{ t("scan_agent.deps_hint") }}</p>
       <table class="dep-tbl">
@@ -450,21 +459,32 @@ onMounted(() => { void refresh(); });
             </n-checkbox-group>
           </n-space>
         </n-form-item>
-        <n-form-item
-          v-for="p in heavyChecked" :key="p.key"
-          :label="`${probeLabel(p, locale)} — ${t('scan_probes.interval')}`"
-        >
-          <n-input-number
-            v-model:value="probeIntervals[p.key]"
-            :min="p.min_interval_seconds"
-            :placeholder="String(p.default_interval_seconds)"
-            style="width: 100%"
-          >
-            <template #suffix>{{ t("scan_probes.secs") }}</template>
-          </n-input-number>
-          <span class="probe-hint" style="margin-left:8px;white-space:nowrap">
-            ≈ {{ humanInterval(probeIntervals[p.key] ?? p.default_interval_seconds) }}
-          </span>
+        <!-- 掃描頻率：輕型每輪都跑，快迴圈＝其中最小的間隔；重型只在自己的間隔到了才跑。
+             六個間隔各佔一整列會把對話框拉得很長，改成「名稱｜輸入｜換算」三欄對齊，
+             一眼就能左右比較各探測的間隔。 -->
+        <n-form-item v-if="intervalChecked.length" :label="t('scan_probes.cadence')">
+          <div class="iv-wrap">
+            <div class="probe-hint iv-hint">
+              {{ t("scan_probes.cadence_hint", { n: humanInterval(fastInterval) }) }}
+            </div>
+            <div class="iv-grid">
+              <template v-for="p in intervalChecked" :key="p.key">
+                <span class="iv-k">{{ probeLabel(p, locale) }}</span>
+                <n-input-number
+                  v-model:value="probeIntervals[p.key]"
+                  :min="p.min_interval_seconds"
+                  :placeholder="String(p.default_interval_seconds)"
+                  size="small"
+                  style="width: 148px"
+                >
+                  <template #suffix>{{ t("scan_probes.secs") }}</template>
+                </n-input-number>
+                <span class="iv-approx">
+                  ≈ {{ humanInterval(probeIntervals[p.key] ?? p.default_interval_seconds) }}
+                </span>
+              </template>
+            </div>
+          </div>
         </n-form-item>
       </n-form>
       <template #footer>
@@ -610,4 +630,11 @@ onMounted(() => { void refresh(); });
 .dep-tbl th { font-weight: 600; opacity: .7; font-size: 12px; }
 .dep-tbl code { font-size: 12px; background: rgba(128,128,128,.1); border-radius: 4px; padding: 1px 5px; }
 .hint { font-size: 12px; opacity: .65; line-height: 1.5; margin: 8px 0; }
+.iv-wrap { width: 100%; }
+.iv-hint { margin-bottom: 10px; }
+/* 名稱｜輸入｜換算 —— 名稱欄用 max-content，最長的那個決定寬度，全部靠左對齊 */
+.iv-grid { display: grid; grid-template-columns: max-content 148px max-content;
+  gap: 8px 12px; align-items: center; }
+.iv-k { font-size: 13px; }
+.iv-approx { font-size: 12px; opacity: 0.55; white-space: nowrap; }
 </style>

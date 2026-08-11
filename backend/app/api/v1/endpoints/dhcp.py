@@ -1,7 +1,7 @@
 """DHCP 發放範圍（來源中立）。
 
 各 DHCP 來源（OPNsense / pfSense / Windows DHCP）各自同步、各自寫入 dhcp_pool_ranges；
-這裡只負責「不分來源」把範圍讀出來，給 IP 詳情／清單標示「在 DHCP 範圍內」用。
+這裡只負責「不分來源」把範圍讀出來，給 IP 詳細資料／清單標示「在 DHCP 範圍內」用。
 
 分類上屬「全域基礎設施資料」→ require_global_read（見 CLAUDE.md 權限模型第 2 類）。
 """

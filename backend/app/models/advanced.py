@@ -18,6 +18,7 @@ from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    DateTime,
     ForeignKey,
     Integer,
     String,
@@ -181,8 +182,10 @@ class Circuit(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ForeignKey("circuit_types.id", ondelete="SET NULL"),
     )
     status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)
-    install_date: Mapped[datetime | None] = mapped_column()
-    contract_end_date: Mapped[datetime | None] = mapped_column()
+    # 欄位在 DB 是 timestamptz；不寫 timezone=True 的話 SQLAlchemy 會推出 naive
+    # DateTime，收到帶時區的值（API / 匯入來源常見）就 500
+    install_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    contract_end_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     monthly_fee_cents: Mapped[int | None] = mapped_column(Integer)
     commit_rate_kbps: Mapped[int | None] = mapped_column(Integer)
     # 非對稱頻寬（上傳 / 下載），單位 kbps

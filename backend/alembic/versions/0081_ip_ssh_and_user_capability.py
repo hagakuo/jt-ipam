@@ -5,7 +5,7 @@ Revises: 0080_cert_agent_device
 Create Date: 2026-06-21
 
 SSH 連線管理功能：
-- ip_addresses.ssh_enabled：是否對此 IP 啟用 SSH 連線（控制詳情頁 SSH 按鈕是否出現）。
+- ip_addresses.ssh_enabled：是否對此 IP 啟用 SSH 連線（控制詳細資料頁 SSH 按鈕是否出現）。
 - ip_addresses.ssh_host_key：TOFU 信任後釘選的 host key（單行 known_host 格式；非機密）。
 - users.can_ssh：獨立的「連線管理權限」——除了 admin / 對該 IP 有寫入權者，
   另可單獨授予此能力讓使用者對其可檢視的 SSH-enabled IP 開終端機。

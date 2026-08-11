@@ -25,6 +25,7 @@ from app.core.audit import append_audit
 from app.core.db import SessionLocal, get_session
 from app.core.rate_limit import _redis_client
 from app.core.security import envelope_decrypt
+from app.core.tickets import take_once
 from app.models.address import IPAddress
 from app.models.ssh_credential import SSHCredential
 from app.models.user import User
@@ -72,7 +73,7 @@ async def issue_bmc_ticket(
 async def _redeem_ticket(ticket: str, address_id: uuid.UUID) -> uuid.UUID | None:
     if not ticket:
         return None
-    raw = await _redis_client().getdel(_ticket_key(ticket))
+    raw = await take_once(_redis_client(), _ticket_key(ticket))
     if not raw:
         return None
     try:

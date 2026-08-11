@@ -86,7 +86,7 @@ async def push_ip(
     """為單一 IP 推送 A/AAAA + PTR 到所有相關 DNS server。
 
     需要 IPAddress.hostname 才能建 forward；否則只 push PTR。
-    forward_zone_suffix：例 "example.com"；hostname 後接此 suffix 形成 FQDN。
+    forward_zone_suffix：例 "example.net"；hostname 後接此 suffix 形成 FQDN。
     """
     summary: dict[str, list[str]] = {"pushed": [], "errored": []}
     if not ip_address.subnet_id:
@@ -274,13 +274,27 @@ async def pull_server(session: AsyncSession, server: DNSServer) -> dict[str, int
         # 每個 IP 只套用一個穩定的 DNS 名稱（字母序最小），避免多筆 A 記錄造成跳動
         # 重疊網段：若 server 設了 scope_subnet_ids，IP→IPAddress 比對限定在這些子網路內
         scope_ids = _scope_subnet_uuids(server)
+        from app.models.ip_hostname import IPHostnameObservation
         for ip_val, names in dns_ip_names.items():
             ip_stmt = select(IPAddress).where(IPAddress.ip == ip_val)
             if scope_ids:
                 ip_stmt = ip_stmt.where(IPAddress.subnet_id.in_(scope_ids))
             ipa = (await session.execute(ip_stmt)).scalars().first()
-            if ipa is not None and names:
-                await apply_observation(session, ip=ipa, source="dns", hostname=sorted(names)[0])
+            if ipa is None or not names:
+                continue
+            # 其他來源怎麼稱呼這台機器 —— DNS 裡若有同一個名字，那才是它的名字
+            others = set((await session.execute(
+                select(IPHostnameObservation.hostname).where(
+                    IPHostnameObservation.ip_id == ipa.id,
+                    IPHostnameObservation.source != "dns")
+            )).scalars().all())
+            if ipa.hostname:
+                others.add(ipa.hostname)
+            chosen = pick_dns_hostname(set(names), others=others)
+            # None＝這個位址上的名字太多、沒有哪一個代表這台機器 → 清掉 dns 這個來源，
+            # 而不是留著一個先前硬挑的名字
+            await apply_observation(session, ip=ipa, source="dns", hostname=chosen)
+            if chosen:
                 summary["hostname_obs"] = summary.get("hostname_obs", 0) + 1
 
         server.last_sync_at = datetime.now(UTC)
@@ -290,6 +304,35 @@ async def pull_server(session: AsyncSession, server: DNSServer) -> dict[str, int
         await adapter.close()
 
     return summary
+
+
+
+# 一個位址上出現幾個名字之後，就視為「共用入口」而不是一台機器的名字。
+# 反向代理／負載平衡器／共用主機底下常常掛數十個服務名 —— 從中挑一個當作
+# 「這台機器叫什麼」是硬猜，而且會在主機名稱來源那裡製造出假的矛盾。
+MANY_NAMES = 4
+
+
+def pick_dns_hostname(names: set[str], *, others: set[str]) -> str | None:
+    """一個 IP 有多筆 A 記錄時，DNS 這個來源要回報哪一個名字（沒有合適的就回 None）。
+
+    1. **有佐證的優先**：其他來源已經在用的名字，若 DNS 裡也有，那顯然才是這台機器的名字
+       （其他來源常給短名、DNS 給 FQDN，所以比對第一段）。
+    2. **名字太多就不報**：那是共用入口的樣態，沒有哪一個名字代表那台機器。
+       寧可留白，也不要硬挑一個 —— 挑了會被當成「各來源說法不一致」。
+    3. 其餘取字母序最小：維持原本的穩定行為，不會每次同步跳來跳去洗版異動記錄。
+    """
+    clean = {n.strip() for n in names if n and n.strip()}
+    if not clean:
+        return None
+    if others:
+        low = {o.strip().lower().split(".")[0] for o in others if o and o.strip()}
+        for n in sorted(clean):
+            if n.lower().split(".")[0] in low:
+                return n
+    if len(clean) >= MANY_NAMES:
+        return None
+    return sorted(clean)[0]
 
 
 async def _record_local(

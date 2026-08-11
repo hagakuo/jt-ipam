@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 共用 OS 顯示格：OS 圖示 + 在地化家族名 +（來源）標註，滑鼠移上顯示原始偵測字串。
- * 與 IP 詳情頁完全一致（IPAddressEditModal 也用同套呈現）；OS 值來自後端 os_precedence
+ * 與 IP 詳細資料頁完全一致（IPAddressEditModal 也用同套呈現）；OS 值來自後端 os_precedence
  * 依來源順序算出的有效 OS（os_family / os_guess / os_source）。
  */
 import { NTooltip } from "naive-ui";

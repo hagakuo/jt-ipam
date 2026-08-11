@@ -90,6 +90,10 @@ async def _candidates(session: AsyncSession, ip: Any) -> dict[str, str]:
     wa = (await session.execute(
         select(WazuhAgent).where(WazuhAgent.ip == str(ip.ip)).limit(1)
     )).scalars().first()
+    # 只比對 IP 不夠：DHCP 位址會被回收，失聯 agent 的舊登記會把別台機器的 OS 貼過來
+    from app.services.wazuh import agent_represents_ip
+    if wa is not None and not agent_represents_ip(wa, ip):
+        wa = None
     if wa is not None and wa.os_platform:
         ver = wa.os_version
         out["wazuh"] = f"{wa.os_platform}{' ' + ver if ver else ''}"

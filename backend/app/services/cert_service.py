@@ -157,15 +157,26 @@ def validate_bundle(cert_pem: str, key_pem: str, chain_pem: str | None = None) -
 
 def export_cert_file(
     cert_pem: str, key_pem: str, chain_pem: str | None, fmt: str,
-    *, name: str = "certificate", pfx_password: str = "",
+    *, name: str = "certificate", pfx_password: str = "", pfx_legacy: bool = False,
 ) -> tuple[bytes, str, str]:
     """把版本 PEM 轉成可下載檔案。回 (bytes, media_type, filename)。
 
     fmt：cert / key / chain / fullchain / combined（PEM）、der（leaf DER）、pfx（PKCS#12）。
     pfx 可選密碼（空＝不加密）。私鑰相關格式由呼叫端做 admin 授權 + 稽核。
+
+    `pfx_legacy`（需搭配密碼）：改用 **PBESv1-SHA1-3DES** 加密，給 Windows／IIS 代理用。
+
+    為什麼刻意用比較弱的演算法：這個 PFX 是即時產生、用**每次執行隨機產生的密碼**加密、
+    走 TLS 傳給代理（同一條通道的 `part=key` 本來就會回傳明文私鑰）、在代理端只存在記憶體
+    幾毫秒就被匯入丟棄，**從不落地**。所以這裡的加密強度沒有實際攻擊面。
+    另一邊，PBESv1 是 Windows CryptoAPI 全版本都吃的形式，而預設的 PBESv2 / AES-256-CBC
+    只在較新的 Windows 上驗證過 —— 拿一條確定可用的路徑去換保護不到東西的強度提升不划算，
+    而且它失敗時的訊息是誤導的「密碼不正確」，會讓人往密碼的方向查。
     """
+    from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.serialization import (
         BestAvailableEncryption,
+        PrivateFormat,
         load_pem_private_key,
         pkcs12,
     )
@@ -193,7 +204,20 @@ def export_cert_file(
         leaf = x509.load_pem_x509_certificate(cert_pem.encode())
         key = load_pem_private_key(key_pem.encode(), password=None)
         cas = x509.load_pem_x509_certificates(ch.encode()) if ch.strip() else []
-        enc = BestAvailableEncryption(pfx_password.encode()) if pfx_password else NoEncryption()
+        if not pfx_password:
+            enc = NoEncryption()
+        elif pfx_legacy:
+            # SHA1 在這裡不是「選一個雜湊」,而是 PBESv1 這個格式本身的定義
+            # （pbeWithSHA1And3-KeyTripleDES-CBC）—— Windows 匯得進去的就是這種。
+            # 換成 SHA256 就不再是 PBESv1、Windows 一樣匯不進去,失去這條路的意義。
+            enc = (
+                PrivateFormat.PKCS12.encryption_builder()
+                .key_cert_algorithm(pkcs12.PBES.PBESv1SHA1And3KeyTripleDESCBC)
+                .hmac_hash(hashes.SHA1())  # noqa: S303  # nosec B303 - PKCS#12 PBESv1 格式要求
+                .build(pfx_password.encode())
+            )
+        else:
+            enc = BestAvailableEncryption(pfx_password.encode())
         data = pkcs12.serialize_key_and_certificates(safe.encode(), key, leaf, cas, enc)
         return data, "application/x-pkcs12", f"{safe}.pfx"
     raise CertError(f"unknown format: {fmt}")

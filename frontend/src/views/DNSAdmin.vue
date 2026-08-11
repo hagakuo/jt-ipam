@@ -52,6 +52,7 @@ interface Form {
   api_key: string;
   api_secret: string;
   tsig_key: string;
+  zones: string[];
   password: string;
   username: string;
   verify_tls: boolean;
@@ -63,7 +64,7 @@ function emptyForm(): Form {
     name: "", type: "powerdns",
     api_url: "", server_address: "",
     enabled: true, sync_interval_seconds: 300,
-    api_key: "", api_secret: "", tsig_key: "", password: "",
+    api_key: "", api_secret: "", tsig_key: "", password: "", zones: [] as string[],
     username: "", verify_tls: true,
     scope_subnet_ids: [],
   };
@@ -123,7 +124,10 @@ function openEdit(r: DNSServer) {
   // extra_config（JSON）回填 username / verify_tls，否則重開會跑回預設值
   if (r.extra_config) {
     try {
-      const extra = JSON.parse(r.extra_config) as { username?: string; verify_tls?: boolean };
+      const extra = JSON.parse(r.extra_config) as {
+        username?: string; verify_tls?: boolean; zones?: string[];
+      };
+      if (Array.isArray(extra.zones)) form.value.zones = [...extra.zones];
       if (typeof extra.username === "string") f.username = extra.username;
       if (typeof extra.verify_tls === "boolean") f.verify_tls = extra.verify_tls;
     } catch { /* ignore malformed */ }
@@ -150,13 +154,16 @@ async function submit() {
   if (showApiSecret.value && form.value.api_secret) payload.api_secret = form.value.api_secret;
   if (showTsig.value && form.value.tsig_key) payload.tsig_key = form.value.tsig_key;
   if (showPassword.value && form.value.password) payload.password = form.value.password;
-  // username / verify_tls 走 extra_config（windows_dns / univention_ucs）
-  if (showUsername.value || showVerifyTls.value) {
-    const extra: Record<string, unknown> = {};
-    if (showUsername.value && form.value.username) extra.username = form.value.username;
-    if (showVerifyTls.value) extra.verify_tls = form.value.verify_tls;
-    if (Object.keys(extra).length) payload.extra_config = JSON.stringify(extra);
+  // 非機密設定走 extra_config：username / verify_tls（windows_dns、univention_ucs）
+  // 與 BIND9 的 zone 清單。**不能只在 showUsername/showVerifyTls 為真時才組**，
+  // BIND9 兩者都是 false，zone 清單會被安靜地丟掉、設定看起來存了卻沒生效。
+  const extra: Record<string, unknown> = {};
+  if (showUsername.value && form.value.username) extra.username = form.value.username;
+  if (showVerifyTls.value) extra.verify_tls = form.value.verify_tls;
+  if (form.value.type === "bind9") {
+    extra.zones = form.value.zones.map((z) => z.trim().replace(/\.$/, "")).filter(Boolean);
   }
+  if (Object.keys(extra).length) payload.extra_config = JSON.stringify(extra);
   try {
     if (editingId.value) await updateDNSServer(editingId.value, payload);
     else await createDNSServer(payload);
@@ -304,6 +311,15 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         <n-form-item v-if="showTsig" label="TSIG key (BIND9)">
           <n-input v-model:value="form.tsig_key" type="password" show-password-on="click"
                    placeholder="hmac-sha256:keyname:base64key" />
+        </n-form-item>
+        <!-- BIND 沒有「列出所有 zone」的協定，一定要在這裡指定要同步哪些；
+             沒填的話同步會安靜地跑完、一筆記錄都沒有 -->
+        <n-form-item v-if="showTsig" :label="t('dns_admin.zones')">
+          <n-space vertical style="width:100%" :size="4">
+            <n-select v-model:value="form.zones" multiple filterable tag
+                      :options="[]" :placeholder="t('dns_admin.zones_ph')" />
+            <span style="font-size:11px;opacity:.7">{{ t("dns_admin.zones_hint") }}</span>
+          </n-space>
         </n-form-item>
         <n-form-item v-if="showPassword"
                      :label="form.type === 'univention_ucs' ? t('dns_admin.password') : t('dns_admin.winrm_password')">

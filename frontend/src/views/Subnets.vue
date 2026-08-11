@@ -58,7 +58,7 @@ const loading = ref(false);
 // 編輯 modal 狀態（表單與送出邏輯移至共用元件 SubnetEditModal.vue）
 const showEdit = ref(false);
 const editing = ref<Subnet | null>(null);
-// 從子網路詳情「新增下層子網路」帶 ?create=1&section= 過來時，預選此區段
+// 從子網路詳細資料「新增下層子網路」帶 ?create=1&section= 過來時，預選此區段
 const presetSectionId = ref<string | null>(null);
 
 function openCreate() {
@@ -322,7 +322,7 @@ onMounted(() => {
   void refresh();
   void ensureCustomersLoaded();
   void ensurePinsLoaded();
-  // 從子網路詳情「新增下層子網路」帶 ?create=1&section= 過來 → 開新增、預選區段
+  // 從子網路詳細資料「新增下層子網路」帶 ?create=1&section= 過來 → 開新增、預選區段
   if (route.query.create === "1") {
     editing.value = null;
     const sec = route.query.section;

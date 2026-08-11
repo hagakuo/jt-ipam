@@ -140,3 +140,38 @@ async def test_admin_stats_overview_has_global(db_session, admin_user):
     out = await stats_overview(db_session, user=admin_user)
     for k in ("vlans", "nat_rules", "circuits"):
         assert k in out
+
+
+# 每次新增全域基礎設施類的工具都要記得掛 GLOBAL_READ_TOOLS。忘了掛不會有任何錯誤訊息，
+# 只會安靜地讓部門帳號透過 AI 對話看到整個環境 —— 這個專案踩過（get_topology）。
+# 這裡把「哪些工具屬於全域基礎設施」寫死成清單：新增工具時測試會逼你分類。
+_PER_OBJECT_TOOLS = frozenset({
+    "list_subnets", "list_sections", "list_devices", "list_customers", "list_racks",
+    "list_locations", "list_subnet_ips", "get_subnet_detail", "get_subnet_usage",
+    "get_device", "get_ip_detail", "get_customer_summary", "search_ip", "global_search",
+    "find_free_ip", "find_free_ips", "recent_ip_changes", "stats_overview",
+    "list_ip_requests", "switch_port_for_ip", "trace_mac", "allocate_ip", "update_ip",
+    "create_subnet", "create_device", "approve_ip_request", "reject_ip_request",
+    "list_connection_targets", "investigate_ip",
+})
+# 純計算 / 外部查詢，不碰本站資料 → 不需要可見範圍
+_STATELESS_TOOLS = frozenset({
+    "calc_aggregate", "calc_cidr_info", "calc_cidr_relation", "calc_cidr_split",
+    "calc_cidr_to_range", "calc_eui64", "calc_fqdn", "calc_ip_in_cidr", "calc_ip_info",
+    "calc_mac_format", "calc_netmask", "calc_range_to_cidr", "oui_lookup", "oui_search",
+    "power_calc", "geoip_locate", "dns_resolve", "dns_mail_check",
+})
+
+
+def test_every_tool_is_classified():
+    """新工具必須明確歸類，不能什麼都沒掛就上線。"""
+    from app.mcp.tools import ADMIN_TOOLS, GLOBAL_READ_TOOLS, TOOLS
+    unclassified = (
+        set(TOOLS) - ADMIN_TOOLS - GLOBAL_READ_TOOLS - _PER_OBJECT_TOOLS - _STATELESS_TOOLS
+    )
+    assert not unclassified, (
+        f"這些 MCP 工具沒有歸類：{sorted(unclassified)}。"
+        "純管理資料（稽核／巡檢／異常等）要加進 ADMIN_TOOLS；全域基礎設施資料要加進 "
+        "GLOBAL_READ_TOOLS；逐物件資料要自己過 visible_ids 並登記在 _PER_OBJECT_TOOLS；"
+        "純計算的登記在 _STATELESS_TOOLS。"
+    )

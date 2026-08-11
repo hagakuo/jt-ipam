@@ -40,6 +40,14 @@ PROBES: dict[str, dict[str, Any]] = {
         "klass": "light", "default_interval_seconds": 3600, "min_interval_seconds": 300,
         "intrusive": False, "default_on": False, "needs": "UDP 5353 (same segment)",
     },
+    "dhcp": {
+        # 送一個標準的 DHCPDISCOVER 廣播、收所有 DHCPOFFER —— 用來找出網段上「在發 IP」
+        # 的主機。任何回應但沒被標記為 DHCP 伺服器的，就是非法 DHCP。
+        # 預設關：它會在網段上廣播，該不該做由管理員逐個子網路決定。
+        "label_en": "DHCP server discovery", "label_zh": "DHCP 伺服器偵測",
+        "klass": "light", "default_interval_seconds": 3600, "min_interval_seconds": 600,
+        "intrusive": False, "default_on": False, "needs": "UDP 67/68 broadcast, root",
+    },
     "os": {
         "label_en": "OS detection", "label_zh": "OS 偵測",
         "klass": "heavy", "default_interval_seconds": 86400, "min_interval_seconds": 21600,

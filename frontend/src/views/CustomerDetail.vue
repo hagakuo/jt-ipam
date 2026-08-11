@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * Customer 詳情頁：metadata + 旗下 sections / subnets / devices / IPs。
+ * Customer 詳細資料頁：metadata + 旗下 sections / subnets / devices / IPs。
  */
 import { h, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";

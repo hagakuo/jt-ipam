@@ -73,7 +73,7 @@ function extractRefs(trace: ChatMessage[] | undefined): ChatRef[] {
     for (const dv of d.devices ?? []) add("device", dv.id, dv.name);
     for (const sn of d.subnets ?? []) add("subnet", sn.id, sn.cidr);
     for (const lo of d.locations ?? []) add("location", lo.id, lo.name);
-    // 單筆詳情
+    // 單筆詳細資料
     if (d.id && d.name && d.type && ("u_position" in d || "vendor" in d)) add("device", d.id, d.name);
     if (d.subnet_id && d.cidr) add("subnet", d.subnet_id, d.cidr);
   }
@@ -145,11 +145,12 @@ const historyLoading = ref(false);
 const msg = useMessage();
 const scrollEl = ref<HTMLDivElement | null>(null);
 
-// Ollama 未啟用 / 連不上 / 設定錯時，後端回的是 "Ollama is disabled" / "transport: …" /
+// LLM 未啟用 / 連不上 / 設定錯時，後端回的是 "LLM is disabled" / "transport: …" /
 // "stream failed: …" 這類訊息 → 換成可行動的友善提示（指向 管理 → LLM / AI 設定）。
+// 比對保留 Ollama 與 OpenAI 兩個字：錯誤訊息會標出實際打的是哪一家。
 function friendlyChatError(raw?: string | null): string {
   const d = String(raw || "");
-  if (/disabled|transport|stream failed|Ollama|connect|timeout/i.test(d)) return t("chat.err_llm");
+  if (/disabled|transport|stream failed|Ollama|OpenAI|connect|timeout/i.test(d)) return t("chat.err_llm");
   return d || t("chat.err_generic");
 }
 

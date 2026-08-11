@@ -156,13 +156,71 @@ sudo install -m 0640 -o root -g jtipam /path/to/your-key.pem  /etc/jt-ipam/tls/s
 # 重啟服務套用（uvicorn 啟動時讀 --ssl-certfile/--ssl-keyfile）
 sudo systemctl restart jt-ipam-backend
 
-# 確認新憑證生效（direct 模式 backend 直接聽 443）
-openssl s_client -connect ipam.example.com:443 -servername ipam.example.com </dev/null 2>/dev/null \
+# 確認新憑證生效（埠號見下方「監聽在哪個埠」）
+openssl s_client -connect ipam.example.com:8443 -servername ipam.example.com </dev/null 2>/dev/null \
     | openssl x509 -noout -issuer -subject -dates
 ```
 
 > 想自己重新產自簽憑證：`sudo bash /opt/jt-ipam/scripts/generate-self-signed-cert.sh` 後 `systemctl restart jt-ipam-backend`。
-> 從 direct 改走 nginx 反代：把 `/etc/jt-ipam/backend.env` 的 `BACKEND_TLS_MODE` 改成 `nginx`、裝好 nginx site，再重啟 backend + reload nginx。
+
+#### 監聽在哪個埠？（**預設是 8443，不是 443**）
+
+`self-signed` / `direct` 模式由 uvicorn 自己掛 TLS，**預設監聽 8443** —— 網址是
+`https://<你的網域>:8443/`。裝完發現「443 沒有起來」多半就是這個原因，不是安裝失敗。
+實際值寫在 `/etc/jt-ipam/backend.env` 的 `BACKEND_BIND_PORT`。
+
+想直接用 443（不加 nginx）：
+
+```bash
+# 安裝時指定（推薦：安裝腳本會一併授予綁定特權埠所需的 capability）
+sudo ./scripts/jt-ipam.sh install --tls-mode self-signed --public-fqdn ipam.example.com --bind-port 443
+
+# 已經裝好了才要改：
+sudo sed -i 's/^BACKEND_BIND_PORT=.*/BACKEND_BIND_PORT=443/' /etc/jt-ipam/backend.env
+sudo sed -i 's#^APP_PUBLIC_URL=.*#APP_PUBLIC_URL=https://ipam.example.com#' /etc/jt-ipam/backend.env
+sudo install -d /etc/systemd/system/jt-ipam-backend.service.d
+sudo tee /etc/systemd/system/jt-ipam-backend.service.d/20-bind-privileged-port.conf >/dev/null <<'EOF'
+[Service]
+AmbientCapabilities=CAP_NET_RAW CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_BIND_SERVICE
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart jt-ipam-backend
+```
+
+> 服務不是以 root 執行，所以綁 1024 以下的埠**一定要** `CAP_NET_BIND_SERVICE`；少了它服務會起來後立刻死掉，
+> 錯誤訊息是 `Permission denied`，看起來很像憑證問題，其實是埠的問題。
+
+#### 自簽模式要不要另外裝 nginx？
+
+**不需要。** `self-signed` / `direct` 模式已經是完整可用的 HTTPS 服務，不必裝 web server。
+會想加 nginx 通常是這三種情形：要用 443 又不想給服務特權、要與同一台上的其他站共用 443、
+或想要反向代理層的嚴格安全標頭（見 2.7）。要加的話**改走 nginx 模式**，不要在自簽的後端前面再包一層 TLS：
+
+```bash
+sudo apt install -y nginx
+
+# 1) 後端改回 loopback + 明文（TLS 交給 nginx）
+sudo sed -i 's/^BACKEND_TLS_MODE=.*/BACKEND_TLS_MODE=nginx/' /etc/jt-ipam/backend.env
+sudo sed -i 's/^BACKEND_BIND_PORT=.*/BACKEND_BIND_PORT=8000/' /etc/jt-ipam/backend.env
+sudo sed -i 's#^APP_PUBLIC_URL=.*#APP_PUBLIC_URL=https://ipam.example.com#' /etc/jt-ipam/backend.env
+
+# 2) 裝 nginx site（把範本的 server_name 換成你的網域）
+sudo install -d -m 0755 /etc/nginx/snippets
+sudo install -m 0644 /opt/jt-ipam/deploy/nginx/jt-ipam-proxy.conf /etc/nginx/snippets/jt-ipam-proxy.conf
+sudo sed 's/ipam\.example\.com/ipam.example.com/g' /opt/jt-ipam/deploy/nginx/jt-ipam.conf \
+    | sudo tee /etc/nginx/sites-available/jt-ipam >/dev/null
+sudo ln -sf /etc/nginx/sites-available/jt-ipam /etc/nginx/sites-enabled/jt-ipam
+sudo rm -f /etc/nginx/sites-enabled/default
+
+# 3) 憑證放在 nginx 讀得到的位置（沿用原本的自簽也可以）
+#    範本讀的是 /etc/jt-ipam/tls/server.crt / server.key
+
+sudo nginx -t && sudo systemctl restart jt-ipam-backend && sudo systemctl reload nginx
+```
+
+> nginx 範本已內含 WebSocket 升級設定（SSH／SFTP／RDP／VNC／noVNC／BMC 主控台需要）。
+> **自己寫 nginx 設定的話，這段一定要照抄** —— 少了升級標頭，主控台會連不上，
+> 而畫面上只會看到一個沒頭沒尾的 404。
 
 ### 2.7 正式環境標準：高安全性 nginx 反向代理
 
@@ -286,6 +344,10 @@ cd jt-ipam/deploy/docker
 | `SAML_*` | — | 啟用 SAML SSO |
 | `LDAP_*` | — | LDAP/AD 認證 |
 | `OLLAMA_ENABLED` | — | 開啟 AI 語意搜尋 + chat |
+| `OLLAMA_URL` | `http://127.0.0.1:11434` | LLM Server 位址 |
+| `OLLAMA_CHAT_MODEL` | `gemma4:26b` | 對話模型 |
+| `OLLAMA_EMBEDDING_MODEL` | `granite-embedding:278m` | 嵌入模型，**維度必須等於 `EMBEDDING_DIM`** |
+| `EMBEDDING_DIM` | `768` | 資料庫 `vector(N)` 欄位的維度；改這個要一併改 migration |
 
 完整列表見 `app/core/config.py` Settings class。
 
@@ -352,6 +414,31 @@ SAML_ADMIN_GROUPS=jt-ipam-admins
 ---
 
 ## 5. 備份與還原
+
+### LLM / AI（選用）
+
+AI 對話與語意搜尋預設走**自架的 Ollama**，資料不出自己的網路。安裝腳本不會幫你裝 LLM Server —— 它通常跑在另一台有顯示卡的機器上。
+
+```bash
+# 在 LLM Server 上（範例）
+ollama pull gemma4:26b                 # 對話模型
+ollama pull granite-embedding:278m     # 嵌入模型（768 維、多語系）
+```
+
+然後在 **管理 → LLM / AI** 填上位址與兩個模型，按一次「**檢查維度**」確認相符，再按「**重建索引**」把既有資料補上向量。
+
+> **從舊版升級的人請特別看這段。** 升級**不會**自動修好語意搜尋，有三件事只能手動：
+> 1. 出廠預設換成 `granite-embedding:278m`，但**只在你沒有在設定頁存過嵌入模型時才生效** —— 存過的話資料庫裡的值優先，仍是舊的。
+> 2. 新模型要自己在 LLM Server 上 `ollama pull`。
+> 3. 既有資料的向量要按「重建索引」才會補上。
+>
+> 設定頁在載入時會自動驗一次維度，不符會直接顯示出來 —— 這正是舊版最要命的地方：維度不合完全沒有錯誤訊息，只表現為「語意搜尋永遠沒有結果」。
+
+> ⚠️ **嵌入模型的輸出維度必須等於 `EMBEDDING_DIM`（預設 768）**，那是資料庫 `vector(N)` 欄位的維度。維度不合時**不會有錯誤訊息**，唯一的症狀是「語意搜尋永遠沒有結果」—— 因為每一筆索引寫入都失敗了。換模型之後請按設定頁的「**檢查維度**」驗一次，它會直接告訴你模型回幾維、欄位要幾維。
+>
+> 另外，**只支援英文的嵌入模型（如 `nomic-embed-text`）會把不同的中文描述壓成同一個向量**，維度看起來對、搜尋也有結果，但排序是亂的。要換模型的話，挑多語系的，並拿自己實際在用的描述比對一下不同描述是否得到不同結果。
+
+想改接外部服務（ChatGPT、vLLM、LM Studio、OpenRouter 等 OpenAI 相容端點）也可以，設定頁選「OpenAI 相容」並填入 API 金鑰（AES-GCM 加密存放）。**這代表網段、主機名稱與拓樸會送到該服務** —— 要求資料不出網的話請維持自架的 Ollama。
 
 ### 自動備份
 
@@ -488,6 +575,56 @@ sudo userdel -r jtipam
 
 ## 9. 常見問題
 
+**Q: 我用 `--tls-mode self-signed` 裝好了，還需要另外裝 nginx 或 apache 嗎？**
+A: **不需要。** 這個模式是 uvicorn 自己掛 TLS，裝完就是一個完整的 HTTPS 服務，
+不必再裝任何 web server。網址是 `https://<你的網域>:8443/`（**預設 8443，不是 443**）。
+確認方式：
+
+```bash
+sudo systemctl status jt-ipam-backend        # 應為 active (running)
+sudo ss -ltnp | grep 8443                    # 應看到 uvicorn 在聽
+curl -kI https://127.0.0.1:8443/             # 應回 HTTP/1.1 200
+```
+
+要改用 443、或之後想加 nginx，見 2.6「監聽在哪個埠」與「自簽模式要不要另外裝 nginx」。
+
+**Q: 安裝中斷在 `extension "vector" is not available`，但我確實裝了 postgresql-16-pgvector？**
+A: 這台通常**本來就有一個 PostgreSQL 叢集在跑**（例如原本裝過 SonarQube、GitLab 等）。
+jt-ipam 連的是 `127.0.0.1:5432`，也就是**那個既有叢集**；pgvector 必須裝在**它的版本**上，
+裝到別的版本沒有用。查它的版本再補對應套件：
+
+```bash
+sudo -u postgres psql -tAc 'SHOW server_version_num'   # 例如 180004 → 主版本 18
+sudo apt install -y postgresql-18-pgvector
+sudo -u postgres psql -d jt_ipam -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+```
+
+> v0.5.161 起安裝腳本會自動偵測既有叢集的版本並裝對應的 pgvector，也不會再另外拉一個
+> server 套件（那會多建一個叢集）；擴充功能建立失敗會當場停下並說明，不再拖到 alembic 才爆。
+
+**Q: 安裝停在 `/usr/local/bin/pnpm: 沒有此一檔案或目錄`？**
+A: pnpm 沒有安裝成功，而舊版腳本把 npm 的錯誤訊息丟掉了。手動裝好再重跑安裝即可
+（安裝腳本可重複執行，已完成的步驟會跳過）：
+
+```bash
+sudo npm install -g pnpm@9      # 或：curl -fsSL https://get.pnpm.io/install.sh | sh -
+sudo ./scripts/jt-ipam.sh install --tls-mode self-signed --public-fqdn ipam.example.com
+```
+
+> v0.5.161 起腳本會保留 npm 的原始錯誤、依序嘗試三種安裝方式，並在確認 `pnpm --version`
+> 跑得起來之後才繼續。
+
+**Q: 安裝說「完成」，但服務其實沒起來？**
+A: v0.5.161 起，安裝結束前會逐項自我檢查（設定檔、前端 dist、服務狀態、監聽埠、
+nginx 模式下的 nginx），缺什麼會直接列出來。舊版沒有這道檢查，請手動確認：
+
+```bash
+ls -l /etc/jt-ipam/backend.env                 # 設定檔在不在
+ls -l /opt/jt-ipam/frontend/dist/index.html    # 前端有沒有建出來
+sudo systemctl status jt-ipam-backend
+sudo journalctl -u jt-ipam-backend -n 50 --no-pager
+```
+
 **Q: backend 起不來，journal 顯示 "ENCRYPTION_KEY: invalid format"？**
 A: ENCRYPTION_KEY 必須是 32-byte 的 base64（44 字元結尾 `=`）。安裝腳本有產；
 若手動設定，用 `python -c 'import base64,os; print(base64.b64encode(os.urandom(32)).decode())'`。
@@ -500,8 +637,10 @@ A: backend bind 預設 `127.0.0.1:8000`；確認 systemctl status jt-ipam-backen
 是 active，且 nginx site 的 upstream 也指 `127.0.0.1:8000`。
 
 **Q: pgvector 找不到？**
-A: Ubuntu 22.04 沒內建；安裝腳本會自動加 PGDG repo + `postgresql-16-pgvector`。
-手動補：`sudo apt install postgresql-16-pgvector` 後 `CREATE EXTENSION vector;`。
+A: Ubuntu 22.04 沒內建；安裝腳本會自動加 PGDG repo + 對應版本的 `postgresql-N-pgvector`。
+手動補：先用 `sudo -u postgres psql -tAc 'SHOW server_version_num'` 查出**實際在跑的**主版本，
+再 `sudo apt install postgresql-<主版本>-pgvector`，最後 `CREATE EXTENSION vector;`。
+（裝錯版本是最常見的原因，見上面「extension "vector" is not available」那一題。）
 
 **Q: `/api/v1/audit/verify` 回 `{"ok": false}` chain 斷裂？**
 A: 已知歷史 bug：v0.3.0 之前 nginx 把它的 `$request_id`（32-hex 無 hyphen）

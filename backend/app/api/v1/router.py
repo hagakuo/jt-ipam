@@ -9,6 +9,7 @@ from app.api.v1.endpoints import (
     adguard,
     advanced,
     ai,
+    ai_audit,
     anomaly,
     api_tokens,
     audit,
@@ -22,9 +23,11 @@ from app.api.v1.endpoints import (
     devices,
     dhcp,
     dns,
+    esxi,
     firewall,
     fortigate,
     import_external,
+    investigate,
     ip_changes,
     ip_requests,
     librenms,
@@ -44,6 +47,7 @@ from app.api.v1.endpoints import (
     scan_agents,
     search,
     sections,
+    sftp_console,
     ssh_console,
     ssh_credentials,
     sso,
@@ -89,6 +93,7 @@ api_v1_router.include_router(subnets.router)
 api_v1_router.include_router(system_logs.router)
 api_v1_router.include_router(addresses.router)
 api_v1_router.include_router(ssh_console.router)
+api_v1_router.include_router(sftp_console.router)
 api_v1_router.include_router(ssh_credentials.router)
 api_v1_router.include_router(rdp_console.router)
 api_v1_router.include_router(vnc_console.router)
@@ -110,6 +115,9 @@ api_v1_router.include_router(ip_requests.router)
 api_v1_router.include_router(ip_changes.router)
 api_v1_router.include_router(rack_diagram.router)
 api_v1_router.include_router(migration.router)
+api_v1_router.include_router(ai_audit.router)
+api_v1_router.include_router(investigate.router)
+api_v1_router.include_router(esxi.router)
 api_v1_router.include_router(import_external.router)
 api_v1_router.include_router(scan_agents.router)
 api_v1_router.include_router(certificates.router)

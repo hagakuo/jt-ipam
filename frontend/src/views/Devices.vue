@@ -20,6 +20,7 @@ import {
 } from "@/icons";
 import { cmpNatural } from "@/utils/sort";
 import { listAddresses } from "@/api/addresses";
+import { listSubnets } from "@/api/subnets";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
@@ -53,6 +54,20 @@ const msg = useMessage();
 const rows = ref<Device[]>([]);
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
 const { query: filterQ, filtered: filteredRows } = useTableQuickFilter(rows);
+// 伺服器端有多少筆（不是已載入的筆數）。畫面只載一頁，兩者不一樣時要講出來，
+// 否則使用者會以為看到的就是全部 —— 客戶回報「新增的裝置看不到也搜不到」正是這個。
+const totalOnServer = ref(0);
+// 清單一次載入的上限。超過就靠伺服器端搜尋，並在畫面上明說只顯示了一部分。
+const MAX_ROWS = 5000;
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 搜尋交給後端做：只在已載入的那一頁上過濾，找不到超出範圍的裝置。 */
+function onFilterInput() {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { void refresh(); }, 300);
+}
+
+const truncated = computed(() => totalOnServer.value > rows.value.length);
 import { useTablePagination } from "@/composables/useTablePagination";
 const pg = useTablePagination();
 const locations = ref<Location[]>([]);
@@ -126,11 +141,30 @@ const filteredRackOpts = computed(() => {
   return all.filter((r) => r.location_id === form.value.location_id);
 });
 
+/** 分頁抓到完（上限 MAX_ROWS）。清單只抓第一頁的話，排序落在後面的裝置會整台消失。 */
+async function fetchDevices(q?: string): Promise<{ items: Device[]; total: number }> {
+  const all: Device[] = [];
+  const big = 500;   // 後端 page_size 上限
+  let total = 0;
+  for (let p = 1; ; p += 1) {
+    const res = await listDevices({ page: p, pageSize: big, q, subnetId: subnetFilter.value });
+    total = res.total;
+    all.push(...res.items);
+    if (res.items.length === 0 || all.length >= res.total || all.length >= MAX_ROWS) break;
+  }
+  return { items: all, total };
+}
+
 async function refresh() {
   loading.value = true;
   try {
-    const [d, l, rk] = await Promise.all([listDevices(), listLocations(), listRacks()]);
+    const [d, l, rk] = await Promise.all([
+      fetchDevices(filterQ.value.trim() || undefined),
+      listLocations(),
+      listRacks(),
+    ]);
     rows.value = d.items;
+    totalOnServer.value = d.total;
     locations.value = l.items;
     racks.value = rk.items;
   } catch (e) { msg.error(apiErrMsg(e)); }
@@ -143,7 +177,7 @@ async function fetchAllForExport(): Promise<Device[]> {
   const big = 500;   // 後端 page_size 上限
   let p = 1;
   for (;;) {
-    const res = await listDevices({ page: p, pageSize: big });
+    const res = await listDevices({ page: p, pageSize: big, subnetId: subnetFilter.value });
     all.push(...res.items);
     if (res.items.length === 0 || all.length >= res.total) break;
     p++;
@@ -280,16 +314,35 @@ async function del(r: Device) {
   catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
 
+// 依子網路篩選裝置：「這個網段要停電維護，會影響哪些機器」是每次維護前都要問的事。
+// 篩選在**後端**做（EXISTS on ip_addresses），不是把整份清單抓回來再過濾 ——
+// 這個專案已經因為「只載第一頁再前端過濾」讓客戶看不到自己的裝置一次。
+const subnetFilter = ref<string | null>(null);
+const subnetOptions = ref<{ label: string; value: string }[]>([]);
+async function loadSubnetOptions() {
+  try {
+    const rows = await listSubnets({ pageSize: 500 });
+    const items = Array.isArray(rows) ? rows : (rows as any).items ?? [];
+    subnetOptions.value = items.map((x: any) => ({
+      label: x.description ? `${x.cidr}（${x.description}）` : x.cidr, value: x.id }));
+  } catch { /* 沒權限就不顯示選項，篩選仍可留空 */ }
+}
+
 const { visibleKeys, setVisible, reset } = useColumnPrefs(
   "devices",
-  ["name", "ip", "fqdn", "type", "vendor", "model", "location_id", "rack_id", "customer_id", "actions"],
-  ["name", "ip", "type", "vendor", "model", "location_id", "rack_id", "customer_id", "actions"],
+  // 全部可選欄位 / 預設顯示的欄位。**新增欄位要兩份都加** —— 只加到 catCols 的話，
+  // 欄位存在卻不在預設清單裡，使用者得自己去「欄位」勾才看得到（真實瀏覽器巡檢抓到）。
+  ["name", "ip", "fqdn", "type", "is_virtual", "vendor", "model", "location_id", "rack_id",
+   "customer_id", "actions"],
+  ["name", "ip", "type", "is_virtual", "vendor", "model", "location_id", "rack_id",
+   "customer_id", "actions"],
 );
 const columnPickerItems = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "ip", label: "IP" },
   { key: "fqdn", label: "FQDN" },
   { key: "type", label: t("cols.type") },
+  { key: "is_virtual", label: t("devices.virtuality") },
   { key: "vendor", label: t("cols.vendor") },
   { key: "model", label: t("cols.model") },
   { key: "location_id", label: t("cols.location") },
@@ -352,6 +405,15 @@ const allCols = computed<DataTableColumns<Device>>(() => [
     sorter: (a, b) => a.type.localeCompare(b.type),
   },
   {
+    // 虛擬 / 實體：同步進來的虛擬機在清單上與實體機長得一模一樣，
+    // 分不出來的話，「這台可以斷電維護嗎」這種問題就得逐台去查。
+    title: t("devices.virtuality"), key: "is_virtual",
+    render: (r) => h(NTag, { size: "small", type: r.is_virtual ? "warning" : "default",
+                             bordered: false },
+      () => t(r.is_virtual ? "devices.virtual" : "devices.physical")),
+    sorter: (a, b) => Number(!!a.is_virtual) - Number(!!b.is_virtual),
+  },
+  {
     title: t("devices.vendor"), key: "vendor",
     render: (r) => r.vendor ?? "—",
     sorter: (a, b) => (a.vendor ?? "").localeCompare(b.vendor ?? ""),
@@ -412,8 +474,12 @@ const cols = computed<DataTableColumns<Device>>(() =>
 import { useRoute } from "vue-router";
 const route = useRoute();
 onMounted(async () => {
+  void loadSubnetOptions();
   await refresh();
   void ensureCustomersLoaded();
+  // 從別處帶關鍵字進來（例如 AI 巡檢的依據資料點裝置名稱、找不到精確裝置時的退路）——
+  // 沒有這段的話，連結會把人帶到未篩選的整份清單，等於什麼都沒做
+  if (typeof route.query.q === "string" && route.query.q) filterQ.value = route.query.q;
   // 從裝置細節頁帶 ?edit=<id> 進來 → 直接開該裝置的編輯
   const editId = route.query.edit as string | undefined;
   if (editId) {
@@ -435,7 +501,17 @@ onMounted(async () => {
       </n-space>
     </template>
     <n-space style="margin-bottom: 12px" align="center">
-      <n-input v-model:value="filterQ" :placeholder="t('common.filter')" clearable style="width: 180px" />
+      <n-input v-model:value="filterQ" :placeholder="t('devices.search_ph')" clearable
+               style="width: 220px" @update:value="onFilterInput" />
+
+        <n-select v-model:value="subnetFilter" clearable filterable size="small"
+                  style="width: 220px" :options="subnetOptions"
+                  :placeholder="t('devices.filter_subnet_all')"
+                  @update:value="() => refresh()" />
+      <!-- 只載入一頁時要明講還有多少沒顯示，不能讓人以為這就是全部 -->
+      <n-tag v-if="truncated" size="small" type="warning" :bordered="false">
+        {{ t("devices.truncated", { shown: rows.length, total: totalOnServer }) }}
+      </n-tag>
       <n-button @click="refresh" :loading="loading">
         <template #icon><n-icon><RefreshIcon /></n-icon></template>
         {{ t("common.refresh") }}

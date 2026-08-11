@@ -290,6 +290,37 @@ async def sync_dhcp_ranges(session: AsyncSession, fw: FortiGateFirewall, vdoms: 
     return len(parsed)
 
 
+async def sync_dhcp_reservations(
+    session: AsyncSession, fw: FortiGateFirewall, vdoms: list[str],
+) -> int:
+    """FortiGate 的 DHCP 固定分配：`system.dhcp/server` 每台底下的 `reserved-address`。
+
+    FortiGate 沒有獨立的 reservation 端點 —— 保留位址是 DHCP server 設定的一部分。
+    """
+    from app.services.dhcp_reservations import Reservation, replace_reservations
+
+    rows: list[Reservation] = []
+    for vdom in vdoms:
+        try:
+            servers = _rows(await _api_get(fw, EP_DHCP_SERVERS, vdom=vdom))
+        except FortiGateError:
+            continue        # 該 VDOM 沒開 DHCP → 略過，不影響其他
+        for d in servers:
+            for r in (d.get("reserved-address") or d.get("reserved_address") or []):
+                if not isinstance(r, dict):
+                    continue
+                ip = _valid_ip(_first(r, "ip", "ip-address", "ip_address"))
+                if not ip:
+                    continue
+                rows.append(Reservation(
+                    ip=ip, mac=_first(r, "mac", "mac-address"),
+                    description=_first(r, "description", "descr")))
+    return await replace_reservations(
+        session, source_type="fortigate", source_id=fw.id, source_name=fw.name,
+        engine="fortigate", rows=rows,
+    )
+
+
 async def sync_arp(session: AsyncSession, fw: FortiGateFirewall, vdoms: list[str]) -> int:
     scope_ids = _scope(fw)
     matched = 0
@@ -588,6 +619,7 @@ async def sync_instance(session: AsyncSession, fw: FortiGateFirewall) -> dict[st
         counts["dhcp"] = await sync_dhcp_leases(session, fw, vdoms)
     if fw.sync_dhcp_ranges:
         counts["dhcp_ranges"] = await sync_dhcp_ranges(session, fw, vdoms)
+        counts["dhcp_reservations"] = await sync_dhcp_reservations(session, fw, vdoms)
     if fw.sync_arp:
         counts["arp"] = await sync_arp(session, fw, vdoms)
     if fw.sync_vpn:

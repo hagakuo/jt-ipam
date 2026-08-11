@@ -33,7 +33,7 @@ async def _limited_user(db_session) -> User:
     return u
 
 
-# ── 1. 地點詳情 / 平面圖的 IDOR ────────────────────────────────────
+# ── 1. 地點詳細資料 / 平面圖的 IDOR ────────────────────────────────────
 
 
 @pytest.mark.anyio

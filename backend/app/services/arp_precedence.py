@@ -83,6 +83,23 @@ async def set_arp_precedence(
     return clean, clean_disabled
 
 
+def normalize_mac(v: object) -> str:
+    """MAC 正規化成無分隔的小寫十六進位。
+
+    比對前一定要兩邊都做：asyncpg 把 MACADDR 欄位回成**物件**，字串化後帶冒號
+    （`bc:24:11:6a:58:ef`），而各來源送進來的多半是無分隔式（`bc24116a58ef`）。
+    直接比字串永遠不相等 —— 實機上因此每輪同步都判定「MAC 變了」，
+    24 小時寫出 990 筆假的異動記錄（同一個 IP 一天 90 次、新值卻始終相同）。
+    """
+    out = "".join(c for c in str(v or "").lower() if c in "0123456789abcdef")
+    return out
+
+
+def _same_mac(a: object, b: object) -> bool:
+    na, nb = normalize_mac(a), normalize_mac(b)
+    return bool(na) and na == nb
+
+
 async def consider_mac(
     session: AsyncSession, *, ip: IPAddress, mac: str | None, source: str,
 ) -> bool:
@@ -113,7 +130,7 @@ async def consider_mac(
         return order.index(s) if s in order else len(order)
 
     if rank(source) < rank(ip.mac_source) or (
-        rank(source) == rank(ip.mac_source) and str(ip.mac).lower() != mac
+        rank(source) == rank(ip.mac_source) and _same_mac(ip.mac, mac) is False
     ):
         ip.mac = mac
         ip.mac_source = source

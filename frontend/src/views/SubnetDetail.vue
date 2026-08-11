@@ -14,6 +14,7 @@ import {
   NSpin,
   NButton,
   NCheckbox,
+  NInput,
   NAlert,
   NDataTable,
   NTag,
@@ -97,7 +98,7 @@ const router = useRouter();
 const msg = useMessage();
 const { bump: bumpSubnetTree } = useSubnetTree();
 
-// 刪除此子網路（詳情頁工具列，帶確認框；刪除後刷新側邊樹並回子網路清單）
+// 刪除此子網路（詳細資料頁工具列，帶確認框；刪除後刷新側邊樹並回子網路清單）
 const deleting = ref(false);
 async function delThisSubnet() {
   if (!subnet.value) return;

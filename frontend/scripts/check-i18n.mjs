@@ -64,3 +64,55 @@ if (bad) {
   console.error("[check-i18n] FAILED: escape literal @ { } | with {'@'} {'{'} {'}'} {'|'}");
   process.exit(1);
 }
+
+// ---------------------------------------------------------------------------
+// Missing-key gate — a t("x.y") whose key does not exist renders the key ITSELF
+// on screen (no error, no warning). Shipped that once: the IP hover card showed
+// a literal "addresses.state" where the label should have been.
+// Only literal keys are checked; t(`a.${b}`) and t("a." + b) are skipped.
+// ---------------------------------------------------------------------------
+const dicts = {};
+for (const loc of ["zh-TW", "en-US"]) {
+  dicts[loc] = JSON.parse(readFileSync(join(root, `src/i18n/${loc}.json`), "utf-8"));
+}
+const hasKey = (d, key) => {
+  let cur = d;
+  for (const part of key.split(".")) {
+    if (!cur || typeof cur !== "object" || !(part in cur)) return false;
+    cur = cur[part];
+  }
+  return typeof cur === "string";
+};
+
+const srcFiles = [];
+const walkDir = (dir) => {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) walkDir(full);
+    else if (/\.(vue|ts)$/.test(e.name)) srcFiles.push(full);
+  }
+};
+walkDir(join(root, "src"));
+
+let missing = 0;
+for (const file of srcFiles) {
+  const src = readFileSync(file, "utf-8");
+  // 後面接 + 的是字串拼接（t("a.b_" + kind)）→ 略過，那不是完整的 key
+  // 單引號與雙引號都要掃：只掃雙引號的話，`t('a.b')` 這種寫法整條被跳過 ——
+  // v0.5.146 的調查視窗就是這樣漏掉一個不存在的鍵，畫面直接顯示 "addresses.os"。
+  for (const m of src.matchAll(/\bt\(\s*["']([a-zA-Z0-9_.]+)["']\s*(.?)/g)) {
+    const [, key, next] = m;
+    if (next === "+" || key.endsWith(".") || key.endsWith("_")) continue;
+    for (const loc of Object.keys(dicts)) {
+      if (!hasKey(dicts[loc], key)) {
+        missing++;
+        console.error(`  ${file.replace(root + "/", "")}: ${key} missing in ${loc}`);
+      }
+    }
+  }
+}
+console.log(`[check-i18n] checked ${srcFiles.length} source files — ${missing} missing keys`);
+if (missing) {
+  console.error("[check-i18n] FAILED: a missing key renders as the key itself on screen");
+  process.exit(1);
+}

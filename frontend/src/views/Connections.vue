@@ -189,7 +189,7 @@ const allColumns = computed<DataTableColumns<IPAddress>>(() => {
         if (r.novnc_available) {
           const isCt = r.pve?.kind === "ct";
           const proto = isCt ? "xterm" : "noVNC";
-          // 比照 IP 詳情頁：橘色按鈕 + 右上角「PVE」小標（label 只放 noVNC/xterm）
+          // 比照 IP 詳細資料頁：橘色按鈕 + 右上角「PVE」小標（label 只放 noVNC/xterm）
           const btn = grp("novnc", isCt ? TerminalIcon : NoVncIcon,
             proto, `${proto} ${t("novnc.connect")}`,
             () => openNovncTab(r), novncRowMenu, (k) => onNovncRowMenu(k, r), "warning");

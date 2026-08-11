@@ -17,6 +17,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import Response
+from pydantic import Field
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,6 +93,7 @@ async def _enrich_special_flags(
     from urllib.parse import urlparse
 
     from app.models.dhcp import DHCPPoolRange
+    from app.models.dhcp_sighting import DHCPSighting
     from app.models.firewall import OPNsenseFirewall
     from app.models.pfsense import PfSenseFirewall
 
@@ -113,11 +115,38 @@ async def _enrich_special_flags(
             h = urlparse(url).hostname if url else None
             if h:
                 fw_ips.add(h)
+    # 掃描代理實際觀測到「這個位址在回應 DHCP」的時間。設定與實測是兩件事：
+    # 標記了不代表真的在發，沒標記也不代表沒有在發 —— 兩個都要看得到。
+    observed: dict[tuple[Any, str], Any] = {}
+    for sub_id, srv_ip, seen in (await session.execute(
+        select(DHCPSighting.subnet_id, DHCPSighting.server_ip, DHCPSighting.last_seen_at)
+        .where(DHCPSighting.subnet_id.in_(subnet_ids))
+    )).all():
+        key = (sub_id, str(srv_ip))
+        if key not in observed or seen > observed[key]:
+            observed[key] = seen
+
+    # DHCP 固定分配的明細（綁哪張網卡、哪台 DHCP）。清單頁靠 ip_addresses.dhcp_reserved
+    # 這個旗標就夠了，但詳細資料要講得出「綁給誰」，否則使用者只知道有、不知道是什麼。
+    from app.models.dhcp import DHCPReservation
+    resv: dict[Any, dict[str, Any]] = {}
+    for rr in (await session.execute(
+        select(DHCPReservation).where(DHCPReservation.ip_address_id.in_([r.id for r in rows]))
+    )).scalars().all():
+        resv.setdefault(rr.ip_address_id, {
+            "mac": rr.mac, "hostname": rr.hostname, "description": rr.description,
+            "source_name": rr.source_name, "source_type": rr.source_type,
+            "engine": rr.source,
+        })
+
     for it, r in zip(items, rows, strict=False):
         ipstr = str(r.ip)
+        it.dhcp_reservation = resv.get(r.id)
         gw = gw_map.get(r.subnet_id)
         it.is_gateway = bool(gw) and ipstr == str(gw)
         it.dhcp_server_auto = ipstr in fw_ips
+        seen_at = observed.get((r.subnet_id, ipstr))
+        it.dhcp_observed_at = seen_at.isoformat() if seen_at else None
         try:
             n = int(_ip.ip_address(ipstr))
             it.in_dhcp_range = any(a <= n <= b for a, b in ranges)
@@ -327,12 +356,13 @@ async def get_address(
     out = IPAddressRead.model_validate(obj)
     out.mac_vendor = await vendor_for_mac(session, obj.mac)
     # SSH 連線管理：是否可對此 IP 開終端機（依權限算好給前端顯示按鈕）
-    from app.services.permission import can_use_rdp, can_use_ssh, can_use_vnc
+    from app.services.permission import can_use_rdp, can_use_sftp, can_use_ssh, can_use_vnc
     out.ssh_available = await can_use_ssh(session, user=user, ip=obj)
+    out.sftp_available = await can_use_sftp(session, user=user, ip=obj)
     out.rdp_available = await can_use_rdp(session, user=user, ip=obj)
     out.vnc_available = await can_use_vnc(session, user=user, ip=obj)
     await _fill_pve_console(session, obj, out, user)
-    # 算出此 IP 實際會被執行的探測（子網路要跑 − IP 略過 ∩ 代理能力）給詳情頁顯示
+    # 算出此 IP 實際會被執行的探測（子網路要跑 − IP 略過 ∩ 代理能力）給詳細資料頁顯示
     out.effective_probes = await _effective_probes_for(session, obj)
     # OS 依來源優先序（scanner/librenms/wazuh）解析有效值 + 來源
     from app.services.os_precedence import effective_os
@@ -370,9 +400,13 @@ async def get_address_relations(
     chain.append({"type": "ip", "id": str(obj.id),
                   "label": str(obj.ip).split("/")[0], "sub": obj.hostname})
 
-    async def _device_tail(dev: Device, *, sub: str | None = None, node_type: str = "device") -> None:
-        """把 device → rack → 機房 接到鏈尾（node_type=vmnode 時該裝置代表 PVE 節點）。"""
-        chain.append({"type": node_type, "id": str(dev.id), "label": dev.name, "sub": sub})
+    async def _device_tail(dev: Device, *, sub: str | None = None, node_type: str = "device",
+                           platform: str | None = None) -> None:
+        """把 device → rack → 機房 接到鏈尾（node_type=vmnode 時該裝置代表虛擬化主機）。"""
+        node: dict[str, Any] = {"type": node_type, "id": str(dev.id), "label": dev.name, "sub": sub}
+        if platform:
+            node["platform"] = platform
+        chain.append(node)
         # 地點優先用裝置自身的 location_id；裝置沒設但有掛機櫃時，繼承機櫃所在地點
         loc_id = dev.location_id
         if dev.rack_id:
@@ -417,6 +451,7 @@ async def get_address_relations(
         from app.models.virt import VirtCluster
         cluster = await session.get(VirtCluster, vm.cluster_id) if vm.cluster_id else None
         csub = cluster.name if cluster is not None else None
+        plat = (cluster.type if cluster is not None else None) or "proxmox"
         node_dev: Device | None = await session.get(Device, vm.device_id) if vm.device_id else None
         if node_dev is None and vm.node:
             # PVE node host 名稱 → 對到 jt-ipam 的實體裝置（比對 name，再比對 fqdn）
@@ -428,9 +463,10 @@ async def get_address_relations(
                     select(Device).where(func.lower(Device.fqdn) == vm.node.lower()).limit(1)
                 )).scalar_one_or_none()
         if node_dev is not None and node_dev.id != skip_id:
-            await _device_tail(node_dev, sub=csub, node_type="vmnode")
+            await _device_tail(node_dev, sub=csub, node_type="vmnode", platform=plat)
         elif vm.node:
-            chain.append({"type": "vmnode", "id": "pve:" + vm.node, "label": vm.node, "sub": csub})
+            chain.append({"type": "vmnode", "id": "host:" + vm.node, "label": vm.node,
+                              "sub": csub, "platform": plat})
 
     # 直接關聯的裝置（這台主機本身）；無論是否為 VM 都先接上
     dev_name: str | None = None
@@ -439,11 +475,16 @@ async def get_address_relations(
         if dev is not None:
             dev_name = dev.name
             await _device_tail(dev)
-    # 若這個 IP 屬於某台 Proxmox VM，補上它所在的 PVE 節點（即使已關聯裝置也要畫出落在哪台 node）
+    # 若這個 IP 屬於某台虛擬機，補上虛擬機與它所在的實體節點。
+    #
+    # **有沒有對應到裝置，虛擬機節點都要畫。** 原本「有裝置就不畫」，於是同樣是虛擬機的
+    # 兩個 IP，一個看得到虛擬機、一個看不到 —— 使用者無從理解規則（實機回報）。
+    # 就算裝置與虛擬機是同一台機器的兩筆紀錄，那也是兩個不同層級的物件，關係圖本來
+    # 就是在表達層級。
     vm = await _find_vm(dev_name)
     if vm is not None:
-        if not obj.device_id:
-            chain.append({"type": "vm", "id": str(vm.id), "label": vm.name, "sub": None})
+        chain.append({"type": "vm", "id": str(vm.id), "label": vm.name, "sub": None,
+                      "platform": None})
         await _append_pve_node(vm, skip_id=obj.device_id)
     return {"chain": chain}
 
@@ -776,8 +817,9 @@ async def update_address(
     await session.refresh(obj)
     out = IPAddressRead.model_validate(obj); out.mac_vendor = await vendor_for_mac(session, obj.mac)
     # 與 get_address 一致：算 ssh/rdp/vnc_available，否則存檔後前端拿不到、按鈕要等重整才出現
-    from app.services.permission import can_use_rdp, can_use_ssh, can_use_vnc
+    from app.services.permission import can_use_rdp, can_use_sftp, can_use_ssh, can_use_vnc
     out.ssh_available = await can_use_ssh(session, user=user, ip=obj)
+    out.sftp_available = await can_use_sftp(session, user=user, ip=obj)
     out.rdp_available = await can_use_rdp(session, user=user, ip=obj)
     out.vnc_available = await can_use_vnc(session, user=user, ip=obj)
     await _fill_pve_console(session, obj, out, user)
@@ -1080,3 +1122,38 @@ async def get_address_uptime(
 
     from app.services.uptime import uptime_for_ips
     return await uptime_for_ips(session, [address_id], days=days)
+
+
+class _UptimeBatchIn(StrictModel):
+    # 上限 30：儀表板區塊的設計上限，也避免一次算太多天 × 太多 IP
+    ip_ids: Annotated[list[uuid.UUID], Field(max_length=30)]
+    days: Annotated[int, Field(ge=7, le=365)] = 90
+
+
+@router.post("/uptime/batch")
+async def uptime_batch_endpoint(
+    payload: _UptimeBatchIn,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """一次取多個 IP 的每日存活狀態，每個 IP 各一條（儀表板區塊用）。
+
+    A01：只回使用者看得見的 IP —— 不可因為對方把 id 塞進清單就吐出來。
+    看不到的直接略過（不報錯），這樣儀表板不會因為權限變動就整個壞掉。
+    """
+    from app.services.uptime import uptime_batch
+
+    if not payload.ip_ids:
+        return {"items": []}
+
+    # 先縮到可見子網路，再取這些 IP —— 與清單端點同一套規則
+    vis = await visible_ids(session, user=user, object_type="subnet", required="read")
+    stmt = select(IPAddress.id).where(IPAddress.id.in_(payload.ip_ids))
+    if vis is not None:
+        if not vis:
+            return {"items": []}
+        stmt = stmt.where(IPAddress.subnet_id.in_(vis))
+    allowed = set((await session.execute(stmt)).scalars().all())
+    ordered = [i for i in payload.ip_ids if i in allowed]   # 保留使用者排的順序
+
+    return {"items": await uptime_batch(session, ordered, days=payload.days)}

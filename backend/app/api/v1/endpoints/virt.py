@@ -66,6 +66,10 @@ class VMRead(StrictModel):
     ips: list[str] = []
     macs: list[str] = []
     bridges: list[str] = []
+    # IP 字串 → IPAM 裡那筆位址的 id，讓清單上的 IP 可以直接點過去。
+    # **重疊網段下同一個位址字串會有多筆**（本專案的設計），分不出是哪一筆時
+    # 就不放進來 —— 給錯的連結比沒有連結更糟，因為使用者會信它。
+    ip_links: dict[str, str] = {}
 
 
 class VMInterfaceRead(StrictModel):
@@ -312,6 +316,20 @@ async def list_vms(
             d = by_vm.get(it.id)  # type: ignore[assignment]
             if d:
                 it.ips, it.macs, it.bridges = d["ips"], d["macs"], d["bridges"]
+
+        # 一次把這一頁用到的 IP 解析成 IPAM 位址 id（不要逐台查）。
+        # 同一個字串對到多筆就整個不給 —— 重疊網段是本專案的核心情境。
+        from app.models.address import IPAddress as _IPA
+        wanted = {ip for it in items for ip in it.ips}
+        if wanted:
+            seen: dict[str, list[str]] = {}
+            for aid, ahost in (await session.execute(
+                select(_IPA.id, func.host(_IPA.ip)).where(func.host(_IPA.ip).in_(wanted))
+            )).all():
+                seen.setdefault(str(ahost), []).append(str(aid))
+            unique = {ip: ids[0] for ip, ids in seen.items() if len(ids) == 1}
+            for it in items:
+                it.ip_links = {ip: unique[ip] for ip in it.ips if ip in unique}
 
     return Paginated[VMRead](items=items, total=total, page=page, page_size=page_size)
 

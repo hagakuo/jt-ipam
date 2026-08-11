@@ -61,6 +61,16 @@ class Subnet(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # 歸檔：非 NULL = 已歸檔（保留資料但不顯示、不掃描；重疊檢查忽略已歸檔）
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
+    # 是否納入 AI 巡檢。預設納入 —— 新增的網段自動被看顧，而不是要記得去開。
+    # 可在子網路編輯頁逐個切換，也可在 管理 → LLM / AI 一次挑選。兩處寫的是同一個欄位。
+    ai_audit_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False)
+
+    # 是否納入異常偵測。預設納入；訪客／實驗網段這類「本來就會亂」的可以關掉，
+    # 免得把真正該看的東西淹沒。
+    anomaly_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False)
+
     scan_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     scan_method: Mapped[list[str]] = mapped_column(
         ARRAY(String),

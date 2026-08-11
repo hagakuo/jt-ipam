@@ -136,6 +136,15 @@ class WindowsDhcpClient:
             "| ConvertTo-Json -Depth 4 -Compress"
         )
 
+    def get_reservations(self, scope_id: str) -> list[dict[str, Any]]:
+        """Get-DhcpServerv4Reservation：這個 scope 裡被綁定的位址。"""
+        sid = _safe_ps_arg(scope_id)
+        return self._run_json(
+            f"Get-DhcpServerv4Reservation -ScopeId {sid} "
+            "| Select-Object IPAddress,ClientId,Name,Description "
+            "| ConvertTo-Json -Depth 4 -Compress"
+        )
+
     def get_leases(self, scope_id: str) -> list[dict[str, Any]]:
         sid = _safe_ps_arg(scope_id)
         return self._run_json(
@@ -180,6 +189,38 @@ async def healthcheck(inst: WindowsDhcpServer) -> dict[str, Any]:
     cli = _client(inst)
     scopes = await asyncio.to_thread(cli.get_scopes)
     return {"host": inst.host, "scopes": len(scopes)}
+
+
+async def sync_reservations(session: AsyncSession, inst: WindowsDhcpServer) -> int:
+    """Windows DHCP 的保留位址（每個 scope 各問一次）。
+
+    `ClientId` 就是 MAC，格式是 `aa-bb-cc-dd-ee-ff`（共用寫入層會正規化成冒號式）。
+    """
+    from app.services.dhcp_reservations import Reservation, replace_reservations
+
+    cli = _client(inst)
+    scopes = await asyncio.to_thread(cli.get_scopes)
+    rows: list[Reservation] = []
+    for sc in scopes:
+        sid = _as_str(sc.get("ScopeId"))
+        if not sid:
+            continue
+        try:
+            got = await asyncio.to_thread(cli.get_reservations, sid)
+        except WindowsDhcpError:
+            continue        # 單一 scope 失敗不該讓整台同步失敗
+        for r in got:
+            ip = _as_str(r.get("IPAddress"))
+            if not ip:
+                continue
+            rows.append(Reservation(
+                ip=ip, mac=_as_str(r.get("ClientId")),
+                hostname=_as_str(r.get("Name")),
+                description=_as_str(r.get("Description"))))
+    return await replace_reservations(
+        session, source_type="windows_dhcp", source_id=inst.id, source_name=inst.name,
+        engine="windows", rows=rows,
+    )
 
 
 async def sync_scopes(session: AsyncSession, inst: WindowsDhcpServer) -> int:
@@ -278,6 +319,8 @@ async def sync_instance(session: AsyncSession, inst: WindowsDhcpServer) -> dict[
     counts: dict[str, int] = {}
     if inst.sync_scopes:
         counts["scopes"] = await sync_scopes(session, inst)
+        # 保留位址與 scope 同屬「DHCP 設定」，沿用同一個開關
+        counts["reservations"] = await sync_reservations(session, inst)
     if inst.sync_leases:
         counts["leases"] = await sync_leases(session, inst)
     inst.last_sync_at = datetime.now(UTC)

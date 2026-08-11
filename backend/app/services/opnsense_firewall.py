@@ -399,6 +399,101 @@ async def sync_dhcp_ranges(
     return {"ranges": len(parsed)}
 
 
+async def sync_dhcp_reservations(
+    session: AsyncSession, fw: OPNsenseFirewall,
+) -> int:
+    """OPNsense 的 DHCP 固定分配。兩種引擎都要看：
+
+    - **Kea**：`/api/kea/dhcpv4/searchReservation`（新版預設引擎）
+    - **ISC dhcpd**：沒有對應 API，只能從 config.xml 的 `<dhcpd><介面><staticmap>` 讀
+
+    實機上兩台防火牆一台走 Kea（8 筆）、一台只有 ISC（9 筆），所以兩條路都要走，
+    不能抓到其中一種就收工。
+    """
+    from app.services.dhcp_reservations import Reservation, replace_reservations
+
+    rows: list[Reservation] = []
+    engine = "kea"
+    try:
+        resp = await _api_get(fw, "/api/kea/dhcpv4/searchReservation")
+        for d in (resp.get("rows") or []) if isinstance(resp, dict) else []:
+            if not isinstance(d, dict):
+                continue
+            ip = str(d.get("ip_address") or "").strip()
+            if ip:
+                rows.append(Reservation(
+                    ip=ip, mac=d.get("hw_address"),
+                    hostname=(d.get("hostname") or None),
+                    description=(d.get("description") or None)))
+    except OPNsenseError:
+        pass          # 沒開 Kea → 走 ISC
+
+    if not rows:
+        engine = "isc"
+        try:
+            rows = _parse_legacy_static_maps(await _download_config_xml(fw))
+        except OPNsenseError:
+            rows = []
+
+    return await replace_reservations(
+        session, source_type="opnsense", source_id=fw.id, source_name=fw.name,
+        engine=engine, rows=rows,
+    )
+
+
+def _parse_legacy_static_maps(xml_text: str) -> list[Any]:
+    """config.xml 的 `<dhcpd><介面><staticmap>` → 固定分配。
+
+    **沒有 `<ipaddr>` 的項目要略過**：那是「認得這張網卡」的靜態對映（可套用不同選項），
+    並沒有保留任何位址。實機上就有這種資料，全收會憑空多出一批沒有 IP 的固定分配。
+    """
+    import xml.etree.ElementTree as ET
+
+    from defusedxml.ElementTree import fromstring as _safe_xml_fromstring
+
+    from app.services.dhcp_reservations import Reservation
+
+    try:
+        root = _safe_xml_fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise OPNsenseError(f"config.xml parse error: {exc}") from exc
+    out: list[Any] = []
+    dhcpd = root.find("dhcpd")
+    if dhcpd is None:
+        return out
+
+    def _t(node: Any, tag: str) -> str | None:
+        el = node.find(tag)
+        return (el.text or "").strip() or None if el is not None else None
+
+    for iface in list(dhcpd):
+        for sm in iface.findall("staticmap"):
+            ip = _t(sm, "ipaddr")
+            if not ip:
+                continue
+            out.append(Reservation(ip=ip, mac=_t(sm, "mac"),
+                                   hostname=_t(sm, "hostname"),
+                                   description=_t(sm, "descr")))
+    return out
+
+
+async def _download_config_xml(fw: OPNsenseFirewall) -> str:
+    """下載 config.xml（legacy NAT 與 ISC 固定分配共用）。"""
+    url = f"{fw.api_url.rstrip('/')}/api/core/backup/download/this"
+    key, secret = _decrypt_creds(fw)
+    try:
+        resp = await safe_request(
+            "GET", url, headers=_basic_auth_header(key, secret),
+            timeout=30.0, verify=fw.verify_tls,
+        )
+    except (UnsafeOutboundURL, httpx.HTTPError) as exc:
+        raise OPNsenseError(f"legacy config download: {exc}") from exc
+    if resp.status_code != 200 or "<opnsense>" not in resp.text:
+        raise OPNsenseError(
+            f"legacy config download: HTTP {resp.status_code}, len={len(resp.text)}")
+    return resp.text
+
+
 async def sync_dhcp_leases(
     session: AsyncSession, fw: OPNsenseFirewall,
 ) -> dict[str, int]:
@@ -506,28 +601,59 @@ async def _fetch_legacy_nat_rules(fw: OPNsenseFirewall) -> list[dict[str, Any]]:
     回傳 dict 列表，欄位對齊 new-API（uuid / description / protocol /
     target / target_port / destination_port / interface）。
     """
+
+
+    return _parse_legacy_nat_xml(await _download_config_xml(fw))
+
+
+def _truthy(v: Any) -> bool:
+    """把 API 回來的布林值正規化。
+
+    OPNsense 依端點不同會回 bool / "0" / "1" / {"selected": 1} 等形式。直接 bool()
+    會把字串 "0" 當成 True（非空字串皆為真），整批規則因此被標成停用。
+    """
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    if isinstance(v, (int, float)):
+        return v != 0
+    if isinstance(v, dict):   # {"0": {"value": "...", "selected": 1}} 這類
+        return any(_truthy(x.get("selected")) for x in v.values() if isinstance(x, dict))
+    return str(v).strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _xml_flag(node: Any, tag: str) -> bool:
+    """OPNsense config.xml 的布林欄位，兩種寫法都要吃。
+
+    - 舊式「存在即為真」：`<disabled/>`（元素不存在＝False）
+    - 新式明寫值：`<disabled>0</disabled>` / `<disabled>1</disabled>`
+
+    只判斷元素在不在的話，新式寫法的 `0` 也會被當成 True —— 實機上整份 NAT 規則
+    因此全被標成停用，NAT 頁面全灰，「找出對外開放的規則」也會靜靜地回 0 筆。
+    """
+    if node is None:
+        return False
+    el = node.find(tag)
+    if el is None:
+        return False
+    text = (el.text or "").strip().lower()
+    if text == "":
+        return True   # 舊式：元素存在、沒有值 → 為真
+    return text not in ("0", "false", "no", "off")
+
+
+def _parse_legacy_nat_xml(xml_text: str) -> list[dict[str, Any]]:
+    """把 config.xml 的 <nat><rule> 解析成與 new-API 對齊的 dict 列表。
+
+    抽成純函式是為了測得到 —— 這段的布林判斷曾經整批解錯，而網路那層擋著看不出來。
+    """
     import xml.etree.ElementTree as ET
 
     from defusedxml.ElementTree import fromstring as _safe_xml_fromstring
 
-    url = f"{fw.api_url.rstrip('/')}/api/core/backup/download/this"
-    key, secret = _decrypt_creds(fw)
     try:
-        resp = await safe_request(
-            "GET", url, headers=_basic_auth_header(key, secret),
-            timeout=30.0, verify=fw.verify_tls,
-        )
-    except (UnsafeOutboundURL, httpx.HTTPError) as exc:
-        raise OPNsenseError(f"legacy config download: {exc}") from exc
-    if resp.status_code != 200 or "<opnsense>" not in resp.text:
-        raise OPNsenseError(
-            f"legacy config download: HTTP {resp.status_code}, "
-            f"len={len(resp.text)}"
-        )
-
-    try:
-        # defusedxml：擋 XXE / billion-laughs（外部 entity / DTD）
-        root = _safe_xml_fromstring(resp.text)
+        root = _safe_xml_fromstring(xml_text)
     except ET.ParseError as exc:
         raise OPNsenseError(f"config.xml parse error: {exc}") from exc
 
@@ -557,15 +683,15 @@ async def _fetch_legacy_nat_rules(fw: OPNsenseFirewall) -> list[dict[str, Any]]:
             "destination_port": _text(dest.find("port")) if dest is not None else None,
             "destination_net": (_text(dest.find("network")) or _text(dest.find("address"))
                                 if dest is not None else None),
-            "destination_not": (dest.find("not") is not None) if dest is not None else False,
+            "destination_not": _xml_flag(dest, "not"),
             "source_port": _text(src.find("port")) if src is not None else None,
             "source_net": (_text(src.find("network")) or _text(src.find("address"))
                            if src is not None else None),
-            "source_not": (src.find("not") is not None) if src is not None else False,
+            "source_not": _xml_flag(src, "not"),
             "interface": _text(rule.find("interface")),
-            "disabled": rule.find("disabled") is not None,
-            "nordr": rule.find("nordr") is not None,
-            "log": rule.find("log") is not None,
+            "disabled": _xml_flag(rule, "disabled"),
+            "nordr": _xml_flag(rule, "nordr"),
+            "log": _xml_flag(rule, "log"),
             "category": _text(rule.find("category")),
             "natreflection": _text(rule.find("natreflection")),
             "poolopts": _text(rule.find("poolopts")),
@@ -731,12 +857,14 @@ async def sync_nat_rules(
         dst_net = r.get("destination_net")
         tgt = r.get("target")
         extra = {
-            "disabled": bool(r.get("disabled")),
-            "no_rdr": bool(r.get("nordr")),
+            # 不能用 bool()：API 有時回字串 "0"/"1"，而 bool("0") 是 True ——
+            # 整批規則會被標成停用（legacy XML 那條路徑就是這樣壞掉的）
+            "disabled": _truthy(r.get("disabled")),
+            "no_rdr": _truthy(r.get("nordr")),
             "ip_version": ipv,
-            "src_not": bool(r.get("source_not")),
-            "dst_not": bool(r.get("destination_not")),
-            "log": bool(r.get("log")),
+            "src_not": _truthy(r.get("source_not")),
+            "dst_not": _truthy(r.get("destination_not")),
+            "log": _truthy(r.get("log")),
             "category": (str(r.get("category"))[:128] if r.get("category") else None),
             "nat_reflection": (str(r.get("natreflection"))[:16] if r.get("natreflection") else None),
             "pool_options": (str(r.get("poolopts"))[:32] if r.get("poolopts") else None),
@@ -1453,6 +1581,12 @@ async def sync_all_for_firewall(
         out.append({"task": "dhcp_ranges", **(await sync_dhcp_ranges(session, fw))})
     except OPNsenseError as exc:
         out.append({"task": "dhcp_ranges", "error": str(exc)})
+    # DHCP 固定分配（Kea reservation ／ ISC staticmap）；失敗只記錄
+    try:
+        out.append({"task": "dhcp_reservations",
+                    "count": await sync_dhcp_reservations(session, fw)})
+    except OPNsenseError as exc:
+        out.append({"task": "dhcp_reservations", "error": str(exc)})
     # VPN（site-to-site WireGuard / IPsec）一律嘗試；外掛 / API 不存在會被容錯吞掉
     try:
         out.append({"task": "vpn", **(await sync_vpn_tunnels(session, fw))})

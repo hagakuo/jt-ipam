@@ -35,8 +35,9 @@ import {
   ToolsIcon, SettingsIcon, TasksIcon,
   // Phase 3 / Admin
   Phase3Icon, VirtualizationIcon, PhysicalIcon, PowerIcon, VpnIcon,
-  AdminIcon, AuditIcon, UsersIcon, GroupsIcon, CustomFieldsIcon, CustomersIcon, AnomalyIcon, ChatHistoryIcon,
-  DnsIcon, LibreNMSIcon, FirewallIcon, DhcpServerIcon, WazuhIcon, ScanAgentsIcon, WebhooksIcon, LockIcon, KeyIcon,
+  AdminIcon, AuditIcon, UsersIcon, GroupsIcon, CustomFieldsIcon, CustomersIcon, AnomalyIcon,
+  AiAuditIcon, ChatHistoryIcon,
+  DnsIcon, LibreNMSIcon, FirewallIcon, WindowsDhcpIcon, WazuhIcon, ScanAgentsIcon, WebhooksIcon, LockIcon, KeyIcon,
   MigrationIcon, ImportIcon, PluginsIcon, ExportIcon, TerminalIcon,
   // topbar / user menu
   LogoutIcon, AccountIcon, LanguageIcon, ThemeDarkIcon, ThemeLightIcon,
@@ -63,7 +64,7 @@ const accountLabel = computed(() => {
   return u.includes("@") ? u : `${u}@local`;
 });
 
-// ── 子網路導覽 tree（在子網路詳情頁時，左側選單把子網路展開、依客戶分組）──
+// ── 子網路導覽 tree（在子網路詳細資料頁時，左側選單把子網路展開、依客戶分組）──
 const { labelFor: customerLabelFor, ensureLoaded: ensureCustomersLoaded } = useCustomers();
 const navSubnets = ref<Subnet[]>([]);
 let navSubnetsLoaded = false;
@@ -83,7 +84,7 @@ watch(subnetTreeVersion, () => { if (inSubnetContext.value) void loadNavSubnets(
 const currentSubnetId = computed(() =>
   route.name === "subnet-detail" ? (route.params.id as string) : null,
 );
-// 在「子網路」清單頁或某個子網路詳情頁時，左選單就展開子網路樹
+// 在「子網路」清單頁或某個子網路詳細資料頁時，左選單就展開子網路樹
 const inSubnetContext = computed(() =>
   route.name === "subnets" || route.name === "subnet-detail",
 );
@@ -178,6 +179,7 @@ watch([inSubnetContext, currentSubnetId, navSubnets], () => {
 // 等於空選項 → 依後端回報的設定狀態隱藏。初值全 true：載入完成前不要讓選單閃一下才消失。
 const intgPresence = ref<Record<string, boolean>>({
   opnsense: true, pfsense: true, fortigate: true, dns: true, cert_agents: true, proxmox: true,
+  esxi: true,
 });
 async function loadIntegrationPresence() {
   try {
@@ -221,7 +223,9 @@ const menuOptions = computed<MenuOption[]>(() => {
           ? [{ label: () => t("nav.cert_status"), key: "adv-cert-status", icon: renderIcon(LockIcon) }] : []),
         { label: () => t("nav.connections"),     key: "adv-connections", icon: renderIcon(TerminalIcon) },
         ...(intgPresence.value.proxmox
-          ? [{ label: () => t("nav.virtualization"), key: "virt", icon: renderIcon(VirtualizationIcon) }] : []),
+          ? [{ label: () => t("nav.virt_pve"), key: "virt", icon: renderIcon(VirtualizationIcon) }] : []),
+        ...(intgPresence.value.esxi
+          ? [{ label: () => t("nav.virt_vmware"), key: "virt_vmware", icon: renderIcon(VirtualizationIcon) }] : []),
         ...(intgPresence.value.opnsense
           ? [{ label: () => t("nav.firewall"), key: "firewall", icon: renderIcon(FirewallIcon) }] : []),
         ...(intgPresence.value.pfsense
@@ -253,14 +257,21 @@ const menuOptions = computed<MenuOption[]>(() => {
           { label: () => t("nav.oui_admin"),     key: "oui_admin",      icon: renderIcon(DevicesIcon) },
           { label: () => t("nav.hostname_precedence"), key: "hostname_precedence", icon: renderIcon(AddressesIcon) },
           { label: () => t("nav.anomaly"),       key: "anomaly",        icon: renderIcon(AnomalyIcon) },
+          // 排在異常偵測後面：兩者都是「找問題」，但一個是量到的事實、一個是模型的
+          // 推測，刻意分成兩頁而不是合併 —— 混在一起會分不出哪些結論可以直接相信。
+          // LLM 沒啟用就整個藏起來（跟 AI 對話小工具同一個判斷）。
+          ...(me.value?.ai_enabled
+            ? [{ label: () => t("nav.ai_audit"), key: "ai_audit", icon: renderIcon(AiAuditIcon) }]
+            : []),
           { label: () => t("nav.dns"),           key: "dns",            icon: renderIcon(DnsIcon) },
           { label: () => t("nav.adguard"),       key: "adguard",        icon: renderIcon(DnsIcon) },
           { label: () => t("nav.librenms"),      key: "librenms",       icon: renderIcon(LibreNMSIcon) },
           { label: () => t("nav.firewall_admin"), key: "firewall_admin", icon: renderIcon(FirewallIcon) },
           { label: () => t("nav.pfsense"),        key: "pfsense",        icon: renderIcon(FirewallIcon) },
           { label: () => t("nav.fortigate"),      key: "fortigate",      icon: renderIcon(FirewallIcon) },
-          { label: () => t("nav.windows_dhcp"),  key: "windows_dhcp",   icon: renderIcon(DhcpServerIcon) },
+          { label: () => t("nav.windows_dhcp"),  key: "windows_dhcp",   icon: renderIcon(WindowsDhcpIcon) },
           { label: () => t("nav.virt_admin"),    key: "virt_admin",     icon: renderIcon(VirtualizationIcon) },
+          { label: () => t("nav.esxi_admin"),    key: "esxi_admin",     icon: renderIcon(VirtualizationIcon) },
           { label: () => t("nav.wazuh"),         key: "wazuh",          icon: renderIcon(WazuhIcon) },
           { label: () => t("nav.graylog_dsv"),   key: "graylog_dsv",    icon: renderIcon(ExportIcon) },
           { label: () => t("nav.scan_agents"),   key: "scan_agents",    icon: renderIcon(ScanAgentsIcon) },
@@ -578,8 +589,12 @@ function startDrag(e: MouseEvent) {
 </template>
 
 <style scoped>
+/* 側欄 logo 欄與頂端列共用同一個高度：兩者各自由內容撐高的話，底邊會差幾 px，
+   在左上角形成一道對不齊的缺口（實機回報）。高度綁在同一個變數上就不會再飄。 */
 .brand {
-  padding: 14px 16px;
+  height: var(--app-header-h, 56px);
+  box-sizing: border-box;
+  padding: 0 16px;
   display: flex;
   align-items: center;
   /* logo + 系統名 + 版本固定在頂端，選單捲動時仍可見（用 naive 的 sider 底色避免穿透）*/
@@ -594,7 +609,7 @@ function startDrag(e: MouseEvent) {
   box-shadow: 0 6px 12px -6px rgba(0, 0, 0, 0.28);
 }
 .brand-collapsed {
-  padding: 14px 0;
+  padding: 0;
   justify-content: center;
 }
 .brand-logo {
@@ -603,7 +618,11 @@ function startDrag(e: MouseEvent) {
   display: block;
 }
 .topbar {
-  padding: 8px 16px;
+  height: var(--app-header-h, 56px);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
   /* 頂端列固定，內容捲動時保持可見 */
   position: sticky;
   top: 0;

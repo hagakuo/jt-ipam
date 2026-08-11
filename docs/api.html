@@ -80,6 +80,23 @@
   li{margin:3px 0}
   footer{margin:44px 0 80px;font-size:12.5px;color:var(--muted);text-align:center}
   footer a{color:var(--green)}
+
+  /* 一次只顯示一節：整份手冊在同一頁上是 67KB、16 節，捲不完也找不到自己在哪。
+     用 JS 分節（HTML 原始結構不變），沒有 JS 時所有內容照樣完整顯示。 */
+  html.js-sect main > .sect { display: none; }
+  html.js-sect main > .sect.on { display: block; }
+  .sect-nav { display: flex; justify-content: space-between; gap: 12px;
+              margin: 28px 0 8px; padding-top: 14px; border-top: 1px solid #e5e9f0; }
+  .sect-nav a { font-size: 14px; text-decoration: none; color: #18794e;
+                padding: 8px 12px; border: 1px solid #d7dee8; border-radius: 8px;
+                background: #fff; max-width: 46%; }
+  .sect-nav a:hover { border-color: #18794e; }
+  .sect-nav .nx { margin-left: auto; text-align: right; }
+  .toc a.on { font-weight: 600; color: #18794e; }
+  @media (prefers-color-scheme: dark) {
+    .sect-nav { border-top-color: #2b3444; }
+    .sect-nav a { background: #161c26; border-color: #2b3444; color: #7ee2b8; }
+  }
 </style>
 </head>
 <body>
@@ -577,8 +594,11 @@ curl -G https://ipam.example.com/api/v1/addresses \
       <tr><td><code>GET /api/v1/cert-agents/check</code></td><td><span class="zh">代理比對指紋與到期日</span><span class="en">Agent compares fingerprints and expiry</span></td></tr>
       <tr><td><code>GET /api/v1/cert-agents/bundle/raw</code></td><td><span class="zh">代理取憑證內容（多種格式）</span><span class="en">Agent fetches certificate material (several formats)</span></td></tr>
       <tr><td><code>POST /api/v1/cert-agents/report</code></td><td><span class="zh">代理回報派送結果</span><span class="en">Agent reports deployment results</span></td></tr>
+      <tr><td><code>GET /api/v1/cert-agents/agent.sh</code><br><code>GET /api/v1/cert-agents/agent.ps1</code></td><td><span class="zh">代理程式本體（Linux / Windows），公開可取、無密鑰；代理據此自我更新</span><span class="en">The agent itself (Linux / Windows). Public, contains no secrets; agents self-update from it</span></td></tr>
     </tbody>
   </table>
+  <p><span class="zh"><code>bundle/raw?part=pkcs12</code> 可帶 <code>X-Pfx-Password</code> 標頭。帶了就回<b>以該密碼加密、且 Windows 匯得進去</b>的 PKCS#12（PBESv1-SHA1-3DES）—— PBESv1 是 Windows CryptoAPI 全版本都吃的形式；函式庫預設的 PBESv2/AES-256 失敗時訊息是誤導的「密碼不正確」。不帶標頭時行為不變（不加密）。Windows 代理每次執行自產一組隨機密碼且只留在記憶體，私鑰不會為了匯入而寫到磁碟。</span>
+     <span class="en"><code>bundle/raw?part=pkcs12</code> accepts an <code>X-Pfx-Password</code> header. With it you get a PKCS#12 encrypted with that password <b>using the encryption Windows can actually import</b> (PBESv1-SHA1-3DES) — PBESv1 is the form every version of the Windows CryptoAPI accepts; the library default, PBESv2/AES-256, fails with a misleading "the password is incorrect". Without the header the behaviour is unchanged (unencrypted). The Windows agent generates a random password per run and keeps it in memory, so the private key is never written to disk on the way in.</span></p>
   <div class="danger note">
     <span class="zh">憑證代理的取檔端點會<b>即時解密並回傳私鑰</b>（強制 HTTPS、逐次寫稽核）。那把 <code>X-Agent-Key</code> 等同於它 scope 內所有憑證的私鑰，請當成最高敏感憑證保管。</span>
     <span class="en">The certificate bundle endpoint <b>decrypts and returns private keys</b> (HTTPS-only, audited on every fetch). That <code>X-Agent-Key</code> is equivalent to the private keys of every certificate in its scope — treat it as a top-tier secret.</span>
@@ -638,6 +658,110 @@ curl http://127.0.0.1:8000/openapi.json &gt; jt-ipam-openapi.json</code></pre>
       try { var u = new URL(location.href); u.searchParams.set('lang', en ? 'en' : 'zh-TW'); history.replaceState(null, '', u); } catch (e) {}
       setBtn();
     });
+  })();
+</script>
+<script>
+  /* 手冊分節顯示。
+     原本是一整頁 16 節、67KB —— 點目錄只是跳錨點，頁面又長又難定位。
+     這裡在執行時把「每個 h2 及其後續內容」收成一節，一次只顯示一節，
+     並保留 #錨點 深連結與上一頁/下一頁。
+     刻意在 JS 裡分組而不是改 HTML 結構：內容原始碼維持平鋪，沒有 JS 時整份仍可讀。 */
+  (function () {
+    var main = document.querySelector('main');
+    if (!main) return;
+    var heads = [].slice.call(main.querySelectorAll(':scope > h2[id]'));
+    if (heads.length < 2) return;
+    document.documentElement.classList.add('js-sect');
+
+    // 把 h2 與其後續節點收進 .sect
+    var secs = heads.map(function (h) {
+      var box = document.createElement('div');
+      box.className = 'sect';
+      box.dataset.id = h.id;
+      h.parentNode.insertBefore(box, h);
+      var n = h;
+      while (n && !(n !== h && n.tagName === 'H2')) {
+        var nx = n.nextSibling;
+        box.appendChild(n);
+        n = nx;
+      }
+      return box;
+    });
+
+    var links = [].slice.call(document.querySelectorAll('.toc a[href^="#"]'));
+    function label(i) {
+      var a = links[i];
+      if (!a) return '';
+      var en = document.body.classList.contains('lang-en');
+      var sp = a.querySelector(en ? '.en' : '.zh');
+      return (sp ? sp.textContent : a.textContent).trim();
+    }
+
+    // 上一節 / 下一節：手冊是要讀完的，不是只跳著查
+    secs.forEach(function (box, i) {
+      var nav = document.createElement('div');
+      nav.className = 'sect-nav';
+      if (i > 0) {
+        var pv = document.createElement('a');
+        pv.href = '#' + secs[i - 1].dataset.id;
+        pv.className = 'pv';
+        pv.textContent = '← ' + label(i - 1);
+        nav.appendChild(pv);
+      }
+      if (i < secs.length - 1) {
+        var nx = document.createElement('a');
+        nx.href = '#' + secs[i + 1].dataset.id;
+        nx.className = 'nx';
+        nx.textContent = label(i + 1) + ' →';
+        nav.appendChild(nx);
+      }
+      if (nav.children.length) box.appendChild(nav);
+    });
+
+    function show(id, push) {
+      var box = secs.filter(function (b) { return b.dataset.id === id; })[0] || secs[0];
+      secs.forEach(function (b) { b.classList.toggle('on', b === box); });
+      links.forEach(function (a) {
+        a.classList.toggle('on', a.getAttribute('href') === '#' + box.dataset.id);
+      });
+      if (push && location.hash !== '#' + box.dataset.id) {
+        history.pushState(null, '', '#' + box.dataset.id);
+      }
+      window.scrollTo(0, 0);
+    }
+
+    main.addEventListener('click', function (e) {
+      var a = e.target.closest && e.target.closest('a[href^="#"]');
+      if (!a) return;
+      e.preventDefault();
+      show(a.getAttribute('href').slice(1), true);
+    });
+    document.querySelector('.toc').addEventListener('click', function (e) {
+      var a = e.target.closest && e.target.closest('a[href^="#"]');
+      if (!a) return;
+      e.preventDefault();
+      show(a.getAttribute('href').slice(1), true);
+    });
+    window.addEventListener('hashchange', function () {
+      show(location.hash.slice(1), false);
+    });
+
+    // 語言切換後，上一頁/下一頁的標題要跟著換
+    var lb = document.getElementById('langBtn');
+    if (lb) {
+      lb.addEventListener('click', function () {
+        setTimeout(function () {
+          secs.forEach(function (box, i) {
+            var pv = box.querySelector('.sect-nav .pv');
+            var nx = box.querySelector('.sect-nav .nx');
+            if (pv) pv.textContent = '← ' + label(i - 1);
+            if (nx) nx.textContent = label(i + 1) + ' →';
+          });
+        }, 0);
+      });
+    }
+
+    show(location.hash.slice(1), false);
   })();
 </script>
 </body>

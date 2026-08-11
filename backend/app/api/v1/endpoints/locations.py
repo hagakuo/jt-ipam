@@ -110,7 +110,7 @@ async def list_locations(
 @router.get(
     "/locations/{location_id}",
     response_model=LocationRead,
-    # A01 / IDOR：地點屬可逐物件授權的型別，詳情不能只憑「已登入」就給
+    # A01 / IDOR：地點屬可逐物件授權的型別，詳細資料不能只憑「已登入」就給
     dependencies=[Depends(require_object_perm("location", "read", path_param="location_id"))],
 )
 async def get_location(

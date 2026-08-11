@@ -128,7 +128,7 @@ const pickerItems = computed(() => [
 
 const colsAll = computed<DataTableColumns<Row>>(() => autoSort([
   { title: t("certStatus.col_agent"), key: "agent", minWidth: 130,
-    // 有對應裝置→代理名稱可點去裝置詳情
+    // 有對應裝置→代理名稱可點去裝置詳細資料
     render: (r) => r.device_id
       ? h(NTooltip, null, {
           trigger: () => links.device(r.device_id, r.agent),

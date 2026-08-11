@@ -2,6 +2,7 @@ import { defineConfig, loadEnv, type Plugin } from "vite";
 import vue from "@vitejs/plugin-vue";
 import { fileURLToPath, URL } from "node:url";
 import { readFileSync, writeFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 // 從 package.json 讀版本號，build 時注入 __APP_VERSION__
 const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf-8"));
@@ -12,9 +13,16 @@ function emitVersionJson(): Plugin {
     name: "emit-version-json",
     apply: "build",
     closeBundle() {
+      // 只寫版本號不夠：同一個版本號重新 build（修 bug、改 UI）時檔案內容不變，
+      // 開著的舊分頁永遠不會被提示重載，於是繼續呼叫已經被移除的端點（實際踩過：
+      // 舊 bundle 一直打 /ai-audit/run/stream 拿 404，畫面顯示「連線失敗」）。
+      // 拿 index.html 的雜湊當 build 識別碼 —— 內容一樣就一樣，不會沒事跳提醒。
+      const indexHtml = readFileSync(
+        fileURLToPath(new URL("./dist/index.html", import.meta.url)), "utf-8");
+      const build = createHash("sha256").update(indexHtml).digest("hex").slice(0, 12);
       writeFileSync(
         fileURLToPath(new URL("./dist/version.json", import.meta.url)),
-        JSON.stringify({ version: pkg.version }),
+        JSON.stringify({ version: pkg.version, build }),
       );
     },
   };
@@ -64,6 +72,21 @@ export default defineConfig(({ mode }) => {
           target: env.VITE_API_BASE_URL ?? "http://localhost:8000",
           changeOrigin: true,
           secure: false,
+          // WebSocket（SSH／SFTP／AI 串流）也要代理，否則本機驗證時連不上 ——
+          // 正式環境是 nginx 同源反代，本機沒有這一段就與正式行為不一致
+          ws: true,
+        },
+      },
+    },
+    // `vite preview` 服務的是正式 build。本機用瀏覽器驗證時走這條路，
+    // 所以它也要有同一份代理，否則前端打的 /api 會落到 preview 自己身上。
+    preview: {
+      proxy: {
+        "/api": {
+          target: env.VITE_API_BASE_URL ?? "http://localhost:8000",
+          changeOrigin: true,
+          secure: false,
+          ws: true,
         },
       },
     },

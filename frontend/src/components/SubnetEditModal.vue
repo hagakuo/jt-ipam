@@ -16,6 +16,7 @@ import {
   NButton,
   NIcon,
   NPopover,
+  NAlert,
   useMessage,
 } from "naive-ui";
 import {
@@ -37,7 +38,7 @@ import { useScanProbes, probeLabel } from "@/api/scanProbes";
 const props = defineProps<{
   show: boolean;
   editing: Subnet | null;
-  // 從子網路詳情「新增下層子網路」帶過來時，預選此區段（僅新增模式套用）
+  // 從子網路詳細資料「新增下層子網路」帶過來時，預選此區段（僅新增模式套用）
   presetSectionId?: string | null;
 }>();
 const emit = defineEmits<{
@@ -63,7 +64,14 @@ const allSubnets = ref<Subnet[]>([]);
 // 掃描代理下拉的「本機直接掃」哨兵值（對應後端 scan_agent_id=null）；與真正的代理 UUID 區分
 const LOCAL_SCAN = "__local__";
 const scanAgentOpts = ref<{ label: string; value: string }[]>([]);
+/** 本機（jt-ipam 主機）上那個代理，安裝時自動建立；沒有就是沒裝。 */
+const localAgent = ref<{ id: string; name: string; last_seen_at: string | null } | null>(null);
 const agentAvail = ref<Record<string, string[]>>({});
+// 代理端「管理員有開啟」的探測。三層模型：代理能力 ∩ **代理啟用** ∩ 子網路要跑。
+// 少了中間這層，會出現「子網路勾了、代理也做得到，但伺服器在 poll 時就把它濾掉」——
+// 畫面上一切正常，探測永遠不會跑（實際踩過：DHCP 偵測勾了一整天，一筆觀測都沒有）。
+const agentEnabled = ref<Record<string, string[]>>({});
+
 // 選定掃描代理「實際能跑」的探測集合；代理沒回報(空)時回 null = 不限制
 const selectedAgentProbes = computed<Set<string> | null>(() => {
   const id = form.value.scan_agent_id;
@@ -71,9 +79,21 @@ const selectedAgentProbes = computed<Set<string> | null>(() => {
   const av = agentAvail.value[id];
   return av && av.length ? new Set(av) : null;
 });
+const selectedAgentEnabled = computed<Set<string> | null>(() => {
+  const id = form.value.scan_agent_id;
+  if (!id) return null;
+  const en = agentEnabled.value[id];
+  return en && en.length ? new Set(en) : null;
+});
 function probeUnsupported(key: string): boolean {
   const s = selectedAgentProbes.value;
   return !!s && !s.has(key);
+}
+/** 代理做得到、但管理員沒在代理上開啟 → 勾了也不會跑，要講出來。 */
+function probeNotEnabledOnAgent(key: string): boolean {
+  if (probeUnsupported(key)) return false;      // 那是另一種情況（工具沒裝）
+  const en = selectedAgentEnabled.value;
+  return !!en && !en.has(key);
 }
 // 探測所需的工具 / 安裝指令（與掃描代理頁一致）
 const PROBE_INSTALL: Record<string, string> = {
@@ -108,6 +128,8 @@ const form = ref({
   customer_id: null as string | null,
   is_pool: false,
   is_full: false,
+  ai_audit_enabled: true,
+  anomaly_enabled: true,
   scan_enabled: false,
   scan_method: ["icmp"] as string[],
   threshold_pct: null as number | null,
@@ -131,13 +153,24 @@ async function loadAuxOpts() {
   } catch { /* silent */ }
   try {
     const ag = await listScanAgents();
+    const local = ag.items.find((a) => a.is_local);
+    localAgent.value = local
+      ? { id: local.id, name: local.name, last_seen_at: local.last_seen_at }
+      : null;
     scanAgentOpts.value = [
-      { label: t("subnets.scan_agent_local"), value: LOCAL_SCAN },
-      ...ag.items.map((a) => ({ label: a.name, value: a.id })),
+      // 「不指派」是誠實的說法：掃描一律走代理，沒指派就是不會掃
+      { label: t("subnets.scan_agent_none"), value: LOCAL_SCAN },
+      ...ag.items.map((a) => ({
+        label: a.is_local ? t("subnets.scan_agent_local_named", { name: a.name }) : a.name,
+        value: a.id,
+      })),
     ];
     // 記錄每個代理「實際能跑」的探測（available_probes）→ 子網路勾選時據此反灰不支援項
     agentAvail.value = Object.fromEntries(
       ag.items.map((a) => [a.id, (a as any).available_probes ?? []]),
+    );
+    agentEnabled.value = Object.fromEntries(
+      ag.items.map((a) => [a.id, (a as any).enabled_probes ?? []]),
     );
   } catch { /* silent */ }
   try {
@@ -163,6 +196,8 @@ function resetForm() {
       master_subnet_id: (r as any).master_subnet_id ?? null,
       customer_id: r.customer_id ?? null,
       is_pool: r.is_pool, is_full: r.is_full,
+      ai_audit_enabled: r.ai_audit_enabled ?? true,
+      anomaly_enabled: r.anomaly_enabled ?? true,
       scan_enabled: r.scan_enabled,
       scan_method: [...(r.scan_method ?? ["icmp"])],
       threshold_pct: r.threshold_pct,
@@ -180,6 +215,7 @@ function resetForm() {
       description: "",
       vlan_id: null, vrf_id: null, master_subnet_id: null, customer_id: null,
       is_pool: false, is_full: false,
+      ai_audit_enabled: true, anomaly_enabled: true,
       scan_enabled: false, scan_method: ["icmp"],
       threshold_pct: null,
       scan_agent_id: null,
@@ -222,6 +258,8 @@ async function submit() {
         customer_id: form.value.customer_id ?? null,
         is_pool: form.value.is_pool,
         is_full: form.value.is_full,
+        ai_audit_enabled: form.value.ai_audit_enabled,
+        anomaly_enabled: form.value.anomaly_enabled,
         scan_enabled: form.value.scan_enabled,
         scan_method: form.value.scan_method,
         threshold_pct: form.value.threshold_pct ?? null,
@@ -240,6 +278,8 @@ async function submit() {
         vrf_id: form.value.vrf_id ?? null,
         customer_id: form.value.customer_id ?? null,
         is_pool: form.value.is_pool, is_full: form.value.is_full,
+        ai_audit_enabled: form.value.ai_audit_enabled,
+        anomaly_enabled: form.value.anomaly_enabled,
         scan_enabled: form.value.scan_enabled,
         scan_method: form.value.scan_method,
         threshold_pct: form.value.threshold_pct ?? null,
@@ -316,6 +356,18 @@ async function submit() {
           <n-checkbox v-model:checked="form.is_full">{{ t("subnets.is_full") }}</n-checkbox>
         </n-space>
       </n-form-item>
+      <n-form-item :label="t('subnets.checks')">
+        <n-space vertical size="small" style="width: 100%">
+          <n-checkbox v-model:checked="form.anomaly_enabled">
+            {{ t("subnets.anomaly_enable") }}
+          </n-checkbox>
+          <span style="font-size: 12px; opacity: .7">{{ t("subnets.anomaly_hint") }}</span>
+          <n-checkbox v-model:checked="form.ai_audit_enabled">
+            {{ t("subnets.ai_audit_enable") }}
+          </n-checkbox>
+          <span style="font-size: 12px; opacity: .7">{{ t("subnets.ai_audit_hint") }}</span>
+        </n-space>
+      </n-form-item>
       <n-form-item :label="t('subnets.scan')">
         <n-space vertical style="width: 100%">
           <n-checkbox v-model:checked="form.scan_enabled">{{ t("subnets.scan_enable") }}</n-checkbox>
@@ -328,6 +380,14 @@ async function submit() {
                 <n-checkbox v-for="p in catalog.probes" :key="p.key" :value="p.key"
                             :disabled="probeUnsupported(p.key)">
                   {{ probeLabel(p, locale) }}
+                  <n-tooltip v-if="probeNotEnabledOnAgent(p.key)" trigger="hover">
+                    <template #trigger>
+                      <n-tag size="tiny" type="warning" style="margin-left: 4px">
+                        {{ t("scan_probes.agent_off") }}
+                      </n-tag>
+                    </template>
+                    {{ t("scan_probes.agent_off_hint") }}
+                  </n-tooltip>
                   <n-tooltip v-if="p.intrusive" trigger="hover">
                     <template #trigger>
                       <n-tag size="tiny" type="warning" style="margin-left: 4px;">
@@ -362,9 +422,21 @@ async function submit() {
         </n-space>
       </n-form-item>
       <n-form-item v-if="form.scan_enabled" :label="t('subnets.scan_agent')">
-        <n-select v-model:value="form.scan_agent_id" :options="scanAgentOpts"
-                  clearable
-                  :placeholder="t('subnets.scan_agent_ph')" />
+        <n-space vertical :size="6" style="width:100%">
+          <n-select v-model:value="form.scan_agent_id" :options="scanAgentOpts"
+                    clearable
+                    :placeholder="t('subnets.scan_agent_ph')" />
+          <!-- 沒有指派代理＝不會掃。這一點原本完全看不出來：畫面寫「本機直接掃」，
+               但後端沒有任何排程會去執行它，客戶開了掃描卻永遠等不到結果。 -->
+          <n-alert v-if="!form.scan_agent_id || form.scan_agent_id === LOCAL_SCAN"
+                   type="warning" :show-icon="false" :bordered="false">
+            {{ t("subnets.scan_agent_none_hint") }}
+          </n-alert>
+          <!-- 本機根本沒裝代理 → 直接給安裝指引，不要讓人自己猜 -->
+          <n-alert v-else-if="!localAgent" type="info" :show-icon="false" :bordered="false">
+            {{ t("subnets.scan_agent_no_local_hint") }}
+          </n-alert>
+        </n-space>
       </n-form-item>
       <n-form-item :label="t('subnets.threshold_pct')">
         <n-input-number v-model:value="form.threshold_pct" :min="0" :max="100" clearable

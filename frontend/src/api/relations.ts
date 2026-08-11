@@ -5,6 +5,10 @@ export interface RelationNode {
   id: string;
   label: string;
   sub?: string | null;
+  /** proxmox / vmware —— 決定節點標籤與要連到哪一個虛擬化頁面 */
+  platform?: string | null;
+  /** 這個裝置節點其實是一台虛擬機（由後端推導） */
+  is_vm?: boolean;
 }
 
 export async function getAddressRelations(id: string): Promise<RelationNode[]> {

@@ -48,6 +48,8 @@ SAMPLE_ARGS: dict[str, dict] = {
     "list_dns_records": {},
     "list_ip_requests": {}, "list_scan_agents": {}, "list_arp": {}, "list_fdb": {},
     "list_certificates": {}, "list_cert_distribution": {},
+    "list_ai_findings": {}, "list_anomalies": {}, "investigate_ip": {"ip": "10.0.0.1"}, "list_dhcp_ranges": {},
+    "list_fortigate_policies": {}, "list_fortigate_addresses": {},
     "list_connection_targets": {},
     "wazuh_missing_agents": {}, "list_vms": {}, "list_wireless_links": {},
     "list_circuits": {}, "list_providers": {}, "list_asns": {}, "list_tenants": {},
@@ -60,6 +62,7 @@ SAMPLE_ARGS: dict[str, dict] = {
     # ── 查無資料 → 預期 IPAMToolError 或空 dict ──
     "search_ip": {"ip": "10.0.0.1"},
     "get_ip_detail": {"ip": "10.0.0.1"},
+    "check_ip_exposure": {"ip": "10.0.0.1"},
     "get_subnet_usage": {"subnet_id": _U},
     "trace_mac": {"mac": "00:11:22:33:44:55"},
     "global_search": {"q": "abc"},

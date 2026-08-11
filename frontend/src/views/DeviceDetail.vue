@@ -4,14 +4,14 @@ import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import {
   NCard, NSpace, NIcon, NButton, NDescriptions, NDescriptionsItem,
-  NTag, NDataTable, NSpin, NTooltip, NModal, NSelect,
+  NTag, NDataTable, NSpin, NTooltip, NModal, NSelect, NPopconfirm,
   useMessage, type DataTableColumns,
 } from "naive-ui";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
-import { DevicesIcon, RefreshIcon, EditIcon, TopologyIcon, AddressesIcon, LibreNMSIcon, WazuhIcon, VirtualizationIcon, SubnetsIcon, LinkIcon } from "@/icons";
-import { apiClient } from "@/api/client";
+import { DevicesIcon, RefreshIcon, EditIcon, DeleteIcon, TopologyIcon, AddressesIcon, LibreNMSIcon, WazuhIcon, VirtualizationIcon, SubnetsIcon, LinkIcon , DhcpServerIcon } from "@/icons";
+import { apiClient, apiErrMsg } from "@/api/client";
 import { listAddresses, updateAddress } from "@/api/addresses";
-import { listLocations, listRacks, getDeviceVlans, getDeviceLibrenms, type Device, type Location, type Rack, type DeviceVLAN, type DeviceLibreNMS } from "@/api/basic";
+import { listLocations, listRacks, getDeviceVlans, getDeviceLibrenms, deleteDevice, type Device, type Location, type Rack, type DeviceVLAN, type DeviceLibreNMS } from "@/api/basic";
 import { getDeviceRelations, type RelationNode } from "@/api/relations";
 import RelationChain from "@/components/RelationChain.vue";
 import UptimeBar from "@/components/UptimeBar.vue";
@@ -72,6 +72,9 @@ const location = ref<Location | null>(null);
 const rack = ref<Rack | null>(null);
 const rackDiagram = ref<RackDiagramData | null>(null);
 const addresses = ref<IPAddress[]>([]);
+// 手動標記（is_dhcp_server）與整合推導（dhcp_server_auto）都算 —— 與 IpRoleTags 判斷一致
+const dhcpServerIps = computed(() =>
+  addresses.value.filter((a: any) => a.is_dhcp_server || a.dhcp_server_auto).map((a) => a.ip));
 
 // 新增 IP 對應：把一個現有 IP 指派給本裝置（一個裝置可多 IP）
 const showLinkIp = ref(false);
@@ -104,7 +107,29 @@ async function doLinkIp() {
 const vlans = ref<DeviceVLAN[]>([]);
 const lnms = ref<DeviceLibreNMS | null>(null);
 const integrations = ref<{ wazuh: any; vm: any } | null>(null);
+/** SCA 分數的顏色：低分＝很多項目不符基準。門檻取整數十位，避免給人「剛好及格」的錯覺。 */
+function scaType(score: number): "error" | "warning" | "success" {
+  if (score < 50) return "error";
+  return score < 80 ? "warning" : "success";
+}
 const loading = ref(false);
+const deleting = ref(false);
+
+async function removeDevice() {
+  if (!device.value) return;
+  deleting.value = true;
+  try {
+    await deleteDevice(device.value.id);
+    msg.success(t("common.deleted"));
+    // 刪掉之後留在這一頁只會看到一個已經不存在的物件 → 回清單
+    router.push({ name: "devices" });
+  } catch (e) {
+    // 裝置被別的東西參照時後端會擋（例如還有 IP 掛在上面）→ 把原因照實顯示
+    msg.error(apiErrMsg(e));
+  } finally {
+    deleting.value = false;
+  }
+}
 
 const selected = ref<IPAddress | null>(null);
 const modalShow = ref(false);
@@ -257,6 +282,17 @@ onMounted(() => {
             <n-icon :size="22"><DevicesIcon /></n-icon>
             <span>{{ device.name }}</span>
             <n-tag :type="typeColor(device.type)" size="small">{{ t(`devices.type_${device.type}`) }}</n-tag>
+            <!-- 這台是不是 DHCP 伺服器，是由它名下的 IP 帶的旗標決定的；
+                 只在 IP 那層顯示的話，看裝置時完全不知道它扮演這個角色。 -->
+            <n-tooltip v-if="dhcpServerIps.length" trigger="hover">
+              <template #trigger>
+                <n-tag type="warning" size="small" :bordered="false">
+                  <template #icon><n-icon :component="DhcpServerIcon" /></template>
+                  {{ t("addresses.role_dhcp_server") }}
+                </n-tag>
+              </template>
+              {{ t("devices.dhcp_server_via", { ips: dhcpServerIps.join(", ") }) }}
+            </n-tooltip>
           </n-space>
         </template>
         <template #header-extra>
@@ -265,6 +301,16 @@ onMounted(() => {
               <template #icon><n-icon><EditIcon /></n-icon></template>
               {{ t("common.edit") }}
             </n-button>
+            <!-- 刪除放在詳細資料頁：從清單點進來看完之後要刪，不該再退回清單找那一列 -->
+            <n-popconfirm @positive-click="removeDevice">
+              <template #trigger>
+                <n-button type="error" ghost size="small" :loading="deleting">
+                  <template #icon><n-icon><DeleteIcon /></n-icon></template>
+                  {{ t("common.delete") }}
+                </n-button>
+              </template>
+              {{ t("common.confirm_delete") }}
+            </n-popconfirm>
             <n-button @click="router.push({ name: 'devices' })" size="small">
               <template #icon><n-icon><ArrowLeftIcon /></n-icon></template>
               {{ t("common.back") }}
@@ -398,7 +444,35 @@ onMounted(() => {
           <n-descriptions-item label="OS">{{ integrations.wazuh.os_platform ?? "—" }} {{ integrations.wazuh.os_version ?? "" }}</n-descriptions-item>
           <n-descriptions-item :label="t('device_detail.wz_agent_version')">{{ integrations.wazuh.agent_version ?? "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('device_detail.wz_group')">{{ integrations.wazuh.group ?? "—" }}</n-descriptions-item>
-          <n-descriptions-item :label="t('device_detail.wz_cve')">{{ integrations.wazuh.cve_high ?? 0 }} / {{ integrations.wazuh.cve_critical ?? 0 }}</n-descriptions-item>
+          <!-- 資安體質用 SCA（資安組態評估）呈現。
+               漏洞數（CVE）拿不到：Wazuh 4.8 起 manager API 已無漏洞端點，唯一來源是
+               Wazuh Indexer —— 接上去要一組能讀取整個 SIEM 事件的憑證，代價與收益不成
+               比例，所以不接，也就不顯示一個永遠空白（或假裝是 0）的欄位。 -->
+          <n-descriptions-item v-if="integrations.wazuh.sca_score != null" :label="t('device_detail.wz_sca')">
+            <n-tooltip :delay="150">
+              <template #trigger>
+                <span>
+                  <n-tag size="small" :type="scaType(integrations.wazuh.sca_score)" :bordered="false">
+                    {{ integrations.wazuh.sca_score }}
+                  </n-tag>
+                  <span style="margin-left:6px">
+                    {{ t("device_detail.wz_sca_counts", {
+                      pass: integrations.wazuh.sca_pass ?? 0,
+                      fail: integrations.wazuh.sca_fail ?? 0 }) }}
+                  </span>
+                </span>
+              </template>
+              <div style="max-width:320px;line-height:1.6">
+                <div>{{ integrations.wazuh.sca_policy }}</div>
+                <div v-if="(integrations.wazuh.sca_policy_count ?? 1) > 1">
+                  {{ t("device_detail.wz_sca_worst", { n: integrations.wazuh.sca_policy_count }) }}
+                </div>
+                <div v-if="integrations.wazuh.sca_scanned_at">
+                  {{ fmtDateTime(integrations.wazuh.sca_scanned_at) }}
+                </div>
+              </div>
+            </n-tooltip>
+          </n-descriptions-item>
           <n-descriptions-item :label="t('device_detail.wz_instance')">{{ integrations.wazuh.instance ?? "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('scanAgentHelp.col_last_seen')">{{ fmtDateTime(integrations.wazuh.last_keep_alive) }}</n-descriptions-item>
         </n-descriptions>

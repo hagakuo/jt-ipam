@@ -34,6 +34,25 @@ async def _load_secret(
     return decrypt_secret(row.ciphertext, row.nonce, aad=_aad(str(server.id), field)).decode("utf-8")
 
 
+def parse_tsig(raw: str | None) -> tuple[str, str, str]:
+    """把 `algorithm:keyname:base64key` 拆成三段（UI 就是這樣提示使用者輸入的）。
+
+    以前只把整串當成密鑰、keyname 另外從 extra 讀 —— 但 UI 從來不寫 extra，於是
+    keyname 永遠是空的、TSIG 形同沒設定，AXFR 被 BIND 拒絕而畫面上看不出原因。
+
+    只給一段（沒有冒號）＝整串都是密鑰，維持舊行為。
+    """
+    if not raw:
+        return ("", "", "")
+    parts = raw.split(":", 2)
+    if len(parts) == 3:
+        return (parts[0].strip().lower(), parts[1].strip(), parts[2].strip())
+    if len(parts) == 2:
+        # keyname:secret（沒寫演算法）→ 用預設演算法
+        return ("", parts[0].strip(), parts[1].strip())
+    return ("", "", raw.strip())
+
+
 async def get_adapter(session: AsyncSession, server: DNSServer) -> DNSAdapter:
     """主入口：給定 DNSServer 物件，回對應 adapter（密鑰已解密）。"""
     extra = json.loads(server.extra_config) if server.extra_config else {}
@@ -52,12 +71,21 @@ async def get_adapter(session: AsyncSession, server: DNSServer) -> DNSAdapter:
     if server.type == "bind9":
         from app.services.dns.bind9 import Bind9Adapter
         tsig_key = await _load_secret(session, server, "tsig_key")
+        algo, keyname, secret = parse_tsig(tsig_key)
+        zones = [str(z).strip() for z in extra.get("zones", []) if str(z).strip()]
+        if not zones:
+            # BIND 沒有「列出所有 zone」的標準協定，一定要明講要同步哪些。沒有的話
+            # 同步會安靜地跑完、一筆記錄都不會有 —— 那看起來就像整合壞了。
+            raise DNSAdapterError(
+                "BIND 9 需要指定要同步的 zone（設定頁的「Zone 清單」），"
+                "因為 DNS 協定沒有列舉所有 zone 的方法"
+            )
         return Bind9Adapter(
             server_address=server.server_address or "",
-            tsig_keyname=str(extra.get("tsig_keyname", "")),
-            tsig_secret=tsig_key,
-            tsig_algorithm=str(extra.get("tsig_algorithm", "hmac-sha256")),
-            zones=list(extra.get("zones", [])),
+            tsig_keyname=keyname or str(extra.get("tsig_keyname", "")),
+            tsig_secret=secret,
+            tsig_algorithm=algo or str(extra.get("tsig_algorithm", "hmac-sha256")),
+            zones=zones,
         )
 
     if server.type == "unbound_opnsense":

@@ -6,7 +6,7 @@ import { useI18n } from "vue-i18n";
 import { useTablePagination } from "@/composables/useTablePagination";
 import {
   NCard, NDataTable, NSpace, NIcon, NButton, NModal, NForm, NFormItem,
-  NInput, NPopconfirm, NInputNumber, NTooltip,
+  NInput, NPopconfirm, NInputNumber, NSelect, NTooltip,
   useMessage, type DataTableColumns, type DataTableRowKey,
 } from "naive-ui";
 import {

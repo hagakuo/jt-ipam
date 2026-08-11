@@ -445,3 +445,80 @@ async def bulk_delete_subnets(
         deleted += 1
     await session.commit()
     return {"deleted": deleted, "failed": len(errors), "errors": errors[:50]}
+
+
+class AIAuditScopeIn(StrictModel):
+    """要納入 AI 巡檢的子網路 ID 清單（沒列到的一律排除）。"""
+
+    subnet_ids: list[uuid.UUID]
+
+
+class AnomalyScopeIn(StrictModel):
+    """要納入異常偵測的子網路 ID 清單（沒列到的一律排除）。"""
+
+    subnet_ids: list[uuid.UUID]
+
+
+@router.put("/ai-audit-scope", dependencies=[Depends(require_admin)])
+async def set_ai_audit_scope(
+    payload: AIAuditScopeIn,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, int]:
+    """一次設定哪些子網路納入 AI 巡檢。
+
+    寫的是 `subnets.ai_audit_enabled` —— 跟子網路編輯頁那個勾選框**是同一個欄位**。
+    兩邊各存一份的話，遲早會出現「這裡看是開的、那裡看是關的」。
+    """
+    wanted = set(payload.subnet_ids)
+    rows = (await session.execute(select(Subnet))).scalars().all()
+    changed = 0
+    for s in rows:
+        want = s.id in wanted
+        if s.ai_audit_enabled != want:
+            s.ai_audit_enabled = want
+            changed += 1
+    await append_audit(
+        session,
+        actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="subnet", object_id=None, action="ai_audit_scope",
+        diff={"included": len(wanted), "changed": changed},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return {"included": len(wanted), "changed": changed}
+
+
+@router.put("/anomaly-scope", dependencies=[Depends(require_admin)])
+async def set_anomaly_scope(
+    payload: AnomalyScopeIn,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, int]:
+    """一次設定哪些子網路納入異常偵測。
+
+    寫的是 `subnets.anomaly_enabled` —— 跟子網路編輯頁那個勾選框**是同一個欄位**。
+    """
+    wanted = set(payload.subnet_ids)
+    rows = (await session.execute(select(Subnet))).scalars().all()
+    changed = 0
+    for s in rows:
+        want = s.id in wanted
+        if s.anomaly_enabled != want:
+            s.anomaly_enabled = want
+            changed += 1
+    await append_audit(
+        session,
+        actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="subnet", object_id=None, action="anomaly_scope",
+        diff={"included": len(wanted), "changed": changed},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return {"included": len(wanted), "changed": changed}

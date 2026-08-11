@@ -57,3 +57,30 @@ export function buildSshWsUrl(wsPath: string, ticket: string): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${window.location.host}${wsPath}?ticket=${encodeURIComponent(ticket)}`;
 }
+
+// ─────────────────── SFTP ───────────────────
+// 與 SSH 同一道權限閘門、同一套 ticket 機制；差別只在 WS 上跑的協定不同。
+
+export interface SftpTicket {
+  ticket: string;
+  ws_path: string;
+  default_port: number;
+  ttl: number;
+}
+
+export interface SftpEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  is_link: boolean;
+  size: number | null;
+  mtime: number | null;
+  mode: string | null;
+}
+
+export async function requestSftpTicket(addressId: string): Promise<SftpTicket> {
+  const { data } = await apiClient.post<SftpTicket>(
+    `/api/v1/addresses/${addressId}/sftp/ticket`,
+  );
+  return data;
+}

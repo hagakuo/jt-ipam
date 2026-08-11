@@ -168,7 +168,7 @@ export async function getCertAgentKey(id: string): Promise<{ enroll_key: string 
   const { data } = await apiClient.get(`/api/v1/cert-agents/${id}/key`);
   return data;
 }
-export async function getServerAgentVersion(): Promise<{ version: string | null }> {
+export async function getServerAgentVersion(): Promise<{ version: string | null; windows_version?: string | null }> {
   const { data } = await apiClient.get(`/api/v1/cert-agents/server-version`);
   return data;
 }

@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { useAuthStore } from "@/stores/auth";
 import {
   NCard, NDataTable, NSpace, NIcon, NButton, NModal, NForm, NFormItem,
-  NInput, NInputNumber, NSelect, NTabs, NTabPane, NPopconfirm, NTooltip,
+  NInput, NInputNumber, NSelect, NTabs, NTabPane, NPopconfirm, NTag, NTooltip,
   NSpin, NEmpty, NTable,
   useMessage, type DataTableColumns, type DataTableRowKey,
 } from "naive-ui";

@@ -2,7 +2,7 @@
 /** 版本資訊（管理）：現行版本 + Python / 套件版本，並可檢查 GitHub 最新版。 */
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { NCard, NSpace, NIcon, NButton, NSpin, NTag, useMessage } from "naive-ui";
+import { NAlert, NCard, NSpace, NIcon, NButton, NSpin, NTag, useMessage } from "naive-ui";
 import { SettingsIcon, RefreshIcon } from "@/icons";
 import {
   getVersionInfo, checkLatestVersion, type VersionInfo, type LatestVersion,
@@ -35,6 +35,14 @@ const hostRows = computed(() => {
     { name: "PostgreSQL", version: h.postgres ?? "—" },
   ];
 });
+
+// 選用相依：缺了不會壞，但對應的功能會靜默不可用 —— 讓管理員在這裡就看得到，
+// 而不是等使用者回報「按了沒反應」。
+const optionalTools = computed(() => {
+  const ot = info.value?.host?.optional_tools;
+  return ot ? Object.entries(ot).map(([name, v]) => ({ name, ...v })) : [];
+});
+const missingTools = computed(() => optionalTools.value.filter((x) => !x.present));
 
 async function load() {
   loading.value = true;
@@ -118,6 +126,25 @@ onMounted(load);
         </div>
       </template>
 
+      <!-- 選用相依（缺了只會讓對應功能不可用，不影響服務） -->
+      <template v-if="optionalTools.length">
+        <div class="ver-pkg-head">
+          <span class="ver-pkg-title">{{ t("version.section_optional") }}</span>
+          <span class="ver-pkg-hint">{{ t("version.section_optional_hint") }}</span>
+        </div>
+        <n-alert v-if="missingTools.length" type="warning" :bordered="false" style="margin-bottom:10px">
+          {{ t("version.optional_missing", { pkgs: missingTools.map(x => x.package).join(", ") }) }}
+        </n-alert>
+        <div class="ver-pkg-grid">
+          <div v-for="p in optionalTools" :key="p.name" class="ver-pkg">
+            <span class="ver-pkg__name">{{ p.name }}<span class="ver-opt-use">{{ p.used_by }}</span></span>
+            <span class="ver-pkg__ver" :style="p.present ? '' : 'color:#d03050'">
+              {{ p.present ? t("version.optional_present") : t("version.optional_absent") }}
+            </span>
+          </div>
+        </div>
+      </template>
+
       <!-- 後端套件 -->
       <div class="ver-pkg-head">
         <span class="ver-pkg-title">{{ t("version.section_backend") }}</span>
@@ -147,6 +174,8 @@ onMounted(load);
 </template>
 
 <style scoped>
+.ver-opt-use { display: block; font-size: 11.5px; opacity: .6; margin-top: 2px; }
+
 .ver-tiles {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

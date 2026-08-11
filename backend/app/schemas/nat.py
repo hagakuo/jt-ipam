@@ -96,5 +96,5 @@ class NATRead(NATBase):
     source_origin: str | None = None
     source_kind: str | None = None          # "opnsense" | "phpipam" | "manual"
     source_firewall_id: uuid.UUID | None = None
-    source_label: str | None = None         # "OPNsense: router-007" / "phpIPAM" / "手動"
+    source_label: str | None = None         # "OPNsense: fw-01" / "phpIPAM" / "手動"
     external_id: str | None = None

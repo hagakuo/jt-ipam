@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 共用裝置編輯／新增視窗（清單頁與裝置詳情頁都用，詳情頁可就地編輯不離頁）。
+ * 共用裝置編輯／新增視窗（清單頁與裝置詳細資料頁都用，詳細資料頁可就地編輯不離頁）。
  * 含機櫃 U 位挑選器（半 U 感知）。自行載入 location / rack / customer / IP 清單。
  */
 import { computed, ref, watch } from "vue";

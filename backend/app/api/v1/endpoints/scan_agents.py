@@ -78,6 +78,8 @@ class ScanAgentRead(StrictModel):
     description: str | None
     agent_url: str | None
     enabled: bool
+    # 跑在 jt-ipam 主機上的那一個（安裝時自動建立）—— UI 靠它判斷「本機有沒有代理」
+    is_local: bool = False
     has_key: bool = False
     agent_version: str | None = None
     server_agent_version: str | None = None   # server 端 agent.py 版本；UI 比對標「可更新」
@@ -516,8 +518,22 @@ class AgentReportItem(StrictModel):
     probes_run: list[str] | None = None   # 這輪實際對此 IP 跑了哪些 probe（回填 last_run）
 
 
+class AgentDHCPServer(StrictModel):
+    """網段上回應 DHCPOFFER 的主機（agent 廣播 DHCPDISCOVER 觀測到的）。"""
+
+    subnet_cidr: str
+    server_ip: str
+    from_ip: str | None = None
+    mac: str | None = None
+    offered_ip: str | None = None
+    router: str | None = None
+    netmask: str | None = None
+    via_relay: bool = False
+
+
 class AgentReportIn(StrictModel):
     results: Annotated[list[AgentReportItem], Field(max_length=100_000)]
+    dhcp_servers: Annotated[list[AgentDHCPServer], Field(max_length=500)] = []
 
 
 @router.post("/report")
@@ -614,10 +630,54 @@ async def agent_report(
                 lr[p] = now.isoformat()
             ipa.probe_last_run = lr
         updated += 1
+    dhcp_seen = await _record_dhcp_sightings(
+        session, agent, agent_subnets, payload.dhcp_servers, now)
+
     agent.last_seen_at = now
     agent.last_error = None
     await session.commit()
-    return {"received": len(payload.results), "updated": updated}
+    return {"received": len(payload.results), "updated": updated,
+            "dhcp_servers": dhcp_seen}
+
+
+async def _record_dhcp_sightings(
+    session: AsyncSession, agent: ScanAgent, agent_subnets: list[Any],
+    servers: list[AgentDHCPServer], now: datetime,
+) -> int:
+    """把觀測到的 DHCP 伺服器記下來（同網段同伺服器只留一列，重複觀測更新時間）。
+
+    這裡**不判斷合法與否** —— 那是拿 `ip_addresses.is_dhcp_server` 即時比對出來的。
+    存成欄位的話，之後把某台標記成合法，舊記錄仍然寫著「非法」。
+    """
+    if not servers:
+        return 0
+    from app.models.dhcp_sighting import DHCPSighting
+
+    # 只認指派給這個 agent 的子網路：agent 說它掃了哪個網段，不代表那網段歸它管
+    by_cidr = {str(s.cidr): s.id for s in agent_subnets}
+    seen = 0
+    for srv in servers:
+        subnet_id = by_cidr.get(srv.subnet_cidr)
+        if subnet_id is None:
+            continue
+        row = (await session.execute(
+            select(DHCPSighting).where(
+                DHCPSighting.subnet_id == subnet_id,
+                DHCPSighting.server_ip == srv.server_ip,
+            ).limit(1)
+        )).scalar_one_or_none()
+        if row is None:
+            row = DHCPSighting(subnet_id=subnet_id, server_ip=srv.server_ip,
+                               first_seen_at=now)
+            session.add(row)
+        row.server_mac = srv.mac or row.server_mac
+        row.offered_ip = srv.offered_ip
+        row.router = srv.router
+        row.via_relay = srv.via_relay
+        row.agent_id = agent.id
+        row.last_seen_at = now
+        seen += 1
+    return seen
 
 
 @router.delete("/{agent_id}", status_code=204,

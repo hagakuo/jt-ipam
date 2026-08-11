@@ -17,8 +17,11 @@ import {
 import type { IPAddress } from "@/types";
 import { updateAddress, deleteAddress, createAddress, type IPAddressUpdate } from "@/api/addresses";
 import { getAddressHistory, getAddressSwitchPort, type IPChangeLog, type SwitchPortInfo } from "@/api/ip_history";
-import { getHostnameSources, clearHostnameSource, type HostnameSources } from "@/api/hostname";
-import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon, TerminalIcon, DisplayIcon, VncIcon, NoVncIcon } from "@/icons";
+import { getHostnameSources, type HostnameSources } from "@/api/hostname";
+import { EditIcon, SaveIcon, CancelIcon, DeleteIcon, PlusIcon, LinkIcon, TerminalIcon, DisplayIcon, VncIcon, NoVncIcon, SearchIcon , FilesIcon } from "@/icons";
+import InvestigateModal from "@/components/InvestigateModal.vue";
+import ChangeValue from "@/components/ChangeValue.vue";
+import IpRoleTags from "@/components/IpRoleTags.vue";
 import { ArrowLeft as ArrowLeftIcon } from "@iconoir/vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useCustomers } from "@/composables/useCustomers";
@@ -74,6 +77,18 @@ async function loadDhcpRanges() {
     dhcpRanges.value = out;
   } catch { /* silent */ }
 }
+/** DHCP 固定分配的明細（後端在讀取端帶出來）。 */
+const resv = computed<any | null>(() => (props.address as any)?.dhcp_reservation ?? null);
+const resvLine = computed(() => {
+  const r = resv.value;
+  if (!r) return t("addresses.dhcp_reserved_tag");
+  const parts = [r.mac, r.hostname, r.source_name ? `@${r.source_name}` : null]
+    .filter(Boolean);
+  return parts.length ? parts.join("　·　") : t("addresses.dhcp_reserved_tag");
+});
+
+const investigating = ref(false);
+
 const dhcpInfo = computed<DhcpInfo | null>(() => {
   const ip = (props.address?.ip ?? "").split("/")[0];
   const n = ip ? _ip2int(ip) : null;
@@ -124,15 +139,6 @@ function labelSource(v: string | null | undefined): string {
   const out = t(key);
   return out === key ? v : out;
 }
-// 異動記錄的值顯示：switch_port 用「裝置@埠號」（只換第一個 " / "，埠內斜線不動），與位置顯示一致
-function fmtChangeVal(field: string | null | undefined, v: string | null | undefined): string {
-  if (v == null) return "∅";
-  if (field === "switch_port") {
-    const idx = v.indexOf(" / ");
-    if (idx >= 0) return v.slice(0, idx) + "@" + v.slice(idx + 3);
-  }
-  return v;
-}
 function labelEffective(v: string | null | undefined): string {
   if (!v) return "—";
   // 後端可能塞 "online (scanner)" 之類有附註的字串；只翻譯主詞
@@ -177,6 +183,7 @@ const emit = defineEmits<{
   (e: "created", v: IPAddress): void;
   (e: "back"): void;
   (e: "ssh-open"): void;
+  (e: "sftp-open"): void;
   (e: "ssh-popout"): void;
   (e: "rdp-open"): void;
   (e: "rdp-popout"): void;
@@ -199,7 +206,7 @@ const editMode = ref(false);
 const saving = ref(false);
 const deleting = ref(false);
 
-// 卡片寬度不足時，SSH/RDP/VNC 連線按鈕收成只有 icon（inline 詳情頁用）
+// 卡片寬度不足時，SSH/RDP/VNC 連線按鈕收成只有 icon（inline 詳細資料頁用）
 const rootEl = ref<any>(null);
 const consoleCompact = ref(false);
 let cro: ResizeObserver | null = null;
@@ -227,6 +234,7 @@ interface FormState {
   device_id: string | null;
   hostname_source_pin: string;  // "" = 自動 (跟全域優先序)
   ssh_enabled: boolean;
+  sftp_enabled: boolean;
   rdp_enabled: boolean;
   vnc_enabled: boolean;
   novnc_enabled: boolean;
@@ -247,6 +255,7 @@ function emptyForm(): FormState {
     device_id: null,
     hostname_source_pin: "",
     ssh_enabled: false,
+    sftp_enabled: false,
     rdp_enabled: false,
     vnc_enabled: false,
     novnc_enabled: false,
@@ -294,6 +303,7 @@ function fromAddress(a: IPAddress): FormState {
     device_id: (a as any).device_id ?? null,
     hostname_source_pin: a.hostname_source_pin ?? "",
     ssh_enabled: !!a.ssh_enabled,
+    sftp_enabled: !!a.sftp_enabled,
     rdp_enabled: !!a.rdp_enabled,
     vnc_enabled: !!a.vnc_enabled,
     novnc_enabled: !!a.novnc_enabled,
@@ -395,20 +405,6 @@ async function loadHostnameSources() {
   } catch { /* silent */ }
 }
 
-// 清掉某來源的 hostname 觀測（過時的「手動: …」等）→ 後端重算有效名稱
-async function clearSource(source: string) {
-  if (!props.address?.id) return;
-  try {
-    await clearHostnameSource(props.address.id, source);
-    hostnameSourcesLoaded.value = false;
-    await loadHostnameSources();
-    if (props.address) emit("saved", props.address);
-    msg.success(t("common.ok"));
-  } catch (e: any) {
-    msg.error(e?.response?.data?.detail ?? t("errors.server"));
-  }
-}
-
 // pin 下拉選項：auto + 有觀測的來源 (顯示該來源回報的 hostname)
 const pinOptions = computed(() => {
   const opts: Array<{ label: string; value: string }> = [
@@ -491,6 +487,7 @@ async function save() {
       device_id: form.value.device_id ?? null,
       hostname_source_pin: form.value.hostname_source_pin || null,
       ssh_enabled: form.value.ssh_enabled,
+      sftp_enabled: form.value.sftp_enabled,
       rdp_enabled: form.value.rdp_enabled,
       vnc_enabled: form.value.vnc_enabled,
       novnc_enabled: form.value.novnc_enabled,
@@ -534,7 +531,7 @@ async function remove() {
       :role="inline ? undefined : 'dialog'"
       :aria-modal="inline ? undefined : 'true'"
     >
-      <!-- 標題：IP + 狀態標籤並排（比照裝置詳情的 名稱+類型標籤）-->
+      <!-- 標題：IP + 狀態標籤並排（比照裝置詳細資料的 名稱+類型標籤）-->
       <template #header>
         <span style="display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap">
           <span>{{ props.address?.ip ?? props.createContext?.ip ?? '' }}</span>
@@ -542,6 +539,28 @@ async function remove() {
           <n-tag v-else :type="stateType" size="small">{{ labelState(props.address?.state) }}</n-tag>
           <!-- 「真的有 DHCP 租約」與「只是落在 DHCP 池範圍內」是兩回事：
                後者常見於在池範圍內設固定 IP 的機器，標成 DHCP 會誤導，改用中性的「DHCP 範圍」。 -->
+          <!-- 固定分配（DHCP reservation）：這個位址被綁給某張網卡，不會被回收給別台。
+               與上面的「DHCP／DHCP 範圍」是不同的事實，所以分開標。 -->
+          <n-tooltip v-if="props.address?.dhcp_reserved" :delay="0">
+            <template #trigger>
+              <n-tag type="success" size="small" :bordered="false">
+                {{ t("addresses.dhcp_reserved_tag") }}
+              </n-tag>
+            </template>
+            <div style="max-width:300px;line-height:1.5">
+              <div>{{ t("addresses.dhcp_reserved_hint") }}</div>
+              <template v-if="resv">
+                <div v-if="resv.mac" style="margin-top:4px">
+                  <strong>{{ t("addresses.dhcp_reserved_mac") }}：</strong>{{ resv.mac }}
+                </div>
+                <div v-if="resv.source_name">
+                  <strong>{{ t("addresses.dhcp_server") }}：</strong>{{ resv.source_name }}
+                  <span v-if="resv.engine">（{{ resv.engine }}）</span>
+                </div>
+                <div v-if="resv.hostname">{{ t("addresses.hostname") }}：{{ resv.hostname }}</div>
+              </template>
+            </div>
+          </n-tooltip>
           <n-tooltip v-if="dhcpInfo || props.address?.in_dhcp_lease" :delay="0">
             <template #trigger>
               <n-tag :type="props.address?.in_dhcp_lease ? 'warning' : 'default'" size="small" :bordered="false">
@@ -560,7 +579,7 @@ async function remove() {
           </n-tooltip>
         </span>
       </template>
-      <!-- inline(頁面)模式：操作鈕放右上，比照裝置詳情頁 -->
+      <!-- inline(頁面)模式：操作鈕放右上，比照裝置詳細資料頁 -->
       <template v-if="inline && !isCreate" #header-extra>
         <n-space align="center" :size="8" :wrap-item="false">
           <template v-if="!editMode">
@@ -576,6 +595,22 @@ async function remove() {
                   </n-button-group>
                 </template>
                 {{ t("ssh.connect") }}
+              </n-tooltip>
+            </template>
+            <!-- SFTP：自己的開關（sftp_enabled）與自己的權限判定，與 SSH 各自獨立顯示 ——
+                 有些主機只想開放傳檔、不想開終端機。分成兩顆而不是塞進同一顆的下拉：
+                 上下傳檔案跟開終端機是兩件不同的事，要用的人一開始就知道自己要哪一個。 -->
+            <template v-if="props.address?.sftp_available">
+              <n-tooltip :delay="200">
+                <template #trigger>
+                  <n-button-group key="hx-sftp">
+                    <n-button size="small" @click="emit('sftp-open')">
+                      <template #icon><n-icon><FilesIcon /></n-icon></template>
+                      <span v-if="!consoleCompact">{{ t("sftp.connect_btn") }}</span>
+                    </n-button>
+                  </n-button-group>
+                </template>
+                {{ t("sftp.connect_hint") }}
               </n-tooltip>
             </template>
             <!-- RDP 連線分割按鈕：主鍵新分頁、下箭頭另開視窗（僅在啟用且有權限時顯示） -->
@@ -641,8 +676,12 @@ async function remove() {
               <span class="conn-beta-badge conn-sol-badge">SOL</span>
             </span>
             <!-- 連線鈕（SSH/RDP/VNC/PVE/BMC）與編輯/刪除間只留一條分隔線 -->
-            <n-divider v-if="props.address?.ssh_available || props.address?.rdp_available || props.address?.vnc_available || props.address?.novnc_available || props.address?.bmc_available"
+            <n-divider v-if="props.address?.ssh_available || props.address?.sftp_available || props.address?.rdp_available || props.address?.vnc_available || props.address?.novnc_available || props.address?.bmc_available"
                        key="hx-conn-div" vertical />
+            <!-- 調查：把這個位址散在各處的線索收在一起（追問題時最花時間的就是到處翻） -->
+            <n-button key="hx-inv" size="small" @click="investigating = true">
+              <template #icon><n-icon><SearchIcon /></n-icon></template>{{ t("investigate.title") }}
+            </n-button>
             <n-button key="hx-edit" type="primary" size="small" @click="editMode = true">
               <template #icon><n-icon><EditIcon /></n-icon></template>{{ t("common.edit") }}
             </n-button>
@@ -684,7 +723,12 @@ async function remove() {
                         :label-style="{ width: '132px', whiteSpace: 'nowrap', verticalAlign: 'top' }"
                         :content-style="{ verticalAlign: 'top', wordBreak: 'break-word', minWidth: '160px' }">
           <n-descriptions-item :label="t('addresses.ip')">{{ props.address?.ip }}</n-descriptions-item>
-          <n-descriptions-item :label="t('common.status')">{{ labelState(props.address?.state) }}</n-descriptions-item>
+          <n-descriptions-item :label="t('common.status')">
+            {{ labelState(props.address?.state) }}
+            <!-- 角色旗標（閘道 / DHCP 伺服器 / 在 DHCP 範圍內…）清單頁早就顯示了，
+                 詳細資料頁卻看不到 —— 同一個 IP 在兩個畫面資訊不一致很容易誤判。 -->
+            <IpRoleTags v-if="props.address" :row="props.address" style="margin-left:8px" />
+          </n-descriptions-item>
           <n-descriptions-item :label="t('addresses.hostname')">
             <span>{{ props.address?.hostname ?? "—" }}</span>
             <n-tag v-if="hostnameSources?.pin" size="tiny" type="warning" :bordered="false"
@@ -740,12 +784,13 @@ async function remove() {
             :label="t('hostnameSrc.sources')" :span="2"
           >
             <n-space :size="6" style="flex-wrap: wrap">
+              <!-- 純顯示，不提供刪除：這裡是「各來源分別回報了什麼」的觀測記錄，
+                   實際採用哪一個由主機名稱優先序決定。給一個 X 會讓人以為要在這裡挑，
+                   而且刪掉之後下次同步又會回來。 -->
               <n-tag
                 v-for="o in hostnameSources.observations" :key="o.source"
                 size="small" :bordered="false"
                 :type="o.hostname === props.address?.hostname ? 'success' : 'default'"
-                closable
-                @close="clearSource(o.source)"
               >
                 {{ labelSource(o.source) }}: {{ o.hostname }}
               </n-tag>
@@ -763,6 +808,10 @@ async function remove() {
           <n-descriptions-item :label="t('addresses.exclude_from_ping')">{{ props.address?.exclude_from_ping ? "✓" : "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('addresses.ptr_ignore')">{{ props.address?.ptr_ignore ? "✓" : "—" }}</n-descriptions-item>
           <n-descriptions-item :label="t('addresses.source')">{{ labelSource(props.address?.discovery_source) }}</n-descriptions-item>
+          <!-- 有固定分配才顯示這一列：沒有的話多一列「否」只是噪音 -->
+          <n-descriptions-item v-if="props.address?.dhcp_reserved" :label="t('addresses.dhcp_reserved_tag')">
+            {{ resvLine }}
+          </n-descriptions-item>
           <n-descriptions-item :label="t('addresses.effective_status')">{{ effectiveDisplay }}</n-descriptions-item>
           <n-descriptions-item :label="t('addresses.last_seen_scanner')">{{ fmtDateTime(props.address?.last_seen_scanner) }}</n-descriptions-item>
           <n-descriptions-item :label="t('addresses.last_seen_librenms')">{{ fmtDateTime(props.address?.last_seen_librenms) }}</n-descriptions-item>
@@ -816,9 +865,9 @@ async function remove() {
                   </template>
                   <n-text v-if="h.old_value != null || h.new_value != null" style="font-size: 13px">
                     <span v-if="h.field">{{ h.field }}: </span>
-                    <n-text depth="3" delete>{{ fmtChangeVal(h.field, h.old_value) }}</n-text>
+                    <n-text depth="3" delete><ChangeValue :field="h.field" :value="h.old_value" /></n-text>
                     →
-                    <n-text strong>{{ fmtChangeVal(h.field, h.new_value) }}</n-text>
+                    <n-text strong><ChangeValue :field="h.field" :value="h.new_value" /></n-text>
                   </n-text>
                   <n-text v-if="h.note" depth="3" style="font-size: 12px; display: block">{{ h.note }}</n-text>
                 </n-timeline-item>
@@ -915,6 +964,12 @@ async function remove() {
               <span style="font-size: 11px; opacity: .7">{{ t("ssh.enable_hint") }}</span>
             </n-space>
           </n-form-item>
+          <n-form-item :label="t('sftp.enable_label')">
+            <n-space vertical :size="2" style="width:100%">
+              <n-switch v-model:value="form.sftp_enabled" />
+              <span style="font-size: 11px; opacity: .7">{{ t("sftp.enable_hint") }}</span>
+            </n-space>
+          </n-form-item>
           <n-form-item :label="t('rdp.enable_label')">
             <n-space vertical :size="2" style="width:100%">
               <n-switch v-model:value="form.rdp_enabled" />
@@ -991,6 +1046,8 @@ async function remove() {
       </template>
     </n-card>
   </component>
+  <InvestigateModal v-if="props.address?.ip"
+                    v-model:show="investigating" :ip="String(props.address.ip)" />
 </template>
 
 <style scoped>

@@ -765,7 +765,7 @@ function onMergedExport(key: string) {
   color: white;
   font-family: monospace;
 }
-/* 寬/深常見尺寸快選膠囊 */
+/* 寬/深常見尺寸快選標籤 */
 /* 寬/深欄位：輸入框 + 快選整欄上下排，輸入框占滿寬度，快選在下方一排 */
 .dim-field {
   width: 100%;

@@ -82,7 +82,8 @@ async function loadSubnetOptions() {
 function openCreate() {
   editing.value = null;
   newInst.value = { name: "", api_url: "",
-    api_user: "", api_password: "", verify_tls: true, scope_subnet_ids: [] };
+    api_user: "", api_password: "", verify_tls: true, scope_subnet_ids: [],
+ };
   showInst.value = true;
 }
 function openEdit(r: WazuhInstance) {

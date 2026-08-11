@@ -61,6 +61,8 @@ export interface SubnetCreate {
   vrf_id?: string | null;
   is_pool?: boolean;
   is_full?: boolean;
+  ai_audit_enabled?: boolean;
+  anomaly_enabled?: boolean;
   scan_enabled?: boolean;
   scan_method?: string[];
   threshold_pct?: number | null;
@@ -80,6 +82,8 @@ export interface SubnetUpdate {
   master_subnet_id?: string | null;
   is_pool?: boolean | null;
   is_full?: boolean | null;
+  ai_audit_enabled?: boolean | null;
+  anomaly_enabled?: boolean | null;
   scan_enabled?: boolean | null;
   scan_method?: string[] | null;
   threshold_pct?: number | null;
@@ -102,4 +106,16 @@ export async function updateSubnet(id: string, payload: SubnetUpdate): Promise<S
 
 export async function deleteSubnet(id: string): Promise<void> {
   await apiClient.delete(`/api/v1/subnets/${id}`);
+}
+
+// AI 巡檢範圍：寫的是 subnets.ai_audit_enabled —— 跟子網路編輯頁那個勾選框同一個欄位
+export async function setAIAuditScope(subnetIds: string[]): Promise<{ included: number; changed: number }> {
+  const { data } = await apiClient.put("/api/v1/subnets/ai-audit-scope", { subnet_ids: subnetIds });
+  return data;
+}
+
+// 異常偵測範圍：同樣寫 subnets.anomaly_enabled（跟子網路編輯頁同一個欄位）
+export async function setAnomalyScope(subnetIds: string[]): Promise<{ included: number; changed: number }> {
+  const { data } = await apiClient.put("/api/v1/subnets/anomaly-scope", { subnet_ids: subnetIds });
+  return data;
 }

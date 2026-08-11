@@ -185,6 +185,27 @@ async def can_use_ssh(session: AsyncSession, *, user: User, ip: Any) -> bool:
     return bool(getattr(user, "can_ssh", False))
 
 
+async def can_use_sftp(session: AsyncSession, *, user: User, ip: Any) -> bool:
+    """是否可對此 IP 開 SFTP 檔案瀏覽器（deny-by-default）。
+
+    與 can_use_ssh 相同的授權模型，唯一差別是檢查 `sftp_enabled` —— 傳檔與開終端機
+    是兩個獨立的開關（有些主機只想開放送設定檔／取 log）。授權強度刻意與 SSH 相同：
+    能讀寫遠端檔案的人，實質能力與能開 shell 的人是同一級，不該因為「只是傳檔」而放寬。
+    """
+    if not getattr(ip, "sftp_enabled", False):
+        return False
+    if user.is_admin:
+        return True
+    level = await get_object_permission(
+        session, user=user, object_type="subnet", object_id=ip.subnet_id
+    )
+    if level == "none":
+        return False
+    if has_permission(level, "write"):
+        return True
+    return bool(getattr(user, "can_ssh", False))
+
+
 async def can_use_rdp(session: AsyncSession, *, user: User, ip: Any) -> bool:
     """是否可對此 IP 開 RDP 連線（deny-by-default）。
 

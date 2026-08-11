@@ -103,10 +103,11 @@ cd "C:\Users\haga.kuo\專案\nkust_IPAM\jt-ipam\backend"
 python -m alembic -c alembic.ini heads
 ```
 
-若因 Windows 編碼問題失敗，可改用 UTF-8：
+若 Windows 的 `cp950` 無法讀取含中文註解的 `alembic.ini`，不要修改 migration
+或設定檔編碼。可直接用 Alembic API 載入 revision graph：
 
 ```powershell
-python -X utf8 -m alembic -c alembic.ini heads
+python -X utf8 -c "from alembic.config import Config; from alembic.script import ScriptDirectory; c=Config(); c.set_main_option('script_location','alembic'); print(ScriptDirectory.from_config(c).get_heads())"
 ```
 
 若出現多個 heads，且原因是「校內已套用 migration」和「上游新 migration」分支，做法是新增 merge migration，不要改舊 revision。範例：
@@ -131,6 +132,22 @@ merge migration 內容通常只需要 `pass`，因為它只是合併 migration g
 - 既有本地 head：`0089_merge_refresh_pfsense`
 - 最新上游 head：`0101_librenms_links`
 - 新的單一 head：`0102_merge_local_refresh`
+
+2026-08-11 從 `0.5.122` 更新到 `0.5.161` 時，上游從同一個
+`0101_librenms_links` 分出 `0102_ai_findings`，並一路延伸到
+`0114_scan_agent_is_local`。正式站已套用的 `0102_merge_local_refresh` 不能改名或刪除，
+因此保留兩條分支並新增第三個 graph-only merge：
+
+- 既有校內 head：`0102_merge_local_refresh`
+- 最新上游 head：`0114_scan_agent_is_local`
+- 新的單一 head：`0115_merge_local_refresh`
+- `0115_merge_local_refresh.down_revision = ("0102_merge_local_refresh", "0114_scan_agent_is_local")`
+
+驗證結果必須只有：
+
+```text
+0115_merge_local_refresh
+```
 
 ## 5. 本機驗證
 
@@ -160,11 +177,17 @@ python -m ruff check app tests
 
 ```powershell
 cd "C:\Users\haga.kuo\專案\nkust_IPAM\jt-ipam\frontend"
-pnpm install --frozen-lockfile
-pnpm build
+corepack pnpm --version
+corepack pnpm install --frozen-lockfile
+corepack pnpm lint
+corepack pnpm test:unit
+corepack pnpm build
 ```
 
-若本機 pnpm 版本造成 frozen lockfile 或非 TTY 問題，可以把前端 build 留給正式站 upgrade script，但部署後一定要確認 upgrade script 的前端 build 成功。
+`package.json` 目前指定 `pnpm@9.15.9`。若系統預設 pnpm 11 顯示
+`ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`，不要用 `--no-frozen-lockfile` 重寫上游 lockfile；改用
+`corepack pnpm` 讓 Corepack 依 `packageManager` 欄位選用正確版本。非互動環境若要求確認刪除
+`node_modules`，先設定 `CI=true`。
 
 ## 6. Commit 與 push
 

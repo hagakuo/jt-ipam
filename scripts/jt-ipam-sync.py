@@ -28,29 +28,29 @@ log = logging.getLogger("jt-ipam-sync")
 
 
 async def _run() -> int:
-    from sqlalchemy import select
-
     from app.core.db import SessionLocal
     from app.models.adguard import AdGuardInstance
-    from app.models.fortigate import FortiGateFirewall
-    from app.models.windows_dhcp import WindowsDhcpServer
     from app.models.dns import DNSServer
+    from app.models.esxi import ESXiInstance
     from app.models.firewall import OPNsenseFirewall
+    from app.models.fortigate import FortiGateFirewall
     from app.models.librenms import LibreNMSInstance
     from app.models.pfsense import PfSenseFirewall
     from app.models.virt import ProxmoxInstance, VirtCluster
     from app.models.wazuh import WazuhInstance
+    from app.models.windows_dhcp import WindowsDhcpServer
     from app.services import adguard as adguard_svc
     from app.services import fortigate as fortigate_svc
-    from app.services import windows_dhcp as windows_dhcp_svc
     from app.services import librenms as librenms_svc
     from app.services import opnsense_firewall as fw_svc
     from app.services import pfsense as pfsense_svc
     from app.services import proxmox as proxmox_svc
     from app.services import wazuh as wazuh_svc
+    from app.services import windows_dhcp as windows_dhcp_svc
     from app.services.background_tasks import upsert_scheduled_task as _hb
     from app.services.dns.factory import get_adapter as _dns_adapter  # noqa: F401
     from app.services.dns_sync import pull_server
+    from sqlalchemy import select
 
     failed = 0
 
@@ -112,6 +112,31 @@ async def _run() -> int:
                 await _hb(session, kind="pfsense.sync", target_type="pfsense_firewall",
                           target_id=fw.id, target_label=name, ok=False, error=str(exc))
 
+        # ── ESXi / vCenter ──
+        for inst in (await session.execute(
+            select(ESXiInstance).where(ESXiInstance.enabled.is_(True))
+        )).scalars().all():
+            interval = timedelta(seconds=inst.sync_interval_seconds)
+            if inst.last_sync_at and inst.last_sync_at + interval > now:
+                continue
+            name = inst.name
+            try:
+                from app.services import esxi as esxi_svc
+                summary = await esxi_svc.sync_instance(session, inst)
+                await session.commit()
+                log.info("esxi %s: %s", name, summary)
+                await _hb(session, kind="esxi.sync", target_type="esxi_instance",
+                          target_id=inst.id, target_label=name, ok=True, summary=summary)
+            except Exception as exc:  # noqa: BLE001
+                # 先 rollback 再寫 last_error：不 rollback 會二次爆、連鎖中斷整輪
+                await session.rollback()
+                inst.last_error = str(exc)[:2000]
+                await session.commit()
+                log.error("esxi %s sync failed: %s", name, exc)
+                failed += 1
+                await _hb(session, kind="esxi.sync", target_type="esxi_instance",
+                          target_id=inst.id, target_label=name, ok=False, error=str(exc))
+
         # ── Wazuh ──
         wzs = (
             await session.execute(
@@ -125,6 +150,13 @@ async def _run() -> int:
             name = inst.name
             try:
                 summary = await wazuh_svc.sync_agents(session, inst)
+                # SCA（資安組態評估）：用同一組 API 憑證，失敗不影響 agent 同步本身
+                try:
+                    n = await wazuh_svc.sync_sca(session, inst)
+                    if n and isinstance(summary, dict):
+                        summary["sca"] = n
+                except Exception as exc:   # noqa: BLE001
+                    log.warning("wazuh %s sca: %s", inst.name, exc)
                 await session.commit()
                 log.info("wazuh %s: %s", name, summary)
                 await _hb(session, kind="wazuh.sync", target_type="wazuh_instance",
@@ -356,6 +388,61 @@ async def _run() -> int:
         except Exception as exc:  # noqa: BLE001
             await session.rollback()
             log.error("cert alert check failed: %s", exc)
+
+        # ── 依網卡 MAC 把 IP 掛回所屬裝置 ──
+        # 預設關閉：升級之後突然多出一個每 5 分鐘自動改資料的作業，本身就是不該
+        # 發生的事。開啟後也只填空的、不覆寫、不移除，並依十條規則跳過任何有疑慮的
+        # 情形。跳過的筆數一起記進 log —— 「全部被守門擋下」不能看起來跟「沒事可做」
+        # 一樣。
+        try:
+            from app.services.ip_device_link import link_by_port_mac
+            from app.services.system_config import get_autolink_config
+            cfg = await get_autolink_config(session)
+            if cfg["enabled"]:
+                st = await link_by_port_mac(
+                    session, scope_subnet_ids=cfg["scope_subnet_ids"])
+                if st.linked or st.skipped_ambiguous or st.skipped_customer:
+                    log.info("ip-device autolink: %s", st.summary())
+        except Exception as exc:  # noqa: BLE001
+            await session.rollback()
+            log.error("ip-device autolink failed: %s", exc)
+
+        # ── AI 巡檢 ──
+        # 沿用這個 timer 而不是另建一個：每輪只判斷「距上次是否已達設定的間隔」，
+        # 沒到就直接跳過。預設關閉，要在 管理 → LLM / AI 明確打開才會跑。
+        try:
+            from app.models.user import User
+            from app.services.ai_audit import due, run_audit
+            from app.services.system_config import get_ai_audit_last_run, get_llm_config
+            from sqlalchemy import select as _s
+
+            cfg = await get_llm_config(session)
+            if cfg.enabled and cfg.ai_audit_enabled:
+                # 用獨立記錄的「上次執行時間」，不是最後一筆發現的時間 ——
+                # 沒有發現的巡檢什麼都不會寫，靠發現回推會判成從沒跑過而每輪重跑
+                last = await get_ai_audit_last_run(session)
+                if due(last, cfg.ai_audit_times):
+                    # 排程沒有「發起者」，取一個管理員當取樣身分 —— 巡檢仍然走 RBAC，
+                    # 只是這裡的可見範圍由該管理員決定，而不是無條件全庫。
+                    principal = None
+                    if cfg.mcp_principal_user_id:
+                        principal = await session.get(User, cfg.mcp_principal_user_id)
+                    if principal is None:
+                        principal = (await session.execute(
+                            _s(User).where(User.is_admin.is_(True), User.is_active.is_(True))
+                            .order_by(User.created_at).limit(1)
+                        )).scalars().first()
+                    if principal is None:
+                        log.warning("ai audit: no admin to run as, skipped")
+                    else:
+                        r = await run_audit(session, principal)
+                        if r.error:
+                            log.error("ai audit failed: %s", r.error)
+                        else:
+                            log.info("ai audit: %s finding(s)", r.findings)
+        except Exception as exc:  # noqa: BLE001
+            await session.rollback()
+            log.error("ai audit check failed: %s", exc)
 
     return 1 if failed else 0
 

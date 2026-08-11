@@ -37,7 +37,9 @@ type Phase = "form" | "connecting" | "connected" | "closed" | "error";
 const phase = ref<Phase>("form");
 const errorMsg = ref("");
 
-const form = ref({ username: "", password: "", realm: "pam" });
+const form = ref({ username: "", password: "", realm: "pam", tfa_code: "" });
+// PVE 帳號啟用兩階段驗證時，後端回 tfa_required → 顯示驗證碼欄位讓使用者補（issue #23）
+const needTfa = ref(false);
 const realmOpts = [
   { label: "pam (Linux PAM)", value: "pam" }, { label: "pve (Proxmox VE)", value: "pve" },
   { label: "ad (Active Directory)", value: "ad" }, { label: "ldap (LDAP)", value: "ldap" },
@@ -111,15 +113,30 @@ async function connect() {
   }
   let ticket;
   try {
+    const tfa = form.value.tfa_code.trim() || undefined;
     ticket = await requestNovncTicket(props.addressId, credId
-      ? { credential_id: credId }
-      : { username: form.value.username, password: form.value.password, realm: form.value.realm });
+      ? { credential_id: credId, tfa_code: tfa }
+      : { username: form.value.username, password: form.value.password,
+          realm: form.value.realm, tfa_code: tfa });
   } catch (e: any) {
+    const d = e?.response?.data?.detail;
+    const code = typeof d === "object" ? d?.code : undefined;
+    const msg = typeof d === "object" ? d?.message : d;
+    if (code === "tfa_required" || code === "tfa_failed") {
+      // 回到帳密表單並要求驗證碼，而不是停在一個看不出原因的錯誤畫面
+      needTfa.value = true;
+      form.value.tfa_code = "";
+      phase.value = "form";
+      errorMsg.value = msg || t("novnc.err_ticket");
+      return;
+    }
     phase.value = "error";
-    errorMsg.value = e?.response?.data?.detail || t("novnc.err_ticket");
+    errorMsg.value = msg || t("novnc.err_ticket");
     return;
   }
   form.value.password = "";
+  form.value.tfa_code = "";
+  needTfa.value = false;
   const wsUrl = buildNovncWsUrl(ticket.ws_path, ticket.ticket);
   await nextTick();
   if (ticket.kind === "vm") await connectRfb(wsUrl, ticket.vnc_password);
@@ -278,6 +295,13 @@ async function removeCred() {
             </n-form-item>
             <n-form-item :label="t('novnc.realm')">
               <n-select v-model:value="form.realm" :options="realmOpts" />
+            </n-form-item>
+            <n-form-item v-if="needTfa" :label="t('novnc.tfa_code')">
+              <n-input
+                v-model:value="form.tfa_code"
+                :maxlength="6"
+                :placeholder="t('novnc.tfa_code_ph')"
+              />
             </n-form-item>
             <n-form-item :label="t('novnc.remember')">
               <n-switch v-model:value="remember" />

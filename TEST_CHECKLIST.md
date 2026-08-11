@@ -75,12 +75,29 @@ Release flow: run the checklist → all green → bump version → deploy
 - [ ] **(B) Install-help UI**: on the scan-agent page and the subnet edit dialog,
   unavailable probes show an "install help" popover with the matching install command
 
-## 5c. Headless browser smoke
+## 5c. Real-browser testing — **mandatory for every release that touches the UI**
+
+Type checks, unit tests and API tests all pass while a page renders the wrong
+thing, renders nothing, or puts it in the wrong place. Defects this project has
+shipped that were only ever visible in a browser: a column added to a table but
+not to the column-picker defaults (so it never appeared), an export that wrote
+`undefined` into the report, a date overlapping its buttons, file names that
+failed to line up by 16px, and a console that could not connect at all because
+the reverse proxy dropped the WebSocket upgrade.
 
 - [ ] `cd frontend && pnpm exec playwright test smoke` (no backend; self-starts
   vite preview) all green
-- [ ] Against a deployed instance (with `E2E_BASE_URL` + `E2E_ADMIN_PASS`) run
-  `pnpm test:e2e` main paths (login / sections / audit)
+- [ ] Against a deployed instance (`E2E_BASE_URL` + `E2E_ADMIN_PASS`) run the
+  **whole** suite: `pnpm test:e2e`. Data-dependent specs need real data — run those
+  against a deployed instance, not an empty test DB
+- [ ] **Every changed page opened in an actual browser**, console watched: no errors,
+  no blank regions, no `undefined` / raw JSON / untranslated i18n keys on screen
+- [ ] **A new spec covering what this release changed.** Assert on the effect, not on
+  the UI's own claim: read the file back off the remote host, reload the page after
+  saving, compare the downloaded bytes. "已上傳" on screen is not evidence
+- [ ] **Measure geometry, don't eyeball it** — `boundingBox()` whenever the point is
+  alignment, overlap or spacing; a screenshot hides a 16px error
+- [ ] New text checked in both locales (switch to English, confirm no key leaks)
 
 ## 5d. System export / import (cross-instance migration) — **run in full every release that touches it**
 
@@ -131,6 +148,34 @@ Release flow: run the checklist → all green → bump version → deploy
   and `…/rules?token=…` return CSV/TSV; **wrong token → 401**; `expose_dsv` off → 404.
 - [ ] Delete instance; periodic `jt-ipam-sync` picks up enabled instances every ~5 min without errors.
 
+## 7b. VMware ESXi / vCenter integration (Admin → 整合 VMware) — **Beta**
+
+> The SOAP endpoint is always `<url>/sdk`. One implementation covers **both** a standalone ESXi
+> host and vCenter — they are the same VIM API, and ContainerView absorbs the depth difference.
+> Use a **read-only** account: this integration never writes. Free/unlicensed ESXi exposes the
+> API read-only anyway, which is exactly what is needed here.
+
+- [ ] Add instance: URL + username/password, **Verify TLS off** for a self-signed cert; save
+  (password write-only, never returned). Editing with an empty password leaves it unchanged.
+- [ ] **Test connection** → step-by-step diagnostics: RetrieveServiceContent (product + version),
+  Login, RetrievePropertiesEx (VM count). A wrong password must fail at **Login** with VMware's own
+  message, not a bare "server error" — VMware returns auth failures as a SOAP Fault over HTTP 500.
+- [ ] **Sync now** → VM count returns; clusters list shows the instance with type `vmware`;
+  VMs carry name / power state / vCPU / memory / host.
+- [ ] **Field reality check (first real hardware run)**: compare a few VMs against the vSphere client.
+  Powered-off VMs have no `guest.*`, VMs without VMware Tools have no IP, templates have no
+  `runtime.host` — none of these may break the sync; they should simply come back empty.
+- [ ] **Paging**: on a vCenter with more than 200 VMs, the count matches the vSphere client
+  (a dropped continuation token loses the rest **silently**).
+- [ ] **IP matching**: an in-scope IP reported by VMware Tools links to the existing address;
+  an address not in IPAM is **not** created. With overlapping subnets and no scope set, the
+  ambiguous address is skipped rather than guessed.
+- [ ] **Deleted VM**: remove a VM in vSphere → next sync removes it from the list.
+- [ ] **PVE regression (shared tables)**: Proxmox clusters/VMs/interfaces are untouched by an ESXi
+  sync, `legacy_vmid` and `kind=ct` still correct, and 進階 → 虛擬化 (Proxmox VE) still lists only PVE
+  while 虛擬化 (VMware) lists only VMware. Device / IP links from PVE VMs still resolve.
+- [ ] Delete instance; periodic `jt-ipam-sync` picks up enabled instances every ~5 min without errors.
+
 ## 8. Recent feature spot-checks
 
 - [ ] **Notification matrix** (Admin → 通知發送設定): toggle events × (in-app / email); save persists; events fire
@@ -138,7 +183,21 @@ Release flow: run the checklist → all green → bump version → deploy
 - [ ] **Cert distribution `files` profile**: writes cert files only, no reload/restart.
 - [ ] **Anomaly page**: tabs, per-table column picker, `ip_address_id` hidden by default, MAC drift shows IP/hostname.
 - [ ] **MCP client-config generator** (LLM/AI): button outputs Claude Desktop / opencode / mcpo / generic snippets.
+- [ ] **LLM provider = OpenAI-compatible** (Admin → LLM/AI): switching to it shows the data-egress warning
+  and the API-key field; the model dropdown repopulates from `/v1/models` (empty dropdown = the wrong path
+  is being called); a base URL already ending in `/v1` is not doubled; chat and semantic search both work.
+  Switching back to Ollama restores the `/api/tags` list. `select value from system_settings where key='llm'`
+  must show **no plaintext key** — only `api_key_enc`; the settings page never returns the key itself.
+- [ ] **Embedding dimension** (Admin → LLM/AI): the **Check dimension** button reports the model's actual
+  dimension against the column size. After changing the embedding model, a reindex must report
+  `failed: 0` — and if it reports `0 indexed` the failure count and reason must be visible, never a bare
+  zero. A candidate model must also produce **different vectors for different Traditional Chinese
+  descriptions** (English-only models collapse them and look fine while ranking at random).
 - [ ] **Add address in a subnet**: the create form has a required IP field (issue #14).
+- [ ] **Attach IPs by NIC MAC** (Admin → 系統設定): off by default on an existing install; **Preview**
+  reports a count plus per-reason skips and changes nothing; enabling it attaches on the next sync round
+  and writes one IP-change-log row per address with the match reason. Clear a device link by hand, then
+  confirm the next round does **not** restore it (the rule that keeps the job from fighting the operator).
 
 ### Recent (v0.5.6x–0.5.7x)
 

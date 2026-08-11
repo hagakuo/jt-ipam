@@ -41,7 +41,7 @@
 #   #   Other path fields: DEPLOY_1_CRT= (leaf)  DEPLOY_1_CHAIN=  DEPLOY_1_COMBINED=  DEPLOY_1_TEST=
 #
 # Usage: jt_ipam_cert_agent.sh [--config PATH] [--dry-run] [--force] [--debug] [--upgrade] [--version]
-AGENT_VERSION=0.4.173
+AGENT_VERSION=0.4.174
 
 set -u
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -446,11 +446,27 @@ if [ "$UPGRADE_ONLY" = 1 ]; then
   rm -f "$CHECK"; exit 0
 fi
 
-state_fp() { awk -F'\t' -v c="$1" -v p="$2" '$1==c && $2==p{print $3}' "$STATE_FILE"; }
-set_state() {  # cert profile fp
+# State is keyed by cert + profile + target. The target is what makes two deployments of the
+# same certificate under the same profile different from each other -- in manual mode, the
+# output paths. Without it, a second DEPLOY block writing the same cert somewhere else is
+# skipped as "already up to date" forever: silently never renewed, while reporting ok.
+# Lines written by an older agent have 3 fields and no target; only trust those when this
+# deployment has no target either.
+state_fp() {  # cert profile target
+  awk -F'\t' -v c="$1" -v p="$2" -v t="$3" '
+    NF>=4 && $1==c && $2==p && $3==t { print $4; exit }
+    NF==3 && $1==c && $2==p && t==""  { print $3; exit }' "$STATE_FILE"
+}
+set_state() {  # cert profile target fp
   local tmp; tmp="$(mktemp)"
-  awk -F'\t' -v c="$1" -v p="$2" '!($1==c && $2==p)' "$STATE_FILE" > "$tmp"
-  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$tmp"; mv -f "$tmp" "$STATE_FILE"
+  awk -F'\t' -v c="$1" -v p="$2" -v t="$3" '
+    !(NF>=4 && $1==c && $2==p && $3==t) && !(NF==3 && $1==c && $2==p)' "$STATE_FILE" > "$tmp"
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >> "$tmp"; mv -f "$tmp" "$STATE_FILE"
+}
+# Built-in profiles write to paths fixed by the profile, so only manual overrides distinguish.
+deploy_target() {  # -> the D_* paths that make this deployment distinct
+  printf '%s|%s|%s|%s|%s' "${D_cert_path:-}" "${D_chain_path:-}" "${D_fullchain_path:-}" \
+    "${D_key_path:-}" "${D_combined_path:-}"
 }
 
 # Read one config field for deployment N, e.g. _f 1 FULLCHAIN -> value of DEPLOY_1_FULLCHAIN
@@ -470,6 +486,7 @@ while :; do
   [ -n "$(_f "$n" COMBINED)" ]  && D_combined_path="$(_f "$n" COMBINED)"
   [ -n "$(_f "$n" RELOAD)" ]    && D_reload="$(_f "$n" RELOAD)"
   [ -n "$(_f "$n" TEST)" ]      && D_test="$(_f "$n" TEST)"
+  target="$(deploy_target)"
   n=$((n+1))
   # look up this cert's current fingerprint from the check output
   fp="$(awk -F'\t' -v c="$cert" '$1==c{print $2}' "$CHECK")"
@@ -478,7 +495,7 @@ while :; do
     log "[$cert/$profile] cert not found on server or not in scope, skipping"
     add_report "$cert" "$profile" skipped "" "" "not in scope / no current version"; continue
   fi
-  if [ "$DRY_RUN" != 1 ] && [ "$FORCE" != 1 ] && [ "$(state_fp "$cert" "$profile")" = "$fp" ]; then
+  if [ "$DRY_RUN" != 1 ] && [ "$FORCE" != 1 ] && [ "$(state_fp "$cert" "$profile" "$target")" = "$fp" ]; then
     # Already applied locally — skip the file write/reload, but STILL report the
     # current state so the server reflects this deployment (e.g. after re-keying an
     # agent, whose local state matches but the new agent row has never reported).
@@ -487,7 +504,7 @@ while :; do
     add_report "$cert" "$profile" ok "$fp" "$na" "already up to date"; continue
   fi
   if apply_deployment "$cert" "$profile" "$fp" "$na"; then
-    [ "$DRY_RUN" != 1 ] && set_state "$cert" "$profile" "$fp"
+    [ "$DRY_RUN" != 1 ] && set_state "$cert" "$profile" "$target" "$fp"
   else
     FAILED=1
   fi

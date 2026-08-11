@@ -64,6 +64,8 @@ if [[ -d "$ROOT/frontend/node_modules" ]]; then
   if npx eslint src --ext .ts,.vue >/dev/null 2>&1; then ok "eslint"; else npx eslint src --ext .ts,.vue 2>&1 | tail -40; bad "eslint"; fi
   step "frontend i18n compile scan"
   if node scripts/check-i18n.mjs; then ok "i18n"; else bad "i18n — escape literal @ { } | in the messages above"; fi
+  step "frontend naive-ui imports"
+  if node scripts/check-naive-imports.mjs; then ok "naive imports"; else bad "naive imports -- a component used in a template is not imported; it silently disappears at runtime"; fi
   step "frontend build"
   if npm run build >/dev/null 2>&1; then ok "build"; else bad "build"; fi
 else

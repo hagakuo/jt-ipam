@@ -5,8 +5,11 @@ API ref: https://documentation.wazuh.com/current/user-manual/api/reference.html
 主要 endpoints：
   POST /security/user/authenticate     拿 JWT (basic auth)
   GET  /agents                         列出所有 agent
-  GET  /vulnerability/{agent_id}       某 agent 的漏洞清單
-  GET  /vulnerability/agents/summary   多 agent 漏洞總覽
+  GET  /sca/{agent_id}                 資安組態評估（SCA）各政策的通過／未通過數
+
+漏洞（CVE）資料**不在這裡**：Wazuh 4.8 起 manager API 已無漏洞端點（實機 4.14.5 的
+150 條路徑裡一條都沒有），唯一來源是 Wazuh Indexer —— 那需要另一組能讀取整個 SIEM
+事件的憑證，代價與收益不成比例，因此不接。資安體質改用 SCA 呈現。
 
 OWASP：
 - A02：API password 雙欄 AES-GCM，aad 綁 instance id
@@ -150,6 +153,39 @@ async def healthcheck(inst: WazuhInstance) -> dict[str, Any]:
 # ─────────────────── Agent inventory ───────────────────
 
 
+def _index_by_ip(ip_rows: Any) -> tuple[dict[str, Any], set[str]]:
+    """IP 字串 → IPAddress.id；**對應到多筆的一律不收**。
+
+    重疊網段（例如甲乙兩單位都用 192.168.1.0/24）下，同一個 IP 字串是兩台不同機器。
+    以前這裡用 dict 覆寫，等於依資料庫回傳順序任意挑一筆 —— 掛錯比沒有更糟：
+    沒有資料使用者會去查，掛錯了不會知道，而且在多單位環境下是跨單位的資料外洩。
+
+    要讓這些位址對應得上，就在該整合實例設定「限定子網路範圍」，把候選縮到一個單位。
+    """
+    seen: dict[str, Any] = {}
+    ambiguous: set[str] = set()
+    for aid, ip in ip_rows:
+        key = str(ip).split("/", 1)[0]
+        if key in ambiguous:
+            continue
+        if key in seen and seen[key] != aid:
+            del seen[key]
+            ambiguous.add(key)
+            continue
+        seen[key] = aid
+    return seen, ambiguous
+
+
+async def build_ip_map(
+    session: AsyncSession, *, scope_ids: set[Any],
+) -> tuple[dict[str, Any], set[str]]:
+    """取得（IP→IPAddress.id 對應表, 不明確的 IP 集合），已套用限定子網路範圍。"""
+    stmt = select(IPAddress.id, IPAddress.ip)
+    if scope_ids:
+        stmt = stmt.where(IPAddress.subnet_id.in_(scope_ids))
+    return _index_by_ip((await session.execute(stmt)).all())
+
+
 def _clean_ip(s: str | None) -> str | None:
     """register_ip / ip 欄位是 INET；Wazuh 可能回 'any' 等非 IP 值 → 存 NULL 避免 DataError。"""
     if not s:
@@ -173,6 +209,33 @@ def _parse_keep_alive(s: str | None) -> datetime | None:
     if dt.year > 9000:
         return None
     return dt
+
+
+def agent_represents_ip(agent: Any, ip: Any, *, grace_hours: int = 24) -> bool:
+    """這個 Wazuh agent 現在還代表這個 IP 嗎？
+
+    只比對 IP 位址是不夠的：**DHCP 位址會被回收**。實機上 agent 015
+    （`laptop-a1.local`，macOS）失聯後，它登記的 192.168.1.187 被 Proxmox 上的
+    Linux VM 拿去用，我們卻把 macOS 貼到了那台 VM 上。
+
+    判準：agent 還連著就算數；已失聯的話，只要這個 IP 在它失聯**之後**還被偵測到活著，
+    就代表現在佔用這個位址的是別台機器。
+
+    只是關機的機器不受影響 —— 沒有更新的存活證據時仍然採用它的資料，否則修掉一個錯誤
+    會製造另一個（每台關機的主機都立刻失去 OS 資訊）。
+    """
+    from datetime import timedelta
+
+    if (getattr(agent, "status", "") or "").lower() == "active":
+        return True
+    ka = getattr(agent, "last_keep_alive", None)
+    if ka is None:
+        return False   # 從未回報過，又不是 active → 沒有理由相信這個對映
+    seen = [t for t in (getattr(ip, "last_seen_scanner", None),
+                        getattr(ip, "last_seen_librenms", None)) if t is not None]
+    if not seen:
+        return True    # 沒有其他存活證據 → 可能只是關機，仍然採用
+    return ka >= max(seen) - timedelta(hours=grace_hours)
 
 
 async def fetch_agents(inst: WazuhInstance, *, batch: int = 500) -> list[dict[str, Any]]:
@@ -209,16 +272,7 @@ async def sync_agents(session: AsyncSession, inst: WazuhInstance) -> dict[str, A
     # 預先把 IPAddress 的 IP → id 撈出來（小型部署足夠；大型可改 chunk）
     # 重疊網段：若 instance 設了 scope_subnet_ids，IP→IPAddress 比對限定在這些子網路內
     scope_ids = _scope_subnet_uuids(inst)
-    ip_stmt = select(IPAddress.id, IPAddress.ip)
-    if scope_ids:
-        ip_stmt = ip_stmt.where(IPAddress.subnet_id.in_(scope_ids))
-    ip_rows = (
-        await session.execute(ip_stmt)
-    ).all()
-    # 注意：未設 scope_subnet_ids 時，重疊網段的同一 IP 字串會在此 dict 互相覆寫，
-    # 只留最後一筆 → hostname/agent 可能掛到任一同 IP 的 IPAddress。有重疊網段的
-    # 部署應在該 Wazuh instance 設 scope_subnet_ids 把比對限定在正確子網路內。
-    ip_map: dict[str, Any] = {str(ip).split("/", 1)[0]: aid for aid, ip in ip_rows}
+    ip_map, ambiguous = await build_ip_map(session, scope_ids=scope_ids)
 
     for raw in agents_raw:
         agent_id = str(raw.get("id") or "").strip()
@@ -296,6 +350,9 @@ async def sync_agents(session: AsyncSession, inst: WazuhInstance) -> dict[str, A
         "new": new_count,
         "updated": upd_count,
         "matched_ip": matched_ip,
+        # 因為同一個 IP 字串在多個子網路中都有紀錄而**沒有**對應的數量。
+        # 不是零的話，該實例應設定「限定子網路範圍」把候選縮到一個單位。
+        "ambiguous_ip": len(ambiguous),
         "synced_at": now.isoformat(),
     }
 
@@ -333,23 +390,39 @@ async def find_missing_agents(
     ]
 
 
-async def fetch_vulnerability_summary(
-    inst: WazuhInstance, agent_id: str,
-) -> dict[str, int]:
-    """單一 agent 的 CVE 摘要（嚴重度分桶）。"""
-    # API 也支援 distinct + groupby；簡化版用 summary endpoint
-    try:
-        summary = await _api_get(
-            inst, "/vulnerability/agents/summary",
-            params={"agent_list": agent_id},
-        )
-    except WazuhError:
-        summary = {}
-    rows = (summary.get("data") or {}).get("affected_items") or []
-    if not rows:
-        return {"critical": 0, "high": 0}
-    row = rows[0]
-    return {
-        "critical": int(row.get("Critical") or 0),
-        "high": int(row.get("High") or 0),
-    }
+async def fetch_sca(inst: WazuhInstance, agent_id: str) -> list[dict[str, Any]]:
+    """某個 agent 的 SCA 政策結果。用現有的 manager API 帳號即可，不需要額外憑證。"""
+    resp = await _api_get(inst, f"/sca/{agent_id}")
+    rows = ((resp.get("data") or {}).get("affected_items") or [])
+    return [r for r in rows if isinstance(r, dict)]
+
+
+async def sync_sca(session: AsyncSession, inst: WazuhInstance) -> int:
+    """把每個 agent 的 SCA 摘要寫回 wazuh_agents。
+
+    一台機器可能同時跑多個基準（CIS、廠商自訂…）。畫面上只放得下一個數字時，
+    存**分數最低**的那一個 —— 挑最好看的等於自我安慰。
+
+    單一 agent 查詢失敗不影響其他台：SCA 沒跑過的 agent 本來就會回空清單。
+    """
+    agents = (await session.execute(
+        select(WazuhAgent).where(WazuhAgent.instance_id == inst.id)
+    )).scalars().all()
+    now = datetime.now(UTC)
+    n = 0
+    for a in agents:
+        try:
+            rows = await fetch_sca(inst, a.agent_id)
+        except WazuhError:
+            continue
+        if not rows:
+            continue
+        worst = min(rows, key=lambda r: int(r.get("score") or 0))
+        a.sca_policy = str(worst.get("name") or "")[:128] or None
+        a.sca_score = int(worst.get("score") or 0)
+        a.sca_pass = int(worst.get("pass") or 0)
+        a.sca_fail = int(worst.get("fail") or 0)
+        a.sca_policy_count = len(rows)
+        a.sca_scanned_at = now
+        n += 1
+    return n

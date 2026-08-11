@@ -43,6 +43,14 @@ const ICONS: Record<string, any> = {
   section: SectionsIcon, subnet: SubnetsIcon, ip: AddressesIcon, vm: VirtualizationIcon,
   vmnode: DevicesIcon, device: DevicesIcon, rack: RacksIcon, location: LocationsIcon,
 };
+// vmnode 的名稱依平台而定：PVE 叫「節點」、VMware 叫「ESXi 主機」——
+// 一律標成「PVE 節點」的話，VMware 使用者看到的是別家產品的名詞。
+function nodeTypeLabel(n: RelationNode): string {
+  if (n.type === "vmnode") {
+    return n.platform === "vmware" ? t("relations.esxi_host") : t("relations.pve_node");
+  }
+  return TYPE_LABEL.value[n.type] ?? n.type;
+}
 const TYPE_LABEL = computed<Record<string, string>>(() => ({
   section: t("nav.sections"), subnet: t("nav.subnets"), ip: t("nav.addresses"),
   vm: t("relations.vm"), vmnode: t("relations.pve_node"),
@@ -54,9 +62,11 @@ function go(n: RelationNode) {
   switch (n.type) {
     case "section":  router.push({ name: "section-detail", params: { id: n.id } }); break;
     case "subnet":   router.push({ name: "subnet-detail", params: { id: n.id } }); break;
-    case "vm":       router.push({ name: "virt" }); break;
-    // PVE 節點：對得到實體裝置（id 為 UUID）就跳裝置詳情；無實體裝置（id 以 pve: 開頭）則不動作
-    case "vmnode":   if (!n.id.startsWith("pve:")) router.push({ name: "device-detail", params: { id: n.id } }); break;
+    // 虛擬化拆成 PVE / VMware 兩頁後，這裡不能再寫死 —— 依節點自帶的平台決定，
+    // 否則 VMware 的 VM 會被送到 PVE 那一頁看到 0 筆（實機回報）。
+    case "vm":       router.push({ name: n.platform === "vmware" ? "virt_vmware" : "virt" }); break;
+    // 虛擬化主機：對得到實體裝置（id 為 UUID）就跳裝置詳細資料；只有名稱（id 以 host: 開頭）則不動作
+    case "vmnode":   if (!n.id.startsWith("host:")) router.push({ name: "device-detail", params: { id: n.id } }); break;
     case "device":   router.push({ name: "device-detail", params: { id: n.id } }); break;
     case "ip":       router.push({ name: "addresses", query: { q: n.label } }); break;
     case "rack":     router.push({ name: "racks" }); break;
@@ -75,12 +85,12 @@ function go(n: RelationNode) {
       <span v-if="i > 0" class="rel-arrow">→</span>
       <div
         class="rel-node" :class="{ current: n.id === currentId, [n.type]: true }"
-        :title="TYPE_LABEL[n.type]"
+        :title="nodeTypeLabel(n)"
         @click="go(n)"
       >
         <div class="rel-type">
           <n-icon :size="13"><component :is="ICONS[n.type]" /></n-icon>
-          <span>{{ TYPE_LABEL[n.type] }}</span>
+          <span>{{ nodeTypeLabel(n) }}</span>
         </div>
         <div class="rel-label">{{ n.label }}</div>
         <div v-if="n.sub" class="rel-sub">{{ n.sub }}</div>

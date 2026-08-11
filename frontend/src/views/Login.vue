@@ -99,6 +99,24 @@ function targetAfterLogin(): string {
   return "/";
 }
 
+
+/**
+ * 登入失敗的原因要說對。
+ *
+ * 後端整個掛掉（502／503）時，畫面原本仍顯示「請確認帳號密碼」—— 把伺服器故障
+ * 說成使用者打錯密碼，於是人會一直重打、懷疑自己的帳號，而真正的問題在別處。
+ * 只有後端明確說「憑證錯誤」（401）時才可以這樣講。
+ */
+function loginErrorMessage(err: unknown): string {
+  const st = (err as { response?: { status?: number } })?.response?.status;
+  if (st === 401 || st === 400) return t("login.failed");        // 後端真的驗過了
+  if (st === 429) return t("login.too_many");
+  if (st === 423) return t("login.locked");
+  if (st === undefined) return t("login.unreachable");           // 連不上（網路／服務未啟動）
+  if (st >= 500) return t("login.server_down", { code: st });    // 服務有問題，不是密碼問題
+  return t("login.failed");
+}
+
 async function submitLogin() {
   errorMsg.value = null;
   loading.value = true;
@@ -110,7 +128,7 @@ async function submitLogin() {
       window.location.assign(targetAfterLogin());
     }
   } catch (err: unknown) {
-    errorMsg.value = t("login.failed");
+    errorMsg.value = loginErrorMessage(err);
   } finally {
     loading.value = false;
   }

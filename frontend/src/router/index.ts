@@ -15,6 +15,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import("@/views/SshConsole.vue"),
   },
   {
+    // 另開視窗的全頁 SFTP 檔案瀏覽器（與 SSH 同一道權限閘門）
+    path: "/sftp/:id",
+    name: "sftp-console",
+    component: () => import("@/views/SftpConsole.vue"),
+  },
+  {
     // 另開視窗的全頁 RDP 畫面（不套 MainLayout 側欄；仍需登入）
     path: "/rdp/:id",
     name: "rdp-console",
@@ -49,6 +55,7 @@ const routes: RouteRecordRaw[] = [
       { path: "subnets/:id", name: "subnet-detail", component: () => import("@/views/SubnetDetail.vue") },
       { path: "addresses", name: "addresses", component: () => import("@/views/Addresses.vue") },
       { path: "addresses/:id", name: "address-detail", component: () => import("@/views/IPDetail.vue") },
+      { path: "ai-audit", name: "ai_audit", component: () => import("@/views/AIAudit.vue"), meta: { admin: true } },
       { path: "ip-changes", name: "ip_changes", component: () => import("@/views/IPChanges.vue") },
       { path: "hostname-precedence", name: "hostname_precedence", component: () => import("@/views/HostnamePrecedence.vue"), meta: { admin: true } },
       { path: "racks", name: "racks", component: () => import("@/views/Racks.vue") },
@@ -113,8 +120,13 @@ const routes: RouteRecordRaw[] = [
       { path: "advanced/connections", name: "adv-connections", component: () => import("@/views/Connections.vue") },
       { path: "advanced/dns-records", name: "adv-dns-records", component: () => import("@/views/DnsRecords.vue") },
       { path: "advanced/cert-status", name: "adv-cert-status", component: () => import("@/views/CertStatus.vue") },
-      { path: "virt", name: "virt", component: () => import("@/views/Virtualization.vue") },
+      // 虛擬化拆成兩頁：同一個元件，靠 platform 決定顯示哪個平台的叢集與 VM
+      { path: "virt", name: "virt", component: () => import("@/views/Virtualization.vue"),
+        props: { platform: "proxmox" } },
+      { path: "virt-vmware", name: "virt_vmware",
+        component: () => import("@/views/Virtualization.vue"), props: { platform: "vmware" } },
       { path: "virt-admin", name: "virt_admin", component: () => import("@/views/Virtualization.vue"), meta: { admin: true } },
+      { path: "esxi", name: "esxi_admin", component: () => import("@/views/ESXiAdmin.vue"), meta: { admin: true } },
       { path: "cabling", name: "cabling", component: () => import("@/views/Physical.vue"), props: { mode: "cabling" } },
       { path: "power", name: "power", component: () => import("@/views/Physical.vue"), props: { mode: "power" } },
       { path: "vpn", name: "vpn-tunnels", component: () => import("@/views/Physical.vue"), props: { mode: "vpn" } },

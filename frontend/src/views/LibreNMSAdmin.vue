@@ -280,7 +280,8 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
             <span>{{ t('librenms_admin.sync_links') }}</span>
             <n-switch size="small" v-model:value="form.sync_links" />
           </div>
-          <p class="hint">{{ t("librenms_admin.sync_links_hint") }}</p>
+          <!-- 說明橫跨兩欄：塞在右欄那格的話寬度只有一半，長句子會被擠成一團 -->
+          <p class="row-hint">{{ t("librenms_admin.sync_links_hint") }}</p>
           <div class="row"><span>{{ t('librenms_admin.use_for_status') }}</span><n-switch size="small" v-model:value="form.use_for_status" /></div>
           <div class="row"><span>{{ t('librenms_admin.auto_add_devices') }}</span><n-switch size="small" v-model:value="form.auto_add_devices" /></div>
           <div class="row"><span>{{ t('librenms_admin.auto_create_ips') }}</span><n-switch size="small" v-model:value="form.auto_create_ips" /></div>
@@ -332,5 +333,15 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
   padding: 4px 0;
 }
 .sync-toggles .row span { font-size: 13px; }
+/* 開關格是兩欄，但說明要占滿整列 —— 不然它會掉進右邊那半格，
+   一行只放得下五六個字，讀起來像被切碎的 */
+.sync-toggles .row-hint {
+  grid-column: 1 / -1;
+  margin: 0 0 6px; padding: 6px 10px;
+  font-size: 12px; line-height: 1.75;
+  color: var(--n-text-color-3, #888);
+  background: var(--n-color-embedded, rgba(128, 128, 128, .06));
+  border-radius: 4px;
+}
 .hint { font-size: 12px; color: var(--n-text-color-disabled, #888); margin: -8px 0 14px; line-height: 1.5; }
 </style>

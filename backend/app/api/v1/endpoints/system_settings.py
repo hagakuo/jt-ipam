@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
@@ -591,6 +591,9 @@ async def update_geoip_now(
 
 class LLMConfigOut(StrictModel):
     enabled: bool
+    # ollama（原生）或 openai（OpenAI 相容端點）。金鑰只回「有沒有設」，不回明文。
+    provider: str = "ollama"
+    api_key_set: bool = False
     url: str
     embedding_model: str
     chat_model: str
@@ -598,10 +601,18 @@ class LLMConfigOut(StrictModel):
     num_ctx: int | None = None
     mcp_external_enabled: bool = False
     mcp_api_key_set: bool = False        # 是否已產生對外 MCP 金鑰（不回明文）
+    ai_audit_enabled: bool = False
+    ai_audit_times: list[str] = []       # 每天執行的時刻（"HH:MM"，伺服器本地時區）
+    ai_audit_model: str | None = None    # None＝沿用對話模型
+    ai_audit_num_ctx: int | None = None  # None＝沿用對話模型的上下文長度
+    server_timezone: str = ""            # 排程時刻是照這個時區算的，UI 要講清楚
 
 
 class LLMConfigPatch(StrictModel):
     enabled: bool | None = None
+    provider: Literal["ollama", "openai"] | None = None
+    # 空字串＝清掉金鑰（本地 vLLM／LM Studio 多半不需要），所以 min_length 是 0
+    api_key: Annotated[str | None, Field(min_length=0, max_length=512)] = None
     url: Annotated[str | None, Field(min_length=4, max_length=512)] = None
     embedding_model: Annotated[str | None, Field(min_length=1, max_length=128)] = None
     chat_model: Annotated[str | None, Field(min_length=1, max_length=128)] = None
@@ -609,6 +620,20 @@ class LLMConfigPatch(StrictModel):
     # 0 / 空＝沿用模型/Ollama 預設；上限取寬鬆合理值（128k）
     num_ctx: Annotated[int | None, Field(ge=0, le=131072)] = None
     mcp_external_enabled: bool | None = None
+    ai_audit_enabled: bool | None = None
+    # 每天執行的時刻清單（"HH:MM"）。不合法的項目會被丟掉，不會整組失效。
+    ai_audit_times: Annotated[list[str] | None, Field(max_length=24)] = None
+    # 巡檢專用模型；空字串＝清掉，回去沿用對話模型（所以 min_length 是 0）
+    ai_audit_model: Annotated[str | None, Field(max_length=128)] = None
+    # 巡檢專用上下文長度；0＝清掉，回去沿用對話模型的設定
+    ai_audit_num_ctx: Annotated[int | None, Field(ge=0, le=131072)] = None
+
+
+def _server_tz() -> str:
+    """伺服器本地時區名稱。排程時刻是照它算的 —— 畫面上不寫清楚就會有人設錯 8 小時。"""
+    from datetime import datetime
+    tz = datetime.now().astimezone().tzinfo
+    return str(getattr(tz, "key", None) or tz or "")
 
 
 def _llm_out(cfg: Any) -> LLMConfigOut:
@@ -616,9 +641,15 @@ def _llm_out(cfg: Any) -> LLMConfigOut:
         enabled=cfg.enabled, url=cfg.url,
         embedding_model=cfg.embedding_model,
         chat_model=cfg.chat_model, timeout=cfg.timeout,
+        provider=cfg.provider, api_key_set=bool(cfg.api_key),
         num_ctx=cfg.num_ctx,
         mcp_external_enabled=cfg.mcp_external_enabled,
         mcp_api_key_set=bool(cfg.mcp_api_key),
+        ai_audit_enabled=cfg.ai_audit_enabled,
+        ai_audit_times=cfg.ai_audit_times,
+        ai_audit_model=cfg.ai_audit_model,
+        ai_audit_num_ctx=cfg.ai_audit_num_ctx,
+        server_timezone=_server_tz(),
     )
 
 
@@ -641,12 +672,18 @@ async def patch_llm(
     await set_llm_config(
         session,
         enabled=changes.get("enabled"),
+        provider=changes.get("provider"),
+        api_key=changes.get("api_key"),
         url=changes.get("url"),
         embedding_model=changes.get("embedding_model"),
         chat_model=changes.get("chat_model"),
         timeout=changes.get("timeout"),
         num_ctx=changes.get("num_ctx"),
         mcp_external_enabled=changes.get("mcp_external_enabled"),
+        ai_audit_enabled=changes.get("ai_audit_enabled"),
+        ai_audit_times=changes.get("ai_audit_times"),
+        ai_audit_model=changes.get("ai_audit_model"),
+        ai_audit_num_ctx=changes.get("ai_audit_num_ctx"),
         updated_by_user_id=user.id,
     )
     await append_audit(
@@ -702,26 +739,95 @@ async def list_ollama_models(
     _user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    """列出 Ollama 上目前已 pull 的模型清單（給設定頁的下拉選用）。"""
+    """列出 LLM 端點上可用的模型清單（給設定頁的下拉選用）。
+
+    Ollama 走 `/api/tags`、OpenAI 相容走 `/v1/models` —— 兩者的回應結構也不同。
+    """
+    from app.services import ai as ai_mod
+
     cfg = await get_llm_config(session)
-    url = f"{cfg.url.rstrip('/')}/api/tags"
+    provider = getattr(cfg, "provider", "ollama") or "ollama"
+    url = ai_mod.models_url(cfg.url, provider)
+    headers = ai_mod.auth_headers(provider, getattr(cfg, "api_key", None))
     try:
-        resp = await safe_request("GET", url, timeout=10.0)
+        resp = await safe_request("GET", url, timeout=10.0, headers=headers)
     except httpx.HTTPError as exc:
         return {"models": [], "error": f"{type(exc).__name__}: {exc}"}
     if resp.status_code != 200:
         return {"models": [], "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
-    data = resp.json() or {}
-    out = []
-    for m in (data.get("models") or []):
-        out.append({
-            "name": m.get("name"),
-            "size": m.get("size"),
-            "modified_at": m.get("modified_at"),
-            "family": (m.get("details") or {}).get("family"),
-            "parameter_size": (m.get("details") or {}).get("parameter_size"),
-        })
-    return {"models": out}
+    return {"models": ai_mod.parse_models(resp.json() or {}, provider)}
+
+
+# ─────────────────── 依 MAC 自動掛裝置 ───────────────────
+
+
+class AutolinkOut(StrictModel):
+    enabled: bool = False
+    scope_subnet_ids: list[str] | None = None
+
+
+class AutolinkPatch(StrictModel):
+    enabled: bool | None = None
+    scope_subnet_ids: list[str] | None = None
+
+
+@router.get("/ip-device-autolink", response_model=AutolinkOut)
+async def get_autolink(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Any:
+    from app.services.system_config import get_autolink_config
+    return AutolinkOut(**await get_autolink_config(session))
+
+
+@router.put("/ip-device-autolink", response_model=AutolinkOut)
+async def put_autolink(
+    payload: AutolinkPatch, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Any:
+    from app.services.system_config import set_autolink_config
+    cfg = await set_autolink_config(
+        session, enabled=payload.enabled, scope_subnet_ids=payload.scope_subnet_ids,
+        updated_by_user_id=user.id,
+    )
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system_setting", object_id=None, action="update",
+        diff={"target": "ip_device_autolink", **cfg},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return AutolinkOut(**cfg)
+
+
+@router.post("/ip-device-autolink/preview")
+async def preview_autolink(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """先看會動到什麼再開啟 —— 這是會改資料的作業。
+
+    只計算不寫入，並附上明細；跳過的筆數也一起回報（「全部被守門擋下」不能看起來
+    跟「沒事可做」一樣）。
+    """
+    from app.services.ip_device_link import link_by_port_mac
+    from app.services.system_config import get_autolink_config
+    cfg = await get_autolink_config(session)
+    st = await link_by_port_mac(session, dry_run=True,
+                               scope_subnet_ids=cfg["scope_subnet_ids"])
+    return {
+        "would_link": st.linked,
+        "samples": st.samples[:100],
+        "skipped": {
+            "ambiguous_mac": st.skipped_ambiguous,
+            "manually_edited": st.skipped_manual,
+            "invalid_mac": st.skipped_invalid_mac,
+            "hostname_mismatch": st.skipped_hostname_mismatch,
+            "customer_conflict": st.skipped_customer,
+        },
+    }
 
 
 # ─────────────────── RBAC：權限指派 ───────────────────
@@ -963,6 +1069,18 @@ async def get_version_info() -> dict[str, Any]:
             info["host"]["postgres"] = str(_pg).split()[0] if _pg else None
     except SQLAlchemyError:
         pass
+
+    # 選用的作業系統相依：功能會隨版本新增，但既有主機不一定有對應的執行檔。
+    # 在這裡露出來，管理員才不用等使用者回報「按了沒反應」才發現缺套件。
+    from app.services.netdiag import tool_availability
+    caps = tool_availability()
+    info["host"]["optional_tools"] = {
+        "ping": {"present": caps["ping"], "package": "iputils-ping",
+                 "used_by": "Tools → IP addresses → ping"},
+        "tracepath": {"present": caps["tracepath"] or caps["traceroute"],
+                      "package": "iputils-tracepath",
+                      "used_by": "Tools → IP addresses → traceroute"},
+    }
     return info
 
 
@@ -1295,6 +1413,7 @@ async def integration_presence(
 
     from app.models.certificate import CertAgent
     from app.models.dns import DNSServer
+    from app.models.esxi import ESXiInstance
     from app.models.firewall import OPNsenseFirewall
     from app.models.fortigate import FortiGateFirewall
     from app.models.pfsense import PfSenseFirewall
@@ -1308,6 +1427,7 @@ async def integration_presence(
         ("dns", DNSServer),
         ("cert_agents", CertAgent),
         ("proxmox", ProxmoxInstance),
+        ("esxi", ESXiInstance),
     ):
         n = await session.scalar(select(func.count()).select_from(model))
         out[key] = bool(n)

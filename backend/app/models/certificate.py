@@ -91,7 +91,7 @@ class CertAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     enroll_key_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     # deny-by-default：可取的 certificate id 清單；空/None＝不可取任何憑證
     scope_cert_ids: Mapped[list[Any] | None] = mapped_column(JSONB)
-    # 對應的 jt-ipam 裝置（代理名稱可點去裝置詳情）；裝置刪除→SET NULL
+    # 對應的 jt-ipam 裝置（代理名稱可點去裝置詳細資料）；裝置刪除→SET NULL
     device_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("devices.id", ondelete="SET NULL"), index=True,
     )

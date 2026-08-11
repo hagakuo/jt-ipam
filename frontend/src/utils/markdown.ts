@@ -24,10 +24,25 @@ function inline(s: string): string {
     (_m, t, u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${t}</a>`);
   // 粗體 **x**
   s = s.replace(/\*\*([^*]+)\*\*/g, (_m, c) => `<strong>${c}</strong>`);
-  // 斜體 *x* 或 _x_
+  // 斜體 *x*
   s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, (_m, p, c) => `${p}<em>${c}</em>`);
-  s = s.replace(/(^|[^_])_([^_\n]+)_/g, (_m, p, c) => `${p}<em>${c}</em>`);
+  // 斜體 _x_ —— **字中間的底線不算強調**（前後都要是非文字字元）。
+  // CommonMark 就是為了 snake_case 這種識別字才這樣訂：少了這個條件，
+  // AI 回應裡的 `recent_ip_changes` 會被渲染成 recent<em>ip</em>changes（客戶回報）。
+  s = s.replace(/(^|[^\w])_([^_\n]+)_(?!\w)/g, (_m, p, c) => `${p}<em>${c}</em>`);
   return s;
+}
+
+/**
+ * 只做行內語法（code / 連結 / 粗體 / 斜體），不產生段落、清單這些區塊標籤。
+ *
+ * 給「模型寫的一句話要放進既有 <h3>／<p> 裡」的地方用 —— 例如 AI 巡檢的標題、
+ * 說明與建議。用區塊版的話會生出巢狀 <p>，那是無效 HTML，瀏覽器會自行拆開，
+ * 版面就跑掉了。
+ */
+export function renderInlineMarkdown(src: string): string {
+  if (!src) return "";
+  return inline(escapeHtml(src.replace(/\r\n/g, "\n")));
 }
 
 export function renderMarkdown(src: string): string {

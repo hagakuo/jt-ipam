@@ -91,7 +91,7 @@ class CertAgentCreate(StrictModel):
     enabled: bool = True
     # 此 agent 可取的 certificate id 清單(deny-by-default;空＝不可取)
     scope_cert_ids: list[uuid.UUID] = Field(default_factory=list)
-    # 對應的 jt-ipam 裝置（讓代理名稱可點去裝置詳情）；空＝未對應
+    # 對應的 jt-ipam 裝置（讓代理名稱可點去裝置詳細資料）；空＝未對應
     device_id: uuid.UUID | None = None
 
 

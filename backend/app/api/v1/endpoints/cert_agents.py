@@ -43,24 +43,38 @@ router = APIRouter(prefix="/cert-agents", tags=["cert-agents"])
 
 _AGENT_DIR = Path(__file__).resolve().parents[5] / "agent"
 _AGENT_SH = _AGENT_DIR / "jt_ipam_cert_agent.sh"  # 純 bash 派送代理（curl + coreutils,無 Python）
+_AGENT_PS1 = _AGENT_DIR / "jt_ipam_cert_agent.ps1"  # Windows / IIS 代理（PowerShell 5.1 內建,無額外模組）
+
+# Windows 代理回報版本時帶這個後綴。兩支代理各自演進版本號,不加以區分的話
+# Windows 代理會永遠被 UI 標成「版本落後」（拿它的版本去比 Linux agent.sh 的版本）。
+_WIN_SUFFIX = "-win"
 
 
-def _agent_sha() -> str:
+def _agent_sha(*, windows: bool = False) -> str:
     """目前 server 上派送代理程式的 sha256（給 agent 自動更新比對用）。"""
     try:
-        return hashlib.sha256(_AGENT_SH.read_bytes()).hexdigest()
+        return hashlib.sha256((_AGENT_PS1 if windows else _AGENT_SH).read_bytes()).hexdigest()
     except OSError:
         return ""
 
 
-def _server_agent_version() -> str | None:
-    """從 server 端 agent.sh 解析 AGENT_VERSION，給 UI 標示「代理版本落後」。"""
+def _server_agent_version(reported: str | None = None) -> str | None:
+    """server 端派送代理程式的版本，給 UI 標示「代理版本落後」。
+
+    `reported` 是該代理自報的版本；帶 `-win` 後綴代表它是 Windows 代理，
+    要拿 `agent.ps1` 的版本（同樣補後綴）來比，否則兩支不同的程式互比必然不相等。
+    """
+    windows = (reported or "").endswith(_WIN_SUFFIX)
+    path = _AGENT_PS1 if windows else _AGENT_SH
+    pat = r'^\$?AGENT_VERSION\s*=\s*["\']?([0-9][^"\'\s]*)'
     try:
         import re
-        m = re.search(r'^AGENT_VERSION=["\']?([0-9][^"\'\s]*)', _AGENT_SH.read_text(), re.M)
-        return m.group(1) if m else None
+        m = re.search(pat, path.read_text(), re.M)
     except OSError:
         return None
+    if not m:
+        return None
+    return m.group(1) + (_WIN_SUFFIX if windows else "")
 
 
 def _key_hash(raw: str) -> str:
@@ -141,7 +155,7 @@ def _recent_source_ips(agent: CertAgent) -> list[str]:
 def _to_read(obj: CertAgent) -> CertAgentRead:
     m = CertAgentRead.model_validate(obj, from_attributes=True)
     m.has_key = bool(obj.enroll_key_hash)
-    m.server_agent_version = _server_agent_version()
+    m.server_agent_version = _server_agent_version(obj.agent_version)
     ips = _recent_source_ips(obj)
     m.recent_source_ips = ips
     m.multi_source_recent = len(ips) > 1
@@ -185,7 +199,7 @@ async def _resolve_links(
 
 
 async def _to_reads(session: AsyncSession, agents: list[CertAgent]) -> list[CertAgentRead]:
-    """list/詳情用：_to_read + 補 device_name / source_ip_id。"""
+    """list/詳細資料用：_to_read + 補 device_name / source_ip_id。"""
     items = [_to_read(a) for a in agents]
     device_names, source_ip_ids = await _resolve_links(session, agents)
     for it, a in zip(items, agents, strict=True):
@@ -230,10 +244,29 @@ async def download_agent() -> PlainTextResponse:
     return PlainTextResponse(_AGENT_SH.read_text(), media_type="text/x-shellscript")
 
 
+@router.get("/installer.ps1", include_in_schema=False)
+async def download_installer_ps1() -> PlainTextResponse:
+    p = _AGENT_DIR / "jt-ipam-cert-agent-installer.ps1"
+    if not p.exists():
+        raise HTTPException(404, detail="installer not found")
+    # PowerShell 以 UTF-8 下載後執行；標明 charset 免得 Invoke-WebRequest 猜成 ISO-8859-1
+    return PlainTextResponse(p.read_text(), media_type="text/plain; charset=utf-8")
+
+
+@router.get("/agent.ps1", include_in_schema=False)
+async def download_agent_ps1() -> PlainTextResponse:
+    if not _AGENT_PS1.exists():
+        raise HTTPException(404, detail="agent not found")
+    return PlainTextResponse(_AGENT_PS1.read_text(), media_type="text/plain; charset=utf-8")
+
+
 @router.get("/server-version", dependencies=[Depends(require_admin)])
 async def server_agent_version_endpoint() -> dict[str, str | None]:
     """server 端目前派送代理程式的版本（管理頁顯示「最新代理版本」）。"""
-    return {"version": _server_agent_version()}
+    return {
+        "version": _server_agent_version(),
+        "windows_version": _server_agent_version(_WIN_SUFFIX),
+    }
 
 
 # ─────────────────── 唯讀現況（global-read：admin 或唯讀檢視者）───────────────────
@@ -251,7 +284,6 @@ async def agents_status(
     )).all()
     cur = {cert.name: ver for cert, ver in cur_rows}
     now = datetime.now(UTC)
-    server_ver = _server_agent_version()
     agents = (await session.execute(select(CertAgent).order_by(CertAgent.name))).scalars().all()
     device_names, source_ip_ids = await _resolve_links(session, list(agents))
 
@@ -283,7 +315,8 @@ async def agents_status(
             "last_source_ip": a.last_source_ip,
             "recent_source_ips": recent_ips,
             "multi_source_recent": len(recent_ips) > 1,
-            "agent_version": a.agent_version, "server_agent_version": server_ver,
+            "agent_version": a.agent_version,
+            "server_agent_version": _server_agent_version(a.agent_version),
             "deployments": deps,
         })
     return {"agents": out}
@@ -448,10 +481,12 @@ async def agent_check(
     await session.commit()
     sha = _agent_sha()  # server 上派送代理程式的 sha256；agent 比對不同就自我更新
     if fmt == "text":
+        # ⚠️ text 格式是純 bash 代理在解析的,新欄位一律只加進 JSON。
         lines = [f"agent_sha={sha}"]
         lines += [f"{c['cert']}\t{c['fingerprint']}\t{c['not_after']}" for c in certs]
         return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain")
-    return {"certificates": certs, "agent_sha": sha}
+    # Windows 代理走 JSON（PowerShell 內建 ConvertFrom-Json），自我更新比對 agent_ps1_sha
+    return {"certificates": certs, "agent_sha": sha, "agent_ps1_sha": _agent_sha(windows=True)}
 
 
 async def _resolve_current_version(
@@ -518,11 +553,16 @@ async def agent_bundle_raw(
     cert: Annotated[str, Query(description="憑證名稱或 id")],
     part: Annotated[str, Query(description="cert|key|chain|fullchain|combined|pkcs12")] = "fullchain",
     x_agent_key: Annotated[str | None, Header()] = None,
+    x_pfx_password: Annotated[str | None, Header()] = None,
 ) -> Response:
     """純 bash 代理用：直接回某一段的原始檔（text/plain 或 binary），代理 `curl -o` 直接寫檔免解 JSON。
 
     part：cert=葉、chain=中繼、fullchain=cert+chain、key=私鑰、combined=cert+chain+key、pkcs12=PKCS#12 keystore（jetty 用）。
     scope 限定 + 每次下載稽核（key/combined/pkcs12 視為取私鑰）。
+
+    `X-Pfx-Password`（僅 pkcs12）：帶了就回 **Windows CryptoAPI 全版本都吃**的 PKCS#12
+    （PBESv1-SHA1-3DES）。Windows 代理每次執行自產一組隨機密碼走這條，該 PFX 只存在
+    記憶體、不落地 —— 演算法選擇的理由見 `cert_service.export_cert_file`。
     """
     if part not in ("cert", "key", "chain", "fullchain", "combined", "pkcs12"):
         raise HTTPException(400, detail="invalid part")
@@ -549,7 +589,10 @@ async def agent_bundle_raw(
         elif part == "combined":
             body = (_nl(ver.cert_pem) + _nl(chain) + _nl(key_pem)).encode()
         else:  # pkcs12
-            body, media, _ = export_cert_file(ver.cert_pem, key_pem, chain, "pfx", name=obj.name)
+            body, media, _ = export_cert_file(
+                ver.cert_pem, key_pem, chain, "pfx", name=obj.name,
+                pfx_password=x_pfx_password or "", pfx_legacy=bool(x_pfx_password),
+            )
 
     await _audit_bundle(session, request, agent, obj, ver, extra=part)
     await session.commit()

@@ -45,7 +45,11 @@ export interface NovncTicket {
 // 換發一次性 ticket：用 PVE 帳密（或金庫憑證）登入 + vncproxy/termproxy。注意帶 /api/v1 首碼。
 export async function requestNovncTicket(
   addressId: string,
-  body: { username?: string; password?: string; realm?: string; credential_id?: string },
+  body: {
+    username?: string; password?: string; realm?: string; credential_id?: string;
+    /** PVE 帳號啟用兩階段驗證時的 6 位數驗證碼（issue #23） */
+    tfa_code?: string;
+  },
 ): Promise<NovncTicket> {
   const { data } = await apiClient.post<NovncTicket>(
     `/api/v1/addresses/${addressId}/novnc/ticket`, body,

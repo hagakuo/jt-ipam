@@ -67,6 +67,9 @@ class VirtualMachine(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
     legacy_vmid: Mapped[int | None] = mapped_column(BigInteger, index=True)  # Proxmox VMID
+    # 非 Proxmox 平台的外部識別碼（ESXi/vCenter 的 MoRef，例如 "vm-101"）。
+    # Proxmox 用整數 VMID、VMware 用字串 MoRef，兩者不共用同一欄。
+    external_id: Mapped[str | None] = mapped_column(String(64), index=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     node: Mapped[str | None] = mapped_column(String(128))   # 所在 PVE 節點（host）
     kind: Mapped[str | None] = mapped_column(String(8))      # "vm"（qemu）/ "ct"（lxc）
