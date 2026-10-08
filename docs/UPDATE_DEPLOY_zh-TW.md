@@ -361,6 +361,23 @@ systemctl is-active jt-ipam-sync.timer jt-ipam-backup.timer
 檢查就可以重新啟用。`curl -k` 只驗證 HTTP 功能，不代表憑證鏈受信任，現有自簽 TLS
 需要另案處理。新增整合與外部 MCP 也不應在升級時擅自開啟。
 
+### 掃描正式環境實際安裝的套件
+
+新建測試環境的掃描通過，不代表正式環境已使用相同版本。`pip install -e .` 會保留
+滿足下限的舊套件；因此必須在部署後對正式 site-packages 再掃一次。使用獨立稽核
+venv 中的 `pip-audit`，不要為了稽核而把 dev 相依裝進正式 venv：
+
+```bash
+SITE=$(/opt/jt-ipam/backend/.venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
+/path/to/audit-venv/bin/python -m pip_audit --path "$SITE"
+/opt/jt-ipam/backend/.venv/bin/python -m pip check
+```
+
+`/path/to/audit-venv` 請替換成當次建立的獨立稽核環境。若發現已知弱點，先在測試副本
+驗證修補版，再更新套件安全下限並部署；重新掃描、重啟 backend、驗證 `/readyz` 與同步。
+本次修補了 aiohttp、anyio、asyncssh、h2、hpack、multidict、pyasn1 的舊版弱點。
+套件掃描只涵蓋已收錄的公告；本機 `jt-ipam-backend` 套件需另外做原始碼檢查。
+
 ## 9. 常見問題
 
 ### SSH 連錯主機
