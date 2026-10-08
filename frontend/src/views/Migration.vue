@@ -314,7 +314,11 @@ async function saveServerConfig() {
   } finally { savingCfg.value = false; }
 }
 
-onMounted(() => { void refresh(); void loadServerConfig(); });
+// 步驟條四格橫排在手機上放不下（超出畫面），窄的時候改直式
+const narrowSteps = ref(window.innerWidth < 640);
+function onResizeSteps() { narrowSteps.value = window.innerWidth < 640; }
+onMounted(() => { void refresh(); void loadServerConfig(); window.addEventListener("resize", onResizeSteps); });
+onUnmounted(() => window.removeEventListener("resize", onResizeSteps));
 </script>
 
 <template>
@@ -335,7 +339,8 @@ onMounted(() => { void refresh(); void loadServerConfig(); });
     </n-alert>
 
     <!-- 步驟指示器 -->
-    <n-steps :current="currentStep + 1" status="process" size="small" style="margin-bottom: 20px">
+    <n-steps :current="currentStep + 1" status="process" size="small" style="margin-bottom: 20px"
+             :vertical="narrowSteps">
       <n-step :title="t('migration.step1_title')" :description="t('migration.step1_desc')" />
       <n-step :title="t('migration.step2_title')" :description="t('migration.step2_desc')" />
       <n-step :title="t('migration.step3_title')" :description="t('migration.step3_desc')" />

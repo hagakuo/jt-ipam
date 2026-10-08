@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import SessionLocal
@@ -80,6 +80,63 @@ async def upsert_scheduled_task(
         await session.rollback()
 
 
+# 不是 jt-ipam-sync 排程寫的作業：代理推上來的回報、使用者發起的探測、各自 timer 跑的資料庫更新。
+# 系統診斷用「最後一筆排程作業」判斷 jt-ipam-sync.timer 有沒有在跑，這幾種要排除，
+# 否則代理每 5 分鐘一列會把停擺的排程遮掉。
+NOT_SYNC_TIMER_KINDS = ("ip.identify", "rustdesk.sync", "isc_dhcp.sync",
+                        "oui.refresh", "recog.refresh", "geoip.refresh")
+
+# 資料庫更新（沒有對應的整合物件）在作業頁上的目標名稱；也是 upsert 的鍵，所以要固定
+REFRESH_LABELS = {
+    "oui.refresh": "Wireshark manuf",
+    "recog.refresh": "Recog",
+    "geoip.refresh": "MaxMind GeoIP",
+}
+
+
+async def record_refresh(
+    session: AsyncSession, kind: str, *, ok: bool,
+    summary: dict[str, Any] | None = None, error: str | None = None,
+) -> None:
+    """OUI／Recog／GeoIP 的排程更新：跟整合的排程同步一樣每種只留一列。絕不 raise。"""
+    await upsert_scheduled_task(session, kind=kind, target_type="system", target_id=None,
+                                target_label=REFRESH_LABELS[kind], ok=ok, summary=summary, error=error)
+
+
+async def record_finished_task(
+    session: AsyncSession, *, kind: str, ok: bool,
+    target_type: str | None = None, target_id: uuid.UUID | None = None,
+    target_label: str | None = None, actor_user_id: uuid.UUID | None = None,
+    started_at: datetime | None = None,
+    summary: dict[str, Any] | None = None, error: str | None = None,
+) -> None:
+    """在請求裡同步做完的手動操作（「立即更新」）補一列已完成的作業，作業頁才看得到誰、何時、結果。
+
+    每次手動一列（跟 spawn_task 一樣），不 upsert。絕不 raise：記不進去不可以讓操作本身失敗。
+    """
+    now = datetime.now(UTC)
+    try:
+        session.add(BackgroundTask(
+            kind=kind, trigger="manual", status="succeeded" if ok else "failed", progress=100,
+            target_type=target_type, target_id=target_id,
+            target_label=target_label or REFRESH_LABELS.get(kind), actor_user_id=actor_user_id,
+            summary=summary, error=(error or None) if not ok else None,
+            queued_at=started_at or now, started_at=started_at or now, finished_at=now,
+        ))
+        await session.commit()
+    except Exception:
+        logger.exception("record_finished_task failed for %s", kind)
+        await session.rollback()
+
+
+async def forget_scheduled_rows(session: AsyncSession, target_id: uuid.UUID) -> None:
+    """刪掉某個整合時，一併拿掉它的排程心跳列（否則作業頁永遠留著一台已經不存在的來源）。
+    由 integration_cleanup.forget_instance 呼叫，所有整合一體適用。"""
+    from sqlalchemy import delete
+    await session.execute(delete(BackgroundTask).where(
+        BackgroundTask.trigger == "scheduled", BackgroundTask.target_id == target_id))
+
+
 async def spawn_task(
     *,
     session: AsyncSession,
@@ -138,20 +195,33 @@ async def _run(task_id: uuid.UUID, runner: TaskRunner) -> None:
         await sess.commit()
         await sess.refresh(task)
 
+        kind = task.kind
+        status, summary, error = "succeeded", None, None
         try:
             summary = await runner(sess, task)
-            task.summary = summary
-            task.status = "succeeded"
-            task.progress = 100
-            task.error = None
+            await sess.commit()           # 作業自己留下的變更；這裡失敗也算作業失敗
         except Exception as exc:
-            logger.exception("background_task %s (%s) failed", task.id, task.kind)
-            task.status = "failed"
-            task.error = f"{type(exc).__name__}: {exc}"[:4096]
-        finally:
-            task.finished_at = datetime.now(UTC)
+            logger.exception("background_task %s (%s) failed", task_id, kind)
+            status, error = "failed", f"{type(exc).__name__}: {exc}"[:4096]
+            # issue #43：作業裡的資料庫錯誤（唯一鍵衝突…）會讓這個 session 停在「交易已失敗」，
+            # 不先還原的話，接下來什麼都寫不進去 —— 作業就永遠停在「執行中」
             try:
-                await sess.commit()
-            except Exception:
-                logger.exception("failed to persist task %s final state", task_id)
                 await sess.rollback()
+            except Exception:
+                logger.exception("rollback after task %s failure failed", task_id)
+
+    # 最終狀態用一個乾淨的 session 寫：作業那個 session 不管壞成什麼樣子，這筆都要寫得進去
+    await _persist_final(task_id, status=status, summary=summary, error=error)
+
+
+async def _persist_final(task_id: uuid.UUID, *, status: str, summary: dict[str, Any] | None,
+                         error: str | None) -> None:
+    values: dict[str, Any] = {"status": status, "error": error, "finished_at": datetime.now(UTC)}
+    if status == "succeeded":
+        values.update(summary=summary, progress=100)
+    try:
+        async with SessionLocal() as sess:
+            await sess.execute(update(BackgroundTask).where(BackgroundTask.id == task_id).values(**values))
+            await sess.commit()
+    except Exception:
+        logger.exception("failed to persist task %s final state", task_id)

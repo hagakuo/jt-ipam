@@ -15,6 +15,8 @@ export default defineConfigWithVueTs(
       "coverage/**",
       "playwright-report/**",
       "test-results/**",
+      // 原樣收錄的第三方函式庫（guacamole-common-js），不套我們的風格規則
+      "src/vendor/**",
     ],
   },
   pluginVue.configs["flat/essential"],

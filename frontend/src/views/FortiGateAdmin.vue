@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * FortiGate 整合（Beta）—— 與 OPNsense / pfSense 各自獨立設定。
+ * FortiGate 整合 —— 與 OPNsense / pfSense 各自獨立設定。
  * 走 FortiOS REST API 唯讀拉取（只打 GET，不會更動 FortiGate 任何設定）。
  * 「測試連線」回逐端點診斷，方便對齊不同 FortiOS 版本的欄位差異。
  */
@@ -32,7 +32,8 @@ const { t } = useI18n();
 const msg = useMessage();
 
 const COLS = ["name", "api_url", "enabled", "vdoms", "sync_flags", "last_sync_at", "last_error", "actions"];
-const { visibleKeys: vis, setVisible: setVis, reset: resetVis } = useColumnPrefs("fortigate", COLS, COLS);
+const { visibleKeys: vis, setVisible: setVis, reset: resetVis, order, setOrder, orderColumns } =
+  useColumnPrefs("fortigate", COLS, COLS);
 const picker = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "api_url", label: "API URL" },
@@ -205,7 +206,7 @@ const allCols = computed<DataTableColumns<FortiGateFirewall>>(() => autoSort([
   },
 ]));
 const cols = computed<DataTableColumns<FortiGateFirewall>>(() =>
-  allCols.value.filter((c: any) => vis.value.includes(c.key)),
+  orderColumns(allCols.value.filter((c: any) => vis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); void loadSubnetOptions(); });
@@ -217,7 +218,6 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
       <n-space align="center" :wrap-item="false">
         <n-icon :size="22"><FirewallIcon /></n-icon>
         <span>{{ t("fortigate.title") }}</span>
-        <n-tag type="warning" size="small" :bordered="false">Beta</n-tag>
       </n-space>
     </template>
 
@@ -234,7 +234,8 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         <template #icon><n-icon><PlusIcon /></n-icon></template>
         {{ t("common.create") }}
       </n-button>
-      <ColumnPicker :all="picker" :visible="vis" @update:visible="setVis" @reset="resetVis" />
+      <ColumnPicker :all="picker" :visible="vis" @update:visible="setVis" @reset="resetVis"
+                    :order="order" @update:order="setOrder" />
     </n-space>
 
     <n-data-table :columns="cols" :data="rows" :loading="loading" :bordered="false" :scroll-x="1200" />
@@ -306,7 +307,12 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
       <template v-if="diag">
         <n-space vertical :size="10">
           <div>
-            <strong>VDOM：</strong>{{ diag.vdoms.join(", ") || "—" }}
+            <strong>VDOM：</strong>
+            <template v-if="diag.vdom_scoped === false">
+              {{ t("fortigate.no_vdom") }}
+            </template>
+            <template v-else>{{ diag.vdoms.join(", ") || "—" }}</template>
+            <span v-if="diag.vdom_mode" class="diag-note"> · {{ diag.vdom_mode }}</span>
           </div>
           <n-alert :type="diag.ok_count === diag.checks.length ? 'success' : 'warning'" :bordered="false">
             {{ t("fortigate.diag_summary", { ok: diag.ok_count, total: diag.checks.length }) }}
@@ -316,7 +322,12 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
               {{ c.ok ? "OK" : "ERR" }}
             </n-tag>
             <code>{{ c.endpoint }}</code>
-            <span v-if="c.ok" class="diag-note">{{ t("fortigate.diag_rows", { n: c.rows ?? 0 }) }}</span>
+            <span v-if="c.ok" class="diag-note">
+              {{ t("fortigate.diag_rows", { n: c.rows ?? 0 }) }}
+              <!-- 帶 VDOM 讀不到、不帶就讀得到：這是「範圍設錯」而不是「端點不存在」，
+                   兩者的錯誤訊息長得一樣，不講出來現場分不出來（issue #26） -->
+              <template v-if="c.without_vdom"> · {{ t("fortigate.diag_without_vdom") }}</template>
+            </span>
             <span v-else class="diag-note">{{ c.error }}</span>
           </div>
         </n-space>

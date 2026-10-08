@@ -5,26 +5,25 @@
         <n-tag v-if="summary" size="small" round :bordered="false">{{ summary.total }}</n-tag>
       </CardTitle>
     </template>
-    <template #header-extra>
-      <n-space :size="8">
-        <n-button size="small" :loading="loading" @click="load">
-          <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("common.refresh") }}
-        </n-button>
-        <!-- 清除是刪除、不是全部忽略：忽略會留下指紋，往後同一件事都自動略過，
-             跟「清掉再重新分析一次」正好相反。所以確認文字要把後果講明白。 -->
-        <n-popconfirm v-if="canRun && (summary?.total ?? 0) > 0" @positive-click="clearAll">
-          <template #trigger>
-            <n-button size="small" :loading="clearing">
-              <template #icon><n-icon><DeleteIcon /></n-icon></template>{{ t("ai_audit.clear_all") }}
-            </n-button>
-          </template>
-          {{ t("ai_audit.clear_confirm") }}
-        </n-popconfirm>
-        <n-button v-if="canRun" size="small" type="primary" :loading="running" @click="runNow">
-          <template #icon><n-icon><TestIcon /></n-icon></template>{{ t("ai_audit.run_now") }}
-        </n-button>
-      </n-space>
-    </template>
+    <!-- 控制列：自標題列搬到內文最上方 -->
+    <n-space align="center" justify="end" style="margin-bottom: 10px">
+      <n-button size="small" :loading="loading" @click="load">
+        <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("common.refresh") }}
+      </n-button>
+      <!-- 清除是刪除、不是全部忽略：忽略會留下指紋，往後同一件事都自動略過，
+           跟「清掉再重新分析一次」正好相反。所以確認文字要把後果講明白。 -->
+      <n-popconfirm v-if="canRun && (summary?.total ?? 0) > 0" @positive-click="clearAll">
+        <template #trigger>
+          <n-button size="small" :loading="clearing">
+            <template #icon><n-icon><DeleteIcon /></n-icon></template>{{ t("ai_audit.clear_all") }}
+          </n-button>
+        </template>
+        {{ t("ai_audit.clear_confirm") }}
+      </n-popconfirm>
+      <n-button v-if="canRun" size="small" type="primary" :loading="running" @click="runNow">
+        <template #icon><n-icon><TestIcon /></n-icon></template>{{ t("ai_audit.run_now") }}
+      </n-button>
+    </n-space>
 
     <!-- 這是 LLM 的推測，不是查核過的事實。放在最上面，不是藏在角落的小字。 -->
     <n-alert type="warning" :bordered="false" :show-icon="true" style="margin-bottom:14px">
@@ -134,11 +133,18 @@
             <span v-if="f.model" class="fx-model">{{ t("ai_audit.by_model", { m: f.model }) }}</span>
             <span class="fx-date">{{ fmtDateTime(f.created_at) }}</span>
           </span>
-          <n-button v-if="canRun && f.status === 'open'" size="tiny" secondary
-                    style="justify-self:end" @click="dismiss(f.id)">
-            <template #icon><n-icon><DismissIcon /></n-icon></template>
-            {{ t("ai_audit.dismiss") }}
-          </n-button>
+          <!-- 忽略要先問過：它不是「收起這一次」，而是往後同一件事都不再報告
+               （指紋會留著，之後每次巡檢比對到就直接略過）。按錯了要到「已忽略」
+               分頁才找得回來，所以照「清除」的作法用 popconfirm 擋一次。 -->
+          <n-popconfirm v-if="canRun && f.status === 'open'" @positive-click="dismiss(f.id)">
+            <template #trigger>
+              <n-button size="tiny" secondary style="justify-self:end">
+                <template #icon><n-icon><DismissIcon /></n-icon></template>
+                {{ t("ai_audit.dismiss") }}
+              </n-button>
+            </template>
+            {{ t("ai_audit.dismiss_confirm") }}
+          </n-popconfirm>
           <n-button v-else-if="canRun" size="tiny" secondary type="primary"
                     style="justify-self:end" @click="restore(f.id)">
             <template #icon><n-icon><RestoreIcon /></n-icon></template>

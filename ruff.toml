@@ -1,0 +1,25 @@
+# Ruff config for the Python that lives OUTSIDE backend/ -- the scan agent and the
+# maintenance scripts. Those run with real privileges on customer machines, so they
+# get the same bandit ("S") security rules the backend gets; they simply had no
+# config of their own before, which meant no check ever looked at them.
+#
+# backend/ keeps its own richer config in backend/pyproject.toml (nearer config wins).
+
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["S"]
+
+[lint.per-file-ignores]
+# The scan agent shells out to probe tools on purpose. Every call passes a fixed
+# argv list with no shell, and the only interpolated values are the target address
+# and numeric limits -- that is the job, not a finding:
+#   S603 subprocess without shell=True   S606/S607 partial path / no shell
+# It also swallows probe errors on purpose (a failing probe must never stop the
+# round), and chmods its own replacement to 0755 during self-update because it is
+# an executable script:
+#   S110/S112 try-except-pass/continue   S103 permissive chmod
+# S104 is a false positive: "0.0.0.0" there is the DHCP "no relay" sentinel being
+# compared against, not a bind address.
+"agent/**" = ["S603", "S606", "S607", "S110", "S112", "S103", "S104"]

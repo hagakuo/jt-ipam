@@ -20,7 +20,7 @@ SCOPES: tuple[str, ...] = (
     "integrations",   # 整合連線設定（含加密金鑰）：LibreNMS/OPNsense/pfSense/Proxmox/Wazuh/AdGuard/掃描代理/憑證代理/SSH 憑證/Webhook
     "synced",         # 由整合拉回、可重新同步的鏡像資料：ARP/FDB/同步別名/規則/VM/hostname 觀測…
     "operational",    # 短暫／歷史資料：稽核記錄 / IP 異動 / 申請 / 背景作業 / 通知 / AI 對話
-    "oui",            # IEEE OUI 廠商庫（大、可重新產生）
+    "oui",            # 參考資料庫（大、可重新下載）：IEEE OUI 廠商庫、Recog 指紋庫
 )
 
 DEFAULT_SCOPE: tuple[str, ...] = ("settings", "users_rbac", "core", "integrations")
@@ -49,6 +49,8 @@ CATEGORY: dict[str, str] = {
     "vlan_domains": "core",
     "vlans": "core",
     "subnets": "core",
+    # 子網路內的位址範圍（集區，issue #40）：使用者自己定義的資料，跟著子網路搬
+    "ip_ranges": "core",
     "ip_addresses": "core",
     "devices": "core",
     "nat_translations": "core",
@@ -90,35 +92,85 @@ CATEGORY: dict[str, str] = {
     "wazuh_instances": "integrations",
     "opnsense_firewalls": "integrations",
     "proxmox_instances": "integrations",
+    # PVE 防火牆：整合拉回、可重新同步的鏡像資料（與 ARP/FDB/規則同性質）
+    "pve_firewall_rules": "synced",
+    "pve_firewall_state": "synced",
+    "pve_firewall_groups": "synced",
+    "pve_firewall_ipsets": "synced",
     "scan_agents": "integrations",
+    "zabbix_instances": "integrations",
+    "zabbix_hosts": "synced",
+    # 探測工作是執行紀錄（工具頁的兩分鐘就過期；IP 探測的歷次結果也屬歷史），與稽核／背景作業同歸短暫資料
+    "agent_probe_jobs": "operational",
+    # 掃描代理每一輪的耗時（負載面板的趨勢，只保留 7 天）
+    "scan_agent_cycles": "operational",
     "cert_agents": "integrations",
     "webhook_subscriptions": "integrations",
     "windows_dhcp_servers": "integrations",
+    "kea_dhcp_servers": "integrations",
+    "isc_dhcp_servers": "integrations",
+    "rustdesk_servers": "integrations",
     "fortigate_firewalls": "integrations",
+    "paloalto_firewalls": "integrations",
+    "mikrotik_routers": "integrations",
+    "ocs_servers": "integrations",
     "opnsense_alias_mappings": "integrations",
     "ssh_credentials": "integrations",
+    # 跳板主機（issue #24）：算基礎設施設定，跟著整合一起搬
+    "jump_hosts": "integrations",
     # synced（可重新拉取的鏡像）
     "librenms_devices": "synced",
+    # RustDesk 裝置清單：代理下一輪回報就重建；last_online_at（我們自己記的）搬不過去也只是要重新看到一次上線
+    "rustdesk_peers": "synced",
     "librenms_links": "synced",
     "arp_entries": "synced",
+    # 沒有納管、但看得到在用的位址：掃描代理下一輪就重建
+    "unmanaged_sightings": "synced",
     "fdb_entries": "synced",
     "device_vlans": "synced",
     "opnsense_rules": "synced",
+    "fw_rule_snapshots": "synced",
     "opnsense_synced_aliases": "synced",
     "opnsense_rule_labels": "synced",
     "pfsense_synced_aliases": "synced",
     "fortigate_policies": "synced",
     "fortigate_address_objects": "synced",
+    "paloalto_policies": "synced",
+    "paloalto_address_objects": "synced",
+    "mikrotik_rules": "synced",
+    "mikrotik_neighbors": "synced",
+    "mikrotik_address_lists": "synced",
     "wazuh_agents": "synced",
     "ip_hostname_observations": "synced",
+    "ip_hostname_reports": "synced",       # 逐來源實例的主機名稱目擊（觀測由它推導）
     "virtual_machines": "synced",
     "vm_interfaces": "synced",
     "dhcp_pool_ranges": "synced",
     "dhcp_reservations": "synced",
+    "dhcp_lease_sightings": "synced",      # 逐來源的 DHCP 租約目擊（in_dhcp_lease 由它推導）
     "esxi_instances": "integrations",
     # operational（短暫／歷史）
     "audit_logs": "operational",
+    # 變更影響預演（0187）：計畫、每次分析的快照、待辦、覆核、AI 產出 —— 歷史資料
+    "change_plans": "operational",
+    "change_plan_revisions": "operational",
+    "impact_runs": "operational",
+    "impact_evidence": "operational",
+    "impact_relations": "operational",
+    "impact_findings": "operational",
+    "impact_gaps": "operational",
+    "change_tasks": "operational",
+    "impact_reviews": "operational",
+    "impact_ai_artifacts": "operational",
+    # RustDesk 客戶端回報的連線／檔案／告警稽核：與 jt-ipam 自己的稽核記錄同性質
+    "rustdesk_audit_events": "operational",
+    # RustDesk「刪除舊註冊」的請求與結果：執行紀錄（等待中的過一天就逾時），不是要跟著搬的設定
+    "rustdesk_peer_deletes": "operational",
     "ip_change_log": "operational",
+    # 逐日存活觀測：可重建的運維資料，不隨設定搬移
+    "ip_liveness_days": "operational",
+    "ip_cooldowns": "operational",
+    "event_rules": "settings",
     "ip_requests": "operational",
     "ip_request_events": "operational",
     "ip_request_stage_approvals": "operational",
@@ -132,8 +184,10 @@ CATEGORY: dict[str, str] = {
     # DHCP 觀測是「某個時刻在那個網路上看到的事」，換一台機器就不成立
     "dhcp_sightings": "operational",
     "phpipam_migration_mapping": "operational",
-    # oui
+    # oui（參考資料庫）
     "oui_vendors": "oui",
+    # Recog 指紋庫：每一列是一整個指紋檔，合併匯入時整檔覆蓋，不會出現兩版混在一起
+    "recog_databases": "oui",
     # 中央機密（特別處理；分類僅供 validate 檢查完整性）
     ENCRYPTED_SECRETS_TABLE: "_secrets",
 }

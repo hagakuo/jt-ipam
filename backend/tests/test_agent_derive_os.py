@@ -44,3 +44,14 @@ def agent():
 ])
 def test_derive_os(agent, text, expected):
     assert agent._derive_os(text) == expected
+
+
+@pytest.mark.parametrize("insecure", [False, True])
+def test_agent_connection_to_the_server_requires_tls12(agent, monkeypatch, insecure) -> None:
+    """CodeQL #43：代理自己連回 jt-ipam 伺服器（中繼 WebSocket、回報）一律 TLS 1.2 以上，
+    略過憑證驗證（JT_IPAM_INSECURE）時也一樣。"""
+    import ssl
+    monkeypatch.setattr(agent, "SERVER", "https://ipam.example.com")
+    monkeypatch.setattr(agent, "INSECURE", insecure)
+    ctx = agent._ctx()
+    assert ctx is not None and ctx.minimum_version >= ssl.TLSVersion.TLSv1_2

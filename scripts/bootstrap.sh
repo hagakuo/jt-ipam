@@ -7,6 +7,25 @@
 #
 set -euo pipefail
 
+# Same troubleshooting pointer as scripts/jt-ipam.sh, for the failures that happen
+# before this script ever reaches it (not root, no network, clone refused).
+# Language follows the OS locale; anything that is not Chinese or Japanese gets English.
+DOCS_BASE="${JT_IPAM_DOCS_BASE:-https://jasoncheng7115.github.io/jt-ipam}"
+troubleshooting_url() {
+  case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in
+    zh_*|zh|zh-*|zh.*) echo "${DOCS_BASE}/troubleshooting.html?lang=zh-TW" ;;
+    ja_*|ja|ja-*|ja.*) echo "${DOCS_BASE}/troubleshooting.html?lang=ja" ;;
+    *)                 echo "${DOCS_BASE}/troubleshooting.html?lang=en" ;;
+  esac
+}
+on_exit_hint() {
+  local rc=$?
+  [[ $rc -eq 0 ]] && return 0
+  echo >&2
+  echo "Install troubleshooting: $(troubleshooting_url)" >&2
+}
+trap on_exit_hint EXIT
+
 REPO="${JT_IPAM_REPO:-https://github.com/jasoncheng7115/jt-ipam.git}"
 DIR="${JT_IPAM_DIR:-/opt/jt-ipam}"
 

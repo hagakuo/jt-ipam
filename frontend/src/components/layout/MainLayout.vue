@@ -8,6 +8,8 @@ import {
   NLayout,
   NLayoutHeader,
   NLayoutSider,
+  NAlert,
+  NButton,
   NLayoutContent,
   NMenu,
   NSpace,
@@ -31,19 +33,21 @@ import ChangePasswordModal from "@/components/ChangePasswordModal.vue";
 import {
   // 主導覽
   DashboardIcon, SectionsIcon, SubnetsIcon, AddressesIcon, IPChangesIcon, VlansIcon, VrfsIcon,
-  NatIcon, DevicesIcon, RacksIcon, LocationsIcon, RequestsIcon, TopologyIcon,
+  NatIcon, DevicesIcon, IdentifyIcon, MacIcon, RacksIcon, LocationsIcon, RequestsIcon, TopologyIcon,
   ToolsIcon, SettingsIcon, TasksIcon,
   // Phase 3 / Admin
   Phase3Icon, VirtualizationIcon, PhysicalIcon, PowerIcon, VpnIcon,
   AdminIcon, AuditIcon, UsersIcon, GroupsIcon, CustomFieldsIcon, CustomersIcon, AnomalyIcon,
-  AiAuditIcon, ChatHistoryIcon,
-  DnsIcon, LibreNMSIcon, FirewallIcon, WindowsDhcpIcon, WazuhIcon, ScanAgentsIcon, WebhooksIcon, LockIcon, KeyIcon,
-  MigrationIcon, ImportIcon, PluginsIcon, ExportIcon, TerminalIcon,
+  AiAuditIcon, ChatHistoryIcon, ChangeImpactIcon,
+  DnsIcon, LibreNMSIcon, FirewallIcon, WindowsDhcpIcon, KeaDhcpIcon, IscDhcpIcon, RustDeskIcon, WazuhIcon, ScanAgentsIcon, WebhooksIcon, LockIcon, KeyIcon,
+  MigrationIcon, ImportIcon, PluginsIcon, ExportIcon, TerminalIcon, TestIcon,
   // topbar / user menu
-  LogoutIcon, AccountIcon, LanguageIcon, ThemeDarkIcon, ThemeLightIcon,
+  LogoutIcon, AccountIcon, LanguageIcon, ThemeDarkIcon, ThemeLightIcon, MenuIcon,
   renderIcon,
 } from "@/icons";
 import { User as UserOutline } from "@iconoir/vue";
+import { useChangeImpact } from "@/composables/useChangeImpact";
+const impact = useChangeImpact();
 
 const { t } = useI18n();
 const route = useRoute();
@@ -178,8 +182,9 @@ watch([inSubnetContext, currentSubnetId, navSubnets], () => {
 // 「進階」裡的整合唯讀檢視頁，若該整合完全沒設定，頁面只會顯示「尚未設定 X」，
 // 等於空選項 → 依後端回報的設定狀態隱藏。初值全 true：載入完成前不要讓選單閃一下才消失。
 const intgPresence = ref<Record<string, boolean>>({
-  opnsense: true, pfsense: true, fortigate: true, dns: true, cert_agents: true, proxmox: true,
-  esxi: true,
+  opnsense: true, pfsense: true, fortigate: true, paloalto: true, mikrotik: true,
+  dns: true,
+  cert_agents: true, proxmox: true, esxi: true,
 });
 async function loadIntegrationPresence() {
   try {
@@ -206,6 +211,9 @@ const menuOptions = computed<MenuOption[]>(() => {
       ? [{ label: () => t("nav.customers"), key: "customers", icon: renderIcon(CustomersIcon) }]
       : []),
     { label: () => t("nav.requests"),    key: "requests",   icon: renderIcon(RequestsIcon) },
+    // 變更影響預演：管理員在系統設定打開才出現（預設關閉）
+    ...(impact.settings.value.enabled
+      ? [{ label: () => t("nav.change_impact"), key: "change_impact", icon: renderIcon(ChangeImpactIcon) }] : []),
     { label: () => t("nav.topology"),    key: "topology",   icon: renderIcon(TopologyIcon) },
     {
       label: () => t("nav.phase3_section"),
@@ -222,6 +230,7 @@ const menuOptions = computed<MenuOption[]>(() => {
         ...(intgPresence.value.cert_agents
           ? [{ label: () => t("nav.cert_status"), key: "adv-cert-status", icon: renderIcon(LockIcon) }] : []),
         { label: () => t("nav.connections"),     key: "adv-connections", icon: renderIcon(TerminalIcon) },
+        { label: () => t("nav.mac_history"),     key: "mac-history",     icon: renderIcon(MacIcon) },
         ...(intgPresence.value.proxmox
           ? [{ label: () => t("nav.virt_pve"), key: "virt", icon: renderIcon(VirtualizationIcon) }] : []),
         ...(intgPresence.value.esxi
@@ -232,10 +241,18 @@ const menuOptions = computed<MenuOption[]>(() => {
           ? [{ label: () => t("nav.pfsense_fw"), key: "pfsense_fw", icon: renderIcon(FirewallIcon) }] : []),
         ...(intgPresence.value.fortigate
           ? [{ label: () => t("nav.fortigate_fw"), key: "fortigate_fw", icon: renderIcon(FirewallIcon) }] : []),
+        ...(intgPresence.value.paloalto
+          ? [{ label: () => t("nav.paloalto_fw"), key: "paloalto_fw", icon: renderIcon(FirewallIcon) }] : []),
+        ...(intgPresence.value.mikrotik
+          ? [{ label: () => t("nav.mikrotik_fw"), key: "mikrotik_fw", icon: renderIcon(FirewallIcon) }] : []),
         { label: () => t("nav.nat"),            key: "nat",         icon: renderIcon(NatIcon) },
         { label: () => t("nav.cabling"),        key: "cabling",     icon: renderIcon(PhysicalIcon) },
         { label: () => t("nav.power"),          key: "power",       icon: renderIcon(PowerIcon) },
         { label: () => t("nav.vpn_tunnels"),    key: "vpn-tunnels", icon: renderIcon(VpnIcon) },
+        // 匯入會寫入子網路、後端六支端點都是 admin → 非 admin 不顯示，
+        // 否則點進去只會拿到 403
+        ...(me.value?.is_admin
+          ? [{ label: () => t("nav.import"), key: "import", icon: renderIcon(ImportIcon) }] : []),
       ],
     },
     { label: () => t("nav.tools"),       key: "tools",      icon: renderIcon(ToolsIcon) },
@@ -255,8 +272,11 @@ const menuOptions = computed<MenuOption[]>(() => {
           { label: () => t("nav.permissions"),   key: "permissions",    icon: renderIcon(AdminIcon) },
           { label: () => t("nav.custom_fields"), key: "custom_fields",  icon: renderIcon(CustomFieldsIcon) },
           { label: () => t("nav.oui_admin"),     key: "oui_admin",      icon: renderIcon(DevicesIcon) },
+          { label: () => t("nav.recog_admin"),   key: "recog_admin",    icon: renderIcon(IdentifyIcon) },
           { label: () => t("nav.hostname_precedence"), key: "hostname_precedence", icon: renderIcon(AddressesIcon) },
           { label: () => t("nav.anomaly"),       key: "anomaly",        icon: renderIcon(AnomalyIcon) },
+          { label: () => t("nav.fw_rule_changes"), key: "fw_rule_changes", icon: renderIcon(FirewallIcon) },
+          { label: () => t("nav.attack_surface"), key: "attack_surface", icon: renderIcon(FirewallIcon) },
           // 排在異常偵測後面：兩者都是「找問題」，但一個是量到的事實、一個是模型的
           // 推測，刻意分成兩頁而不是合併 —— 混在一起會分不出哪些結論可以直接相信。
           // LLM 沒啟用就整個藏起來（跟 AI 對話小工具同一個判斷）。
@@ -269,23 +289,31 @@ const menuOptions = computed<MenuOption[]>(() => {
           { label: () => t("nav.firewall_admin"), key: "firewall_admin", icon: renderIcon(FirewallIcon) },
           { label: () => t("nav.pfsense"),        key: "pfsense",        icon: renderIcon(FirewallIcon) },
           { label: () => t("nav.fortigate"),      key: "fortigate",      icon: renderIcon(FirewallIcon) },
+          { label: () => t("nav.paloalto"),       key: "paloalto",       icon: renderIcon(FirewallIcon) },
+          { label: () => t("nav.mikrotik"),       key: "mikrotik",       icon: renderIcon(FirewallIcon) },
           { label: () => t("nav.windows_dhcp"),  key: "windows_dhcp",   icon: renderIcon(WindowsDhcpIcon) },
+          { label: () => t("nav.kea_dhcp"),      key: "kea_dhcp",       icon: renderIcon(KeaDhcpIcon) },
+          { label: () => t("nav.isc_dhcp"),      key: "isc_dhcp",       icon: renderIcon(IscDhcpIcon) },
+          { label: () => t("nav.rustdesk"),      key: "rustdesk",       icon: renderIcon(RustDeskIcon) },
           { label: () => t("nav.virt_admin"),    key: "virt_admin",     icon: renderIcon(VirtualizationIcon) },
           { label: () => t("nav.esxi_admin"),    key: "esxi_admin",     icon: renderIcon(VirtualizationIcon) },
           { label: () => t("nav.wazuh"),         key: "wazuh",          icon: renderIcon(WazuhIcon) },
+          { label: () => t("nav.zabbix"),        key: "zabbix",         icon: renderIcon(LibreNMSIcon) },
+          { label: () => t("nav.ocs"),            key: "ocs",            icon: renderIcon(DevicesIcon) },
+          { label: () => t("nav.event_rules"),  key: "event_rules",    icon: renderIcon(WebhooksIcon) },
           { label: () => t("nav.graylog_dsv"),   key: "graylog_dsv",    icon: renderIcon(ExportIcon) },
           { label: () => t("nav.scan_agents"),   key: "scan_agents",    icon: renderIcon(ScanAgentsIcon) },
           { label: () => t("nav.certificates"),  key: "certificates",   icon: renderIcon(LockIcon) },
           { label: () => t("nav.webhooks"),      key: "webhooks",       icon: renderIcon(WebhooksIcon) },
           { label: () => t("nav.migration"),     key: "migration",      icon: renderIcon(MigrationIcon) },
           { label: () => t("nav.system_transfer"), key: "system_transfer", icon: renderIcon(ExportIcon) },
-          { label: () => t("nav.import"),        key: "import",         icon: renderIcon(ImportIcon) },
           { label: () => t("nav.plugins"),       key: "plugins",        icon: renderIcon(PluginsIcon) },
           { label: () => "LLM / AI",             key: "llm_settings",   icon: renderIcon(SettingsIcon) },
           { label: () => t("nav.system_settings"), key: "system_settings", icon: renderIcon(SettingsIcon) },
           { label: () => t("nav.notification_channels"), key: "notification_channels", icon: renderIcon(SettingsIcon) },
           { label: () => t("nav.ip_request_policy"), key: "ip_request_policy", icon: renderIcon(RequestsIcon) },
           { label: () => t("nav.version"),       key: "version",        icon: renderIcon(AdminIcon) },
+          { label: () => t("nav.doctor"),        key: "doctor",         icon: renderIcon(TestIcon) },
           { label: () => t("nav.system_logs"),   key: "system_logs",    icon: renderIcon(AuditIcon) },
           { label: () => t("nav.chat_history"),  key: "chat_history",   icon: renderIcon(ChatHistoryIcon) },
         ],
@@ -310,6 +338,7 @@ const menuOptions = computed<MenuOption[]>(() => {
 const localeOptions = [
   { label: "繁體中文", value: "zh-TW" },
   { label: "English",  value: "en-US" },
+  { label: "日本語",   value: "ja-JP" },
 ];
 
 // 進入（或從別處點進）某頁時，自動展開其所屬的左側群組（管理 / 進階 / 子網路群組），
@@ -347,7 +376,7 @@ const currentLocaleLabel = computed(() => localeOptions.find((o) => o.value === 
 const currentThemeLabel = computed(() => themeOptions.value.find((o) => o.value === theme.value)?.label ?? "");
 const currentThemeIcon = computed(() => (theme.value === "light" ? ThemeLightIcon : ThemeDarkIcon));
 // n-dropdown @select 會帶 (key, option)，需包一層只取 key（避免把 option 當成 setLocale 的第二參數）
-function pickLocale(k: string | number) { ui.setLocale(String(k) as "zh-TW" | "en-US"); }
+function pickLocale(k: string | number) { ui.setLocale(String(k) as "zh-TW" | "en-US" | "ja-JP"); }
 function pickTheme(k: string | number) { ui.setTheme(String(k) as "light" | "dark" | "auto"); }
 
 const userMenuOptions = computed(() => [
@@ -366,6 +395,8 @@ const userMenuOptions = computed(() => [
 const pwModalShow = ref(false);
 
 function handleMenu(key: string) {
+  // 手機版：點選功能後側欄收回（群組節點只是展開，不收）
+  if (isMobile.value && !key.startsWith("subnetgrp:")) siderCollapsed.value = true;
   if (key === "subnets-all" || key === "subnets") {
     router.push({ name: "subnets" }).catch(() => {});
     return;
@@ -405,6 +436,18 @@ watch(winW, (w, prev) => {
   if (w < NARROW_PX && prev >= NARROW_PX) siderCollapsed.value = true;
   else if (w >= NARROW_PX && prev < NARROW_PX) siderCollapsed.value = false;
 });
+// 手機：側欄不是縮成一排圖示，而是整個收起（寬度 0），左上角的按鈕叫出來、疊在內容上，
+// 點選功能或點旁邊暗掉的地方就收回（使用者要求，2026-09-27）
+const MOBILE_PX = 768;
+const isMobile = computed(() => winW.value < MOBILE_PX);
+watch(isMobile, (m) => { if (m) siderCollapsed.value = true; });
+// 手機側欄打開時鎖住後面的頁面：不鎖的話，在選單上滑動會「穿過去」捲動後面的頁面（使用者回報）
+watch([isMobile, siderCollapsed], ([m, c]) => {
+  document.documentElement.classList.toggle("sider-open", m && !c);
+}, { immediate: true });
+function onEsc(e: KeyboardEvent) {
+  if (e.key === "Escape" && isMobile.value && !siderCollapsed.value) siderCollapsed.value = true;
+}
 // 選單往上捲時，在固定的 logo 欄下方加陰影，與捲動內容分隔
 const menuScrolled = ref(false);
 let siderScrollEl: HTMLElement | null = null;
@@ -413,7 +456,9 @@ function onSiderScroll() {
 }
 onMounted(() => {
   void loadIntegrationPresence();
+  void impact.load();
   window.addEventListener("resize", onResize);
+  window.addEventListener("keydown", onEsc);
   if (winW.value < NARROW_PX) siderCollapsed.value = true;
   void nextTick(() => {
     siderScrollEl = document.querySelector(".app-sider .n-layout-sider-scroll-container");
@@ -425,7 +470,9 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
+  window.removeEventListener("keydown", onEsc);
   if (siderScrollEl) siderScrollEl.removeEventListener("scroll", onSiderScroll);
+  document.documentElement.classList.remove("sider-open");
 });
 
 // ── 左側選單可拖動改變寬度 ──
@@ -461,18 +508,21 @@ function startDrag(e: MouseEvent) {
 </script>
 
 <template>
-  <n-layout has-sider style="height: 100vh">
+  <n-layout has-sider class="app-root">
+    <!-- 手機：側欄打開時，後面暗掉；點一下收回 -->
+    <div v-if="isMobile && !siderCollapsed" class="sider-mask" @click="siderCollapsed = true" />
     <n-layout-sider
       class="app-sider"
+      :class="{ 'app-sider--mobile': isMobile }"
       bordered
       collapse-mode="width"
-      :collapsed-width="64"
-      :width="siderWidth"
-      show-trigger
+      :collapsed-width="isMobile ? 0 : 64"
+      :width="isMobile ? Math.min(siderWidth, 300) : siderWidth"
+      :show-trigger="!isMobile"
       :collapsed="siderCollapsed"
       @update:collapsed="(v) => { siderCollapsed = v; }"
     >
-      <div v-if="!siderCollapsed" class="sider-resizer" @mousedown="startDrag"></div>
+      <div v-if="!siderCollapsed && !isMobile" class="sider-resizer" @mousedown="startDrag"></div>
       <div class="brand" :class="{ 'brand-collapsed': siderCollapsed, 'brand-scrolled': menuScrolled }">
         <!-- 收折：只顯示方塊 icon；展開：方塊 + jt-ipam wordmark(currentColor 跟主題色) -->
         <svg v-if="siderCollapsed"
@@ -529,7 +579,7 @@ function startDrag(e: MouseEvent) {
         :value="menuValue"
         :expanded-keys="expandedKeys"
         :collapsed="siderCollapsed"
-        :collapsed-width="64"
+        :collapsed-width="isMobile ? 0 : 64"
         :collapsed-icon-size="22"
         :indent="12"
         @update:value="handleMenu"
@@ -539,8 +589,15 @@ function startDrag(e: MouseEvent) {
     <n-layout>
       <n-layout-header bordered class="topbar">
         <n-space align="center" justify="space-between" :wrap="false" style="width: 100%; min-width: 0">
-          <global-search v-if="me" />
-          <span v-else />
+          <n-space align="center" :size="6" :wrap="false" style="min-width: 0">
+            <!-- 手機：側欄整個收起，從這裡叫出來 -->
+            <button v-if="isMobile" type="button" class="topbar-ctl mobile-menu-btn"
+                    :aria-label="t('nav.open_menu')" :title="t('nav.open_menu')"
+                    @click="siderCollapsed = !siderCollapsed">
+              <n-icon :size="22" :component="MenuIcon" />
+            </button>
+            <global-search v-if="me" />
+          </n-space>
           <n-space class="topbar-ctls" align="center" :size="4" :wrap="false">
             <!-- 語言：寬螢幕顯示名稱，窄螢幕只剩 icon -->
             <n-dropdown :options="localeMenuOptions" trigger="click" @select="pickLocale">
@@ -579,7 +636,17 @@ function startDrag(e: MouseEvent) {
           </n-space>
         </n-space>
       </n-layout-header>
-      <n-layout-content content-style="padding: 16px;">
+      <!-- 底部多留 88px：AI 助手浮動按鈕固定在右下角（bottom 24 + 高 56），
+           不留的話清單最後一列右邊的操作鈕（刪除）捲到底也還壓在它底下、點不到。 -->
+      <n-layout-content content-style="padding: 16px 16px 88px;">
+        <!-- 資料庫結構落後於程式時，讀完整欄位的頁面會 500（清單空白、儀表板卻正常）。
+             系統啟動時就知道了，所以要在使用者踩到之前講，而不是讓人一頁一頁試。 -->
+        <n-alert v-if="me?.schema_behind" type="error" :bordered="false"
+                 style="margin-bottom: 12px" :title="t('doctor.schema_behind_title')">
+          {{ t("doctor.schema_behind_body") }}
+          <n-button size="tiny" type="error" ghost style="margin-left: 8px"
+                    @click="handleMenu('doctor')">{{ t("nav.doctor") }}</n-button>
+        </n-alert>
         <router-view />
       </n-layout-content>
     </n-layout>
@@ -589,6 +656,13 @@ function startDrag(e: MouseEvent) {
 </template>
 
 <style scoped>
+/* 高度用 dvh（隨手機瀏覽器網址列／工具列伸縮的「目前可見高度」）。100vh 在 iOS 是工具列收起時的
+ * 最大高度，比實際看得到的高：側欄底部被工具列蓋住、選單本身捲不動，手勢就傳給整頁 ——
+ * 使用者看到的是「捲到後面的頁面」「往上捲放開又彈回去」。不支援 dvh 的瀏覽器退回 100vh。 */
+.app-root {
+  height: 100vh;
+  height: 100dvh;
+}
 /* 側欄 logo 欄與頂端列共用同一個高度：兩者各自由內容撐高的話，底邊會差幾 px，
    在左上角形成一道對不齊的缺口（實機回報）。高度綁在同一個變數上就不會再飄。 */
 .brand {
@@ -704,6 +778,18 @@ function startDrag(e: MouseEvent) {
   margin-left: 16px;
 }
 .app-sider :deep(.n-submenu-children > .n-menu-item),
+/* 收起時把側邊欄的捲軸藏起來。
+   macOS 若設成「總是顯示捲軸」，那種捲軸會**佔掉版面寬度**，64px 的窄欄被吃掉十幾 px，
+   icon 就會看起來偏左（覆蓋式捲軸的機器上看不出來，所以很容易漏掉）。
+   收起時只剩一排 icon，沒有捲軸也能用滾輪捲動。 */
+.app-sider.n-layout-sider--collapsed :deep(.n-layout-sider-scroll-container) {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.app-sider.n-layout-sider--collapsed :deep(.n-layout-sider-scroll-container)::-webkit-scrollbar {
+  display: none;
+}
+
 .app-sider :deep(.n-submenu-children > .n-submenu),
 .app-sider :deep(.n-submenu-children > .n-submenu > .n-menu-item) { position: relative; }
 /* 垂直主幹：
@@ -743,5 +829,35 @@ function startDrag(e: MouseEvent) {
   border-top: 1px dashed rgba(150, 150, 150, 0.5);
   pointer-events: none;
   z-index: 1;
+}
+
+/* 手機：側欄疊在內容上（fixed，不佔版面），收起時寬度 0 —— 內容用滿整個螢幕寬 */
+.app-sider--mobile {
+  position: fixed !important;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  height: 100vh;
+  height: 100dvh;
+  z-index: 2001;
+}
+/* 選單捲到頂／底時不要把捲動傳給後面的頁面 */
+.app-sider--mobile :deep(.n-layout-sider-scroll-container) {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.app-sider--mobile.n-layout-sider--collapsed {
+  border-right: none;
+}
+.sider-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 2000;
+  touch-action: none;       /* 在暗掉的地方滑動也不捲後面的頁面 */
+}
+.mobile-menu-btn {
+  flex: none;
+  padding: 4px 6px;
 }
 </style>

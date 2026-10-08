@@ -18,27 +18,31 @@ import { useCustomers } from "@/composables/useCustomers";
 import type { IPAddress } from "@/types";
 import { listDevices } from "@/api/basic";
 import { listFirewalls, type OPNsenseFirewall } from "@/api/integrations";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
+import { useFocusRow } from "@/composables/useFocusRow";
+import FocusRowBanner from "@/components/FocusRowBanner.vue";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 const { t } = useI18n();
 
 const router = useRouter();
-const { visibleKeys, setVisible, reset } = useColumnPrefs(
+const route = useRoute();
+const { visibleKeys, setVisible, reset, order, setOrder, orderColumns } = useColumnPrefs(
   "nat",
   ["name", "type", "protocol", "src_ip_id", "src_interface", "src_port", "dst_ip_id", "dst_port", "device_id", "description", "source_label", "actions"],
   ["name", "type", "protocol", "src_ip_id", "src_interface", "src_port", "dst_ip_id", "dst_port", "device_id", "description", "source_label", "actions"],
 );
+// 選單順序與表格欄位一致：拖拉排序以選單上看到的順序為準
 const columnPickerItems = computed(() => [
   { key: "name", label: t("cols.name") },
   { key: "type", label: t("cols.type") },
   { key: "protocol", label: t("cols.protocol") },
   { key: "src_ip_id", label: t("cols.src_ip") },
-  { key: "dst_ip_id", label: t("cols.dst_ip") },
-  { key: "src_port", label: t("cols.src_port") },
-  { key: "dst_port", label: t("cols.dst_port") },
   { key: "src_interface", label: t("cols.src_iface") },
+  { key: "src_port", label: t("cols.src_port") },
+  { key: "dst_ip_id", label: t("cols.dst_ip") },
+  { key: "dst_port", label: t("cols.dst_port") },
   { key: "device_id", label: t("cols.device") },
   { key: "description", label: t("cols.description") },
   { key: "source_label", label: t("cols.source") },
@@ -53,6 +57,10 @@ const msg = useMessage();
 const rows = ref<NAT[]>([]);
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
 const { query: filterQ, filtered: filteredRows } = useTableQuickFilter(rows);
+// IP 詳細頁點進來：?ip=<IP id>&focus=<NAT id>。清單一次只載 200 筆，所以帶著 ip 篩選去載，
+// 那一筆一定在；按「顯示全部」再回到一般清單。
+const natFocus = useFocusRow(rows, (r, k) => r.id === k);
+const shownRows = computed(() => natFocus.apply(filteredRows.value));
 import { useTablePagination } from "@/composables/useTablePagination";
 const pg = useTablePagination();
 const checkedKeys = ref<DataTableRowKey[]>([]);
@@ -115,6 +123,8 @@ const sourceKindOpts = computed(() => [
   { label: "OPNsense", value: "opnsense" },
   { label: "pfSense",  value: "pfsense" },
   { label: "FortiGate", value: "fortigate" },
+  { label: "Palo Alto", value: "paloalto" },
+  { label: "MikroTik", value: "mikrotik" },
   { label: "phpIPAM",  value: "phpipam" },
   { label: t("cols.manual"),     value: "manual" },
 ]);
@@ -252,7 +262,10 @@ async function loadOpts() {
 async function refresh() {
   loading.value = true;
   try {
+    const focusIp = natFocus.focus.value != null && typeof route.query.ip === "string"
+      ? route.query.ip : undefined;
     rows.value = (await listNATs({
+      ipId: focusIp,
       deviceId: filterDeviceId.value || undefined,
       sourceKind: sourceKindFilter.value.length ? sourceKindFilter.value : undefined,
       sourceFirewallId: (sourceKindFilter.value.length === 1 && sourceKindFilter.value[0] === "opnsense")
@@ -266,7 +279,12 @@ async function refresh() {
 
 import { watch } from "vue";
 import { apiErrMsg } from "@/api/client";
-watch([filterDeviceId, sourceKindFilter, sourceFwFilter], () => { void refresh(); });
+watch([filterDeviceId, sourceKindFilter, sourceFwFilter], () => {
+  if (natFocus.focus.value != null) natFocus.clear();   // 下面那個 watch 會重新載入
+  else void refresh();
+});
+// 「顯示全部」：清掉 focus 之後重新載入一般清單（focus 時是依 IP 篩選載入的）
+watch(() => natFocus.focus.value, (v, old) => { if (v == null && old != null) void refresh(); });
 function openCreate() {
   viewOnly.value = false;
   editing.value = null;
@@ -369,6 +387,8 @@ const allCols = computed<DataTableColumns<NAT>>(() => autoSort([
       const type = r.source_kind === "opnsense" ? "info"
                  : r.source_kind === "pfsense"  ? "success"
                  : r.source_kind === "fortigate" ? "error"
+                 : r.source_kind === "paloalto" ? "primary"
+                 : r.source_kind === "mikrotik" ? "info"
                  : r.source_kind === "phpipam"  ? "warning"
                  : "default";
       return h(NTag, { size: "small", type, bordered: false }, () => r.source_label);
@@ -387,7 +407,7 @@ const allCols = computed<DataTableColumns<NAT>>(() => autoSort([
 ]));
 
 const cols = computed<DataTableColumns<NAT>>(() =>
-  allCols.value.filter((c: any) => c.type === "selection" || visibleKeys.value.includes(c.key)),
+  orderColumns(allCols.value.filter((c: any) => c.type === "selection" || visibleKeys.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); void loadOpts(); });
@@ -413,7 +433,8 @@ onMounted(() => { void refresh(); void loadOpts(); });
         {{ t("common.create") }}
       </n-button>
       <ColumnPicker :all="columnPickerItems" :visible="visibleKeys"
-                    @update:visible="setVisible" @reset="reset" />
+                    @update:visible="setVisible" @reset="reset"
+                    :order="order" @update:order="setOrder" />
       <ExportButton :columns="cols" :rows="rows" filename="nat" :title="t('nav.nat')" />
       <n-select
         v-model:value="filterDeviceId"
@@ -452,9 +473,10 @@ onMounted(() => { void refresh(); void loadOpts(); });
       <n-button size="small" @click="checkedKeys = []">{{ t("common.clear_selection") }}</n-button>
     </n-space>
 
+    <FocusRowBanner :ctl="natFocus" :loading="loading" />
     <n-data-table
       :columns="cols"
-      :data="filteredRows"
+      :data="shownRows"
       :loading="loading"
       :bordered="false"
       :scroll-x="1656"

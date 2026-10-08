@@ -44,5 +44,10 @@ def enforce_method_scope(scopes: Iterable[str] | None, method: str) -> None:
     給 REST（含 phpIPAM 相容層）用；MCP 走 JSON-RPC（永遠是 POST），
     改由 `token_is_readonly()` 決定 readonly 模式、擋下異動類工具。
     """
-    if token_is_readonly(scopes) and method.upper() not in SAFE_METHODS:
+    values = set(scopes or ())
+    if values - ALLOWED_SCOPES:
+        raise HTTPException(
+            status_code=403, detail="Unsupported API token scope; recreate this token",
+        )
+    if token_is_readonly(values) and method.upper() not in SAFE_METHODS:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_DENIED)

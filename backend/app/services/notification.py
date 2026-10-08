@@ -3,7 +3,7 @@
 OWASP 對應：
 - A02：Webhook secret 用 AES-GCM 加密儲存（aad 綁 webhook id）
 - A09：每次 Webhook 出站結果寫 audit
-- A10：對外請求一律走 safe_http；URL 經白名單驗證
+- A10：對外請求一律走 safe_http；URL 經允許清單驗證
 """
 
 from __future__ import annotations
@@ -146,6 +146,11 @@ async def deliver_event(
 
     每個目標獨立發送與計入 failure 計數；不會因為某個目標掛掉影響其他。
     """
+    # 事件規則（事件 → 條件 → 動作）先跑：它可能只是通知管理員，不需要任何 webhook。
+    # 規則的錯誤不會外溢（見 services/event_rules），所以這裡不另外包 try。
+    from app.services.event_rules import run_rules
+    await run_rules(session, event=event, payload=payload)
+
     rows = (
         await session.execute(
             select(WebhookSubscription).where(WebhookSubscription.enabled.is_(True))
@@ -155,6 +160,21 @@ async def deliver_event(
     if not rows:
         return
 
+    for wh in rows:
+        events_set = set(wh.events or [])
+        if "*" not in events_set and event not in events_set:
+            continue
+        await _send_to_webhook(wh, event=event, payload=payload)
+
+
+async def _send_to_webhook(
+    wh: WebhookSubscription, *, event: str, payload: dict[str, Any],
+) -> None:
+    """送一筆到單一 webhook 訂閱：簽章、SSRF 檢查、成敗計數。
+
+    抽成函式是為了讓「一般分派」與「事件規則指定的目標」走完全同一條路 ——
+    否則規則那條路很容易變成繞過簽章或 SSRF 檢查的後門。
+    """
     body_obj = {
         "event": event,
         "data": payload,
@@ -163,48 +183,64 @@ async def deliver_event(
     body_bytes = json.dumps(body_obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     ts = int(time.time())
 
-    for wh in rows:
-        events_set = set(wh.events or [])
-        if "*" not in events_set and event not in events_set:
-            continue
-        try:
-            secret = decrypt_webhook_secret(wh)
-        except Exception:
-            wh.last_error = "secret decryption failed"
-            wh.failure_count += 1
-            wh.last_attempt_at = datetime.now(UTC)
-            continue
-
-        signature = _sign(secret, body_bytes, ts)
-        headers = {
-            "Content-Type": "application/json",
-            "X-Jt-Signature": f"v1={signature}",
-            "X-Jt-Timestamp": str(ts),
-            "X-Jt-Event": event,
-            "User-Agent": "jt-ipam-webhook/0.3",
-        }
-        if wh.headers:
-            for k, v in wh.headers.items():
-                if isinstance(k, str) and isinstance(v, str):
-                    headers[k] = v
-
+    try:
+        secret = decrypt_webhook_secret(wh)
+    except Exception:
+        wh.last_error = "secret decryption failed"
+        wh.failure_count += 1
         wh.last_attempt_at = datetime.now(UTC)
-        try:
-            resp = await safe_request("POST", wh.target_url, headers=headers, content=body_bytes,
-                                      timeout=10.0)
-        except UnsafeOutboundURL as exc:
-            wh.last_error = f"blocked by SSRF guard: {exc}"
-            wh.failure_count += 1
-            continue
-        except (httpx.HTTPError, TimeoutError) as exc:
-            wh.last_error = f"transport error: {exc.__class__.__name__}"
-            wh.failure_count += 1
-            continue
+        return
 
-        if 200 <= resp.status_code < 300:
-            wh.last_success_at = datetime.now(UTC)
-            wh.last_error = None
-            wh.failure_count = 0
-        else:
-            wh.last_error = f"HTTP {resp.status_code}"
-            wh.failure_count += 1
+    signature = _sign(secret, body_bytes, ts)
+    headers = {
+        "Content-Type": "application/json",
+        "X-Jt-Signature": f"v1={signature}",
+        "X-Jt-Timestamp": str(ts),
+        "X-Jt-Event": event,
+        "User-Agent": "jt-ipam-webhook/0.3",
+    }
+    if wh.headers:
+        for k, v in wh.headers.items():
+            if isinstance(k, str) and isinstance(v, str):
+                headers[k] = v
+
+    wh.last_attempt_at = datetime.now(UTC)
+    try:
+        resp = await safe_request("POST", wh.target_url, headers=headers, content=body_bytes,
+                                  timeout=10.0)
+    except UnsafeOutboundURL as exc:
+        wh.last_error = f"blocked by SSRF guard: {exc}"
+        wh.failure_count += 1
+        return
+    except (httpx.HTTPError, TimeoutError) as exc:
+        wh.last_error = f"transport error: {exc.__class__.__name__}"
+        wh.failure_count += 1
+        return
+
+    if 200 <= resp.status_code < 300:
+        wh.last_success_at = datetime.now(UTC)
+        wh.last_error = None
+        wh.failure_count = 0
+    else:
+        wh.last_error = f"HTTP {resp.status_code}"
+        wh.failure_count += 1
+
+
+async def deliver_event_to(
+    session: AsyncSession, *, subscription_id: str, event: str, payload: dict[str, Any],
+) -> bool:
+    """把事件送到**指定的** webhook 訂閱（事件規則的 webhook 動作用）。
+
+    沿用一般分派的簽章與 SSRF 檢查 —— 規則不是繞過那些防護的後門。
+    """
+    import uuid as _uuid
+
+    try:
+        sub_uuid = _uuid.UUID(str(subscription_id))
+    except (ValueError, AttributeError):
+        return False
+    wh = await session.get(WebhookSubscription, sub_uuid)
+    if wh is None or not wh.enabled:
+        return False
+    await _send_to_webhook(wh, event=event, payload=payload)
+    return True

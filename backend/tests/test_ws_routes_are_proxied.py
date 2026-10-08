@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.route_walk import iter_routes
+
 REPO = Path(__file__).resolve().parents[2]
 NGINX_CONFS = [
     REPO / "deploy" / "nginx" / "jt-ipam.conf",
@@ -26,13 +28,12 @@ _ROUTE_RE = re.compile(r"/addresses/\{[^}]+\}/([a-z0-9_]+)/ws$")
 
 
 def _ws_protocols_in_app() -> set[str]:
-    from starlette.routing import WebSocketRoute
-
     from app.main import app
+    from starlette.routing import WebSocketRoute
     out = set()
-    for r in app.routes:
+    for path, r in iter_routes(app):
         if isinstance(r, WebSocketRoute) or r.__class__.__name__ == "APIWebSocketRoute":
-            m = _ROUTE_RE.search(getattr(r, "path", ""))
+            m = _ROUTE_RE.search(path)
             if m:
                 out.add(m.group(1))
     return out

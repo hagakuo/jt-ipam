@@ -48,11 +48,11 @@ async def test_sync_dhcp_ranges_parses_multi_pool(db_session, admin_user, monkey
     async def fake_get(_fw, path, timeout=8.0):  # type: ignore[no-untyped-def]
         if path == "/api/kea/dhcpv4/searchSubnet":
             return {"rows": [
-                {"subnet": "192.168.1.0/24", "pools": "192.168.1.150-192.168.1.200"},
+                {"subnet": "198.51.100.0/24", "pools": "198.51.100.150-198.51.100.200"},
                 {"subnet": "10.0.0.0/24", "pools": "10.0.0.10-10.0.0.50\n10.0.0.100-10.0.0.150"},
                 {"subnet": "172.16.0.0/24", "pools": ""},  # 無 pool → 跳過
             ]}
-        raise fw.OPNsenseError("not found")  # v6 endpoint
+        raise fw.OPNsenseError(f"OPNsense GET {path}: 404 not found")  # 沒有 v6 端點（真實錯誤訊息帶狀態碼）
 
     monkeypatch.setattr(fw, "_api_get", fake_get)
     res = await fw.sync_dhcp_ranges(db_session, f)
@@ -61,7 +61,7 @@ async def test_sync_dhcp_ranges_parses_multi_pool(db_session, admin_user, monkey
     pools = await _ranges_of(db_session, "opnsense", f.id)
     assert ("10.0.0.0/24", "10.0.0.10", "10.0.0.50") in pools
     assert ("10.0.0.0/24", "10.0.0.100", "10.0.0.150") in pools
-    assert ("192.168.1.0/24", "192.168.1.150", "192.168.1.200") in pools
+    assert ("198.51.100.0/24", "198.51.100.150", "198.51.100.200") in pools
 
 
 @pytest.mark.anyio
@@ -71,8 +71,8 @@ async def test_sync_dhcp_ranges_mirror_replaces(db_session, admin_user, monkeypa
 
     async def fake_get(_fw, path, timeout=8.0):  # type: ignore[no-untyped-def]
         if path == "/api/kea/dhcpv4/searchSubnet":
-            return {"rows": [{"subnet": "192.168.1.0/24", "pools": "192.168.1.150-192.168.1.200"}]}
-        raise fw.OPNsenseError("nf")
+            return {"rows": [{"subnet": "198.51.100.0/24", "pools": "198.51.100.150-198.51.100.200"}]}
+        raise fw.OPNsenseError(f"OPNsense GET {path}: 404 nf")
 
     monkeypatch.setattr(fw, "_api_get", fake_get)
     await fw.sync_dhcp_ranges(db_session, f)
@@ -119,8 +119,8 @@ async def test_pfsense_ranges_do_not_touch_other_sources(db_session, admin_user,
 
     async def opn_get(_fw, path, timeout=8.0):  # type: ignore[no-untyped-def]
         if path == "/api/kea/dhcpv4/searchSubnet":
-            return {"rows": [{"subnet": "192.168.1.0/24", "pools": "192.168.1.150-192.168.1.200"}]}
-        raise fw.OPNsenseError("nf")
+            return {"rows": [{"subnet": "198.51.100.0/24", "pools": "198.51.100.150-198.51.100.200"}]}
+        raise fw.OPNsenseError(f"OPNsense GET {path}: 404 nf")
 
     monkeypatch.setattr(fw, "_api_get", opn_get)
     await fw.sync_dhcp_ranges(db_session, o)
@@ -235,3 +235,23 @@ async def test_windows_dhcp_leases_mark_existing_only(db_session, admin_user, mo
     assert ipa.in_dhcp_lease is True
     assert ipa.hostname == "pc-a"          # FQDN 取短名
     assert str(ipa.mac).lower() == "aa:bb:cc:11:22:33"
+
+
+@pytest.mark.anyio
+async def test_opnsense_ranges_survive_a_read_error(db_session, admin_user, monkeypatch) -> None:
+    """讀取失敗（不是 404「沒有 Kea」）→ 保留既有範圍。以前吞掉錯誤後照樣「刪光再重建」→ 連不上就清空。"""
+    o = await _mk_fw(db_session)
+
+    async def ok(_fw, path, timeout=8.0):  # type: ignore[no-untyped-def]
+        if path == "/api/kea/dhcpv4/searchSubnet":
+            return {"rows": [{"subnet": "198.51.100.0/24", "pools": "198.51.100.150-198.51.100.200"}]}
+        raise fw.OPNsenseError(f"OPNsense GET {path}: 404 nf")
+    monkeypatch.setattr(fw, "_api_get", ok)
+    await fw.sync_dhcp_ranges(db_session, o)
+
+    async def down(_fw, path, timeout=8.0):  # type: ignore[no-untyped-def]
+        raise fw.OPNsenseError("transport: connect timeout")
+    monkeypatch.setattr(fw, "_api_get", down)
+    with pytest.raises(fw.OPNsenseError):
+        await fw.sync_dhcp_ranges(db_session, o)
+    assert len(await _ranges_of(db_session, "opnsense", o.id)) == 1

@@ -45,6 +45,18 @@ const routes: RouteRecordRaw[] = [
     component: () => import("@/views/BmcConsole.vue"),
   },
   {
+    // 另開分頁的全頁「相容 RustDesk 的網頁連線」（透過 RustDesk 伺服器連線；不套 MainLayout 側欄；仍需登入）
+    path: "/rustdesk/:id",
+    name: "rustdesk-console",
+    component: () => import("@/views/RustDeskConsole.vue"),
+  },
+  {
+    // 另開分頁的全頁「相容 RustDesk 的網頁連線」檔案傳輸（另一條連線，附錄 J；同一道權限＋伺服器的檔案傳輸開關）
+    path: "/rustdesk/:id/files",
+    name: "rustdesk-files",
+    component: () => import("@/views/RustDeskFilesConsole.vue"),
+  },
+  {
     path: "/",
     component: () => import("@/components/layout/MainLayout.vue"),
     children: [
@@ -53,15 +65,24 @@ const routes: RouteRecordRaw[] = [
       { path: "sections/:id", name: "section-detail", component: () => import("@/views/SectionDetail.vue") },
       { path: "subnets", name: "subnets", component: () => import("@/views/Subnets.vue") },
       { path: "subnets/:id", name: "subnet-detail", component: () => import("@/views/SubnetDetail.vue") },
+      { path: "subnets/:id/unmanaged/:ip", name: "address-unmanaged", component: () => import("@/views/UnmanagedAddress.vue") },
       { path: "addresses", name: "addresses", component: () => import("@/views/Addresses.vue") },
       { path: "addresses/:id", name: "address-detail", component: () => import("@/views/IPDetail.vue") },
+      // IP 的「探測」（只有管理員）：獨立頁面，歷次結果都留著、可以點回來看
+      { path: "addresses/:id/identify", name: "address-identify", component: () => import("@/views/IpIdentify.vue") },
+      // IPAM 還沒有記錄的位址（異常偵測的「未授權 IP」）：以位址探測，同一個畫面
+      { path: "identify/ip/:ip", name: "ip-identify", component: () => import("@/views/IpIdentify.vue") },
       { path: "ai-audit", name: "ai_audit", component: () => import("@/views/AIAudit.vue"), meta: { admin: true } },
       { path: "ip-changes", name: "ip_changes", component: () => import("@/views/IPChanges.vue") },
+      { path: "change-impact", name: "change_impact", component: () => import("@/views/ChangeImpactList.vue") },
+      { path: "change-impact/:id", name: "change_impact_plan", component: () => import("@/views/ChangeImpactPlan.vue") },
       { path: "hostname-precedence", name: "hostname_precedence", component: () => import("@/views/HostnamePrecedence.vue"), meta: { admin: true } },
       { path: "racks", name: "racks", component: () => import("@/views/Racks.vue") },
       { path: "requests", name: "requests", component: () => import("@/views/IPRequests.vue") },
       { path: "requests/:id", name: "request-detail", component: () => import("@/views/IPRequestDetail.vue") },
       { path: "tools", name: "tools", component: () => import("@/views/Tools.vue") },
+      // MAC 歷程：以一個 MAC 為中心（用過的 IP、交換器埠、DHCP、裝置、時間軸）
+      { path: "mac/:mac?", name: "mac-history", component: () => import("@/views/MacHistory.vue") },
       { path: "tasks", name: "tasks", component: () => import("@/views/Tasks.vue") },
       { path: "topology", name: "topology", component: () => import("@/views/Topology.vue") },
       { path: "settings", name: "settings", component: () => import("@/views/Settings.vue") },
@@ -86,13 +107,27 @@ const routes: RouteRecordRaw[] = [
       { path: "firewall-admin", name: "firewall_admin", component: () => import("@/views/FirewallAdmin.vue"), meta: { admin: true } },
       { path: "pfsense", name: "pfsense", component: () => import("@/views/PfSenseAdmin.vue"), meta: { admin: true } },
       { path: "windows-dhcp", name: "windows_dhcp", component: () => import("@/views/WindowsDhcpAdmin.vue"), meta: { admin: true } },
+      { path: "kea-dhcp", name: "kea_dhcp", component: () => import("@/views/KeaDhcpAdmin.vue"), meta: { admin: true } },
+      { path: "isc-dhcp", name: "isc_dhcp", component: () => import("@/views/IscDhcpAdmin.vue"), meta: { admin: true } },
+      { path: "rustdesk", name: "rustdesk", component: () => import("@/views/RustDeskAdmin.vue"), meta: { admin: true } },
       { path: "fortigate", name: "fortigate", component: () => import("@/views/FortiGateAdmin.vue"), meta: { admin: true } },
+      { path: "paloalto", name: "paloalto", component: () => import("@/views/PaloAltoAdmin.vue"), meta: { admin: true } },
+      { path: "doctor", name: "doctor", component: () => import("@/views/SystemDoctor.vue"), meta: { admin: true } },
+      // 跳板移到掃描代理頁的頁籤（2026-10-04）；舊網址與書籤照樣到得了
+      { path: "jump-hosts", name: "jump_hosts", redirect: { name: "scan_agents", query: { tab: "jump" } } },
+      { path: "mikrotik", name: "mikrotik", component: () => import("@/views/MikroTikAdmin.vue"), meta: { admin: true } },
+      { path: "ocs", name: "ocs", component: () => import("@/views/OcsAdmin.vue"), meta: { admin: true } },
       { path: "pfsense-fw", name: "pfsense_fw", component: () => import("@/views/PfSenseFirewallView.vue") },
       { path: "fortigate-fw", name: "fortigate_fw", component: () => import("@/views/FortiGateFirewallView.vue") },
+      { path: "paloalto-fw", name: "paloalto_fw", component: () => import("@/views/PaloAltoFirewallView.vue") },
+      { path: "mikrotik-fw", name: "mikrotik_fw", component: () => import("@/views/MikroTikRouterView.vue") },
       { path: "wazuh", name: "wazuh", component: () => import("@/views/WazuhAdmin.vue"), meta: { admin: true } },
+      { path: "event-rules", name: "event_rules", component: () => import("@/views/EventRules.vue"), meta: { admin: true } },
+      { path: "zabbix", name: "zabbix", component: () => import("@/views/ZabbixAdmin.vue"), meta: { admin: true } },
       { path: "plugins", name: "plugins", component: () => import("@/views/PluginsAdmin.vue"), meta: { admin: true } },
       // Phase 3
       { path: "oui", name: "oui_admin", component: () => import("@/views/OUIAdmin.vue"), meta: { admin: true } },
+      { path: "recog", name: "recog_admin", component: () => import("@/views/RecogAdmin.vue"), meta: { admin: true } },
       { path: "custom-fields", name: "custom_fields", component: () => import("@/views/CustomFields.vue"), meta: { admin: true } },
       { path: "customers", name: "customers", component: () => import("@/views/Customers.vue"), meta: { admin: true } },
       { path: "customers/:id", name: "customer-detail", component: () => import("@/views/CustomerDetail.vue"), meta: { admin: true } },
@@ -111,6 +146,8 @@ const routes: RouteRecordRaw[] = [
       { path: "webhooks", name: "webhooks", component: () => import("@/views/Webhooks.vue"), meta: { admin: true } },
       { path: "nat", name: "nat", component: () => import("@/views/NAT.vue") },
       { path: "anomaly", name: "anomaly", component: () => import("@/views/Anomaly.vue"), meta: { admin: true } },
+      { path: "fw-rule-changes", name: "fw_rule_changes", component: () => import("@/views/FwRuleChanges.vue"), meta: { admin: true } },
+      { path: "attack-surface", name: "attack_surface", component: () => import("@/views/AttackSurface.vue") },
       { path: "advanced", name: "advanced", component: () => import("@/views/Advanced.vue") },
       { path: "advanced/tenancy", name: "adv-tenancy", component: () => import("@/views/Advanced.vue"), props: { mode: "tenancy" } },
       { path: "advanced/asn", name: "adv-asn", component: () => import("@/views/Advanced.vue"), props: { mode: "asn" } },
@@ -150,24 +187,26 @@ function isChunkLoadError(e: unknown): boolean {
   const m = (e as Error)?.message || String(e ?? "");
   return /dynamically imported module|Failed to fetch dynamically|Importing a module script failed|Loading chunk|error loading dynamically imported|'?text\/html'? is not a valid JavaScript MIME type/i.test(m);
 }
-function reloadOnce(target?: string): void {
+function reloadOnce(target?: string, reason = ""): void {
   const KEY = "jt-chunk-reload-at";
   const last = Number(sessionStorage.getItem(KEY) || 0);
   // 30 秒內已自動重載過就不再重載(避免伺服器真的故障時無限刷新)
   if (Date.now() - last < 30000) return;
   sessionStorage.setItem(KEY, String(Date.now()));
+  // 留下原因給下一頁回報（utils/pageDiag）：分辨「我們自己重載」與「瀏覽器重載」
+  try { sessionStorage.setItem("jt-diag-reload-reason", `${new Date().toISOString().slice(11, 19)} ${reason}`.slice(0, 300)); } catch { /* noop */ }
   if (target && target !== window.location.pathname) window.location.assign(target);
   else window.location.reload();
 }
 
 router.onError((err, to) => {
-  if (isChunkLoadError(err)) reloadOnce(to?.fullPath);
+  if (isChunkLoadError(err)) reloadOnce(to?.fullPath, `router: ${(err as Error)?.message || err}`);
 });
 
 // Vite 預載動態 chunk 失敗時會丟此事件(比 router.onError 更早攔到)
 window.addEventListener("vite:preloadError", ((e: Event) => {
   e.preventDefault();
-  reloadOnce();
+  reloadOnce(undefined, `preload: ${String((e as any).payload?.message || (e as any).payload || "")}`);
 }) as EventListener);
 
 router.beforeEach(async (to, _from) => {

@@ -16,6 +16,7 @@ from app.api.phpipam.helpers import (
     phpipam_response,
 )
 from app.core.db import get_session
+from app.core.ui_error import detail_of
 from app.models.address import IPAddress
 from app.models.subnet import Subnet
 from app.models.user import User
@@ -208,11 +209,11 @@ async def create_address(
                 state=str(payload.get("tag") or "active"),
             )
     except IPNotInSubnet as exc:
-        raise HTTPException(400, detail=str(exc)) from exc
+        raise HTTPException(400, detail=detail_of(exc, "ip_not_in_subnet")) from exc
     except IPAlreadyExists as exc:
-        raise HTTPException(409, detail=str(exc)) from exc
+        raise HTTPException(409, detail=detail_of(exc, "ip_already_exists")) from exc
     except SubnetFull as exc:
-        raise HTTPException(409, detail=str(exc)) from exc
+        raise HTTPException(409, detail=detail_of(exc, "subnet_full")) from exc
 
     if "owner" in payload:
         obj.owner = payload["owner"]  # type: ignore[assignment]
@@ -274,6 +275,8 @@ async def update_address(
         a.note = payload["note"]  # type: ignore[assignment]
     if "mac" in payload:
         a.mac = payload["mac"]  # type: ignore[assignment]
+        # 透過 API 明確寫入的 MAC 等同人工編輯：標成 manual（優先序最高）；清空時一併清掉來源
+        a.mac_source = "manual" if a.mac else None  # type: ignore[assignment]
 
     await append_audit(
         session,

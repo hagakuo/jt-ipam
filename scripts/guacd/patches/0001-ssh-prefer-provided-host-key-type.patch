@@ -1,0 +1,89 @@
+--- a/src/common-ssh/ssh.c	2026-09-15 04:58:15.000000000 +0800
++++ b/src/common-ssh/ssh.c	2026-09-25 12:58:44.444489814 +0800
+@@ -468,6 +468,75 @@
+     }
+ }
+ 
++/**
++ * jt-ipam patch: prefers the algorithm of the host key given in the
++ * "host-key" parameter during key exchange.
++ *
++ * libssh2 negotiates its own preferred host key type (ECDSA first). A server
++ * usually has several host keys (RSA, ECDSA, Ed25519), so when the provided
++ * known_hosts entry is for a different type than the one libssh2 picks, the
++ * server presents a key that is not in the entry and verification fails even
++ * though the server is the right one. OpenSSH's client avoids this by
++ * preferring the algorithms of keys it already knows; this does the same.
++ * The other algorithms stay in the list, so a server whose key really changed
++ * still fails with "Host key did not match" rather than a handshake error.
++ *
++ * @param session
++ *     The session to configure, before libssh2_session_handshake().
++ *
++ * @param host_key
++ *     The known_hosts entry: "<host> <key type> <base64 key>".
++ */
++static void guac_common_ssh_prefer_host_key_type(LIBSSH2_SESSION* session,
++        const char* host_key) {
++
++    static const char* defaults[] = {
++        "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521",
++        "ssh-ed25519", "rsa-sha2-512", "rsa-sha2-256", "ssh-rsa", NULL
++    };
++
++    /* Skip the host field, then read the key type */
++    const char* p = host_key;
++    while (*p != '\0' && *p != ' ' && *p != '\t') p++;
++    while (*p == ' ' || *p == '\t') p++;
++    const char* type = p;
++    while (*p != '\0' && *p != ' ' && *p != '\t') p++;
++    size_t len = (size_t) (p - type);
++    if (len == 0 || len > 64)
++        return;
++
++    char key_type[65];
++    memcpy(key_type, type, len);
++    key_type[len] = '\0';
++
++    /* An RSA key can be used with three signature algorithms */
++    const char* first[4] = { key_type, NULL, NULL, NULL };
++    if (strcmp(key_type, "ssh-rsa") == 0) {
++        first[0] = "rsa-sha2-512";
++        first[1] = "rsa-sha2-256";
++        first[2] = "ssh-rsa";
++    }
++
++    char prefs[512] = "";
++    for (int i = 0; first[i] != NULL; i++) {
++        if (prefs[0] != '\0') strncat(prefs, ",", sizeof(prefs) - strlen(prefs) - 1);
++        strncat(prefs, first[i], sizeof(prefs) - strlen(prefs) - 1);
++    }
++    for (int i = 0; defaults[i] != NULL; i++) {
++        int listed = 0;
++        for (int j = 0; first[j] != NULL; j++)
++            if (strcmp(defaults[i], first[j]) == 0) listed = 1;
++        if (!listed) {
++            strncat(prefs, ",", sizeof(prefs) - strlen(prefs) - 1);
++            strncat(prefs, defaults[i], sizeof(prefs) - strlen(prefs) - 1);
++        }
++    }
++
++    /* Unsupported methods are ignored by libssh2 */
++    libssh2_session_method_pref(session, LIBSSH2_METHOD_HOSTKEY, prefs);
++
++}
++
+ guac_common_ssh_session* guac_common_ssh_create_session(guac_client* client,
+         const char* hostname, const char* port, guac_common_ssh_user* user,
+         int timeout, int keepalive, const char* host_key,
+@@ -514,6 +583,10 @@
+         libssh2_session_method_pref(session, LIBSSH2_METHOD_CRYPT_SC, FIPS_COMPLIANT_CIPHERS);
+     }
+ 
++    /* jt-ipam patch: negotiate the type of the provided host key first */
++    if (host_key != NULL && host_key[0] != '\0')
++        guac_common_ssh_prefer_host_key_type(session, host_key);
++
+     /* Perform handshake */
+     if (libssh2_session_handshake(session, fd)) {
+         guac_client_abort(client, GUAC_PROTOCOL_STATUS_UPSTREAM_ERROR,

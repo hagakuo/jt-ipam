@@ -31,10 +31,10 @@ class SSHCredential(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     label: Mapped[str] = mapped_column(Text, nullable=False)
     username: Mapped[str] = mapped_column(Text, nullable=False)
     auth_type: Mapped[str] = mapped_column(String(8), nullable=False)  # password | key
-    # 沿用同一金庫保管 SSH / RDP 帳密；protocol 區分用途。
+    # 沿用同一金庫保管各種連線帳密；protocol 區分用途（欄位寬 8，新用途的名稱不可以超過 8 個字元）。
     protocol: Mapped[str] = mapped_column(
         String(8), nullable=False, default="ssh", server_default="ssh"
-    )  # ssh | rdp
+    )  # ssh | rdp | vnc | pve | bmc | rustdesk
     # RDP 網域（選填，僅 RDP 用）。
     domain: Mapped[str | None] = mapped_column(Text)
     # scope：綁定某 IP；NULL = 個人預設（任一可連線 IP）

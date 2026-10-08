@@ -36,6 +36,13 @@ def test_read_scope_is_readonly() -> None:
     assert token_is_readonly(["read"]) is True
 
 
+@pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
+def test_legacy_unknown_rest_scopes_fail_closed(method: str) -> None:
+    with pytest.raises(HTTPException) as exc:
+        enforce_method_scope(["subnets:read"], method)
+    assert exc.value.status_code == 403
+
+
 @pytest.mark.parametrize("method", sorted(SAFE_METHODS))
 def test_readonly_token_allows_safe_methods(method: str) -> None:
     enforce_method_scope(["read"], method)        # 不得拋錯

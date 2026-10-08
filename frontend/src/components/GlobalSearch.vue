@@ -7,7 +7,7 @@
  *  - debounce + race-safe(後請求覆蓋前請求結果)
  *  - 結果按類別分組，每類限 8 筆，分數排序
  */
-import { computed, h as vh, ref, watch } from "vue";
+import { computed, h as vh, ref, watch, nextTick } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 import {
@@ -18,6 +18,7 @@ import {
 } from "naive-ui";
 import { SearchIcon } from "@/icons";
 import { search, type SearchHit } from "@/api/search";
+import { normalizeMac } from "@/utils/mac";
 
 const { t: tr } = useI18n();
 const router = useRouter();
@@ -67,7 +68,16 @@ async function runSearch(query: string) {
   }
 }
 
-const options = computed<any[]>(() => {
+// 輸入的是完整 MAC：最上面多一項「MAC 歷程」—— 那個 MAC 現在不在任何 IP 上時，一般結果是空的，
+// 但它用過哪些 IP、出現在哪個交換器埠，正是使用者要找的（2026-10-01）
+const qMac = computed(() => normalizeMac(q.value));
+const macGroup = computed(() => (qMac.value ? [{
+  type: "group", label: tr("mac_history.title"), key: "__mac",
+  children: [{ label: tr("mac_history.search_option", { mac: qMac.value }), value: `mac:${qMac.value}`,
+               sublabel: tr("mac_history.search_option_sub") }],
+}] : []));
+const options = computed<any[]>(() => [...macGroup.value, ...baseOptions.value]);
+const baseOptions = computed<any[]>(() => {
   // 還沒有結果、但正在搜尋 → 給一個 disabled 的「搜尋中」占位
   if (loading.value && hits.value.length === 0) {
     return [{
@@ -82,6 +92,7 @@ const options = computed<any[]>(() => {
     }];
   }
   if (!loading.value && hits.value.length === 0 && q.value.trim().length >= 2) {
+    if (qMac.value) return [];            // 有「MAC 歷程」那一項就不必再說沒有結果
     return [{
       type: "group",
       label: tr("global_search.no_results"),
@@ -141,6 +152,14 @@ function renderOption(option: any) {
 
 function navigateTo(value: string) {
   if (value === "__loading" || value === "__empty") return;
+  if (value.startsWith("mac:")) {
+    router.push({ name: "mac-history", params: { mac: value.slice(4) } });
+    hits.value = [];
+    // 自動完成元件選完會把選項文字填回框裡，要等它填完再清掉
+    q.value = "";
+    void nextTick(() => { q.value = ""; });
+    return;
+  }
   const [type, id] = value.split(":", 2);
   switch (type) {
     case "subnet":
@@ -195,6 +214,7 @@ function navigateTo(value: string) {
 // 鍵盤 Enter：若 naive 已對被選取的項目觸發 @select（navigateTo 會清空 hits），這裡看到
 // hits 已空就不重複動作；否則（沒選到任何項目）就帶去最相關的第一筆結果。
 function onEnter() {
+  if (qMac.value) { navigateTo(`mac:${qMac.value}`); return; }   // 完整 MAC：直接看它的歷程
   if (hits.value.length) {
     const h = hits.value[0];
     navigateTo(`${h.type}:${h.id}`);

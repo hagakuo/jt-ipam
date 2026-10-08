@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.sqlin import in_values
 from app.models.ai_chat import AIChatConversation, AIChatMessage
 
 
@@ -103,7 +104,7 @@ async def message_counts(
         return {}
     rows = (await session.execute(
         select(AIChatMessage.conversation_id, func.count())
-        .where(AIChatMessage.conversation_id.in_(conversation_ids))
+        .where(in_values(AIChatMessage.conversation_id, conversation_ids))
         .group_by(AIChatMessage.conversation_id)
     )).all()
     return {cid: n for cid, n in rows}
@@ -129,7 +130,7 @@ async def purge_old(session: AsyncSession, *, retention_days: int) -> int:
     if not ids:
         return 0
     await session.execute(
-        delete(AIChatConversation).where(AIChatConversation.id.in_(ids))
+        delete(AIChatConversation).where(in_values(AIChatConversation.id, ids))
     )
     await session.flush()
     return len(ids)

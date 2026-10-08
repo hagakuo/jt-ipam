@@ -12,7 +12,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import EmailStr, field_validator
-from sqlalchemy import desc, func, select
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,7 @@ from app.api.v1.dependencies import require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.security import hash_password
+from app.models.permission import Permission
 from app.models.user import Group, User, UserGroupMember
 from app.schemas.base import Paginated, StrictModel
 
@@ -199,6 +200,9 @@ async def update_user(
         if user.auth_provider != "local":
             raise HTTPException(400, detail="cannot rename external account")
         user.username = new_username.strip()
+    # 權限變更要在覆寫之前記下舊值 —— 這是整個系統最重要的事實變化之一，
+    # 事後才從稽核翻出來太慢（`security.privilege_changed`）
+    was_admin = bool(user.is_admin)
     for k, v in data.items():
         setattr(user, k, v)
     if new_pwd is not None:
@@ -220,6 +224,21 @@ async def update_user(
         diff={**data, "username": new_username, "password_changed": new_pwd is not None, "unlocked": unlock},
         request_id=getattr(request.state, "request_id", None),
     )
+    if bool(user.is_admin) != was_admin:
+        from app.services.security_alert import notify_privilege_change
+        # 操作者要查得出來：`request.state` 只有 user_id，沒有 username ——
+        # 直接寫死「admin」會讓通知在不是 admin 操作時說謊。
+        actor_id = str(getattr(request.state, "user_id", "") or "")
+        actor_name = actor_id or "未知"
+        if actor_id:
+            actor = (await session.execute(
+                select(User).where(User.id == uuid.UUID(actor_id)))).scalar_one_or_none()
+            if actor is not None:
+                actor_name = actor.username
+        await notify_privilege_change(
+            session, actor=actor_name, target=user.username,
+            change="被授予管理權限" if user.is_admin else "被收回管理權限",
+        )
     try:
         await session.commit()
     except IntegrityError as exc:
@@ -251,6 +270,14 @@ async def delete_user(
         ).scalar_one()
         if admin_count <= 1:
             raise HTTPException(409, detail="cannot delete the last active admin")
+    # 權限的 principal_id 同時可能指向 user 或 group，所以建不了外鍵 ——
+    # 也就是說沒有人會幫我們清。不清就會留下孤兒授權：權限頁列得出來、卻對不到任何人，
+    # 稽核時看到一列「不知道是誰」的授權，只能靠猜。（prod 上已經有這種列）
+    removed_perms = (await session.execute(
+        delete(Permission).where(
+            Permission.principal_type == "user", Permission.principal_id == user.id,
+        ).returning(Permission.id)
+    )).scalars().all()
     await session.delete(user)
     await append_audit(
         session,
@@ -258,7 +285,9 @@ async def delete_user(
         actor_ip=request.client.host if request.client else None,
         actor_user_agent=request.headers.get("user-agent"),
         object_type="user", object_id=str(user_id),
-        action="delete", diff={"username": user.username},
+        action="delete",
+        # 一併清掉幾筆授權要寫進稽核 —— 那是權限異動，不是刪帳號的附帶效果
+        diff={"username": user.username, "permissions_removed": len(removed_perms)},
         request_id=getattr(request.state, "request_id", None),
     )
     await session.commit()
@@ -378,6 +407,12 @@ async def delete_group(
         raise HTTPException(404, detail="group not found")
     if g.is_builtin:
         raise HTTPException(409, detail="cannot delete builtin group")
+    # 同上：群組的授權沒有外鍵可以連帶刪除，這裡自己清
+    removed_perms = (await session.execute(
+        delete(Permission).where(
+            Permission.principal_type == "group", Permission.principal_id == g.id,
+        ).returning(Permission.id)
+    )).scalars().all()
     await session.delete(g)
     await append_audit(
         session,
@@ -385,7 +420,8 @@ async def delete_group(
         actor_ip=request.client.host if request.client else None,
         actor_user_agent=request.headers.get("user-agent"),
         object_type="group", object_id=str(group_id),
-        action="delete", diff={"name": g.name},
+        action="delete",
+        diff={"name": g.name, "permissions_removed": len(removed_perms)},
         request_id=getattr(request.state, "request_id", None),
     )
     await session.commit()
@@ -428,9 +464,25 @@ async def list_user_groups(
     return rows
 
 
+async def _member_audit(
+    session: AsyncSession, request: Request, *, group: Group, target: User, action: str,
+) -> None:
+    """群組成員異動的稽核。物件記成**群組**，內容帶被異動的使用者 —— 查「這個群組
+    什麼時候多了誰」與「這個人什麼時候被加進哪個群組」都找得到。"""
+    await append_audit(
+        session,
+        actor_user_id=str(getattr(request.state, "user_id", "")) or None,
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="group", object_id=str(group.id), action=action,
+        diff={"group": group.name, "user_id": str(target.id), "username": target.username},
+        request_id=getattr(request.state, "request_id", None),
+    )
+
+
 @router.post("/groups/{group_id}/members/{user_id}", status_code=204)
 async def add_member(
-    group_id: uuid.UUID, user_id: uuid.UUID,
+    group_id: uuid.UUID, user_id: uuid.UUID, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> None:
     g = (await session.execute(select(Group).where(Group.id == group_id))).scalar_one_or_none()
@@ -447,12 +499,15 @@ async def add_member(
     ).scalar_one_or_none()
     if exists is None:
         session.add(UserGroupMember(user_id=user_id, group_id=group_id))
+        # 群組成員＝權限（群組上掛著 Permission），加人進群組就是提權，一定要留紀錄。
+        # 原本這裡連 request 都沒有 —— 不只沒記做了什麼，連是誰做的都不知道。
+        await _member_audit(session, request, group=g, target=u, action="group_member_add")
     await session.commit()
 
 
 @router.delete("/groups/{group_id}/members/{user_id}", status_code=204)
 async def remove_member(
-    group_id: uuid.UUID, user_id: uuid.UUID,
+    group_id: uuid.UUID, user_id: uuid.UUID, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> None:
     row = (
@@ -464,5 +519,12 @@ async def remove_member(
         )
     ).scalar_one_or_none()
     if row is not None:
+        g = (await session.execute(
+            select(Group).where(Group.id == group_id))).scalar_one_or_none()
+        u = (await session.execute(
+            select(User).where(User.id == user_id))).scalar_one_or_none()
         await session.delete(row)
+        if g is not None and u is not None:
+            await _member_audit(session, request, group=g, target=u,
+                                action="group_member_remove")
         await session.commit()

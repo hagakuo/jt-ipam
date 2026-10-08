@@ -183,6 +183,25 @@ def _extract_mmdb(tar_gz: bytes) -> bytes | None:
     return None
 
 
+def update_outcome(result: dict[str, Any]) -> tuple[bool, str | None]:
+    """update_databases 的結果 → (成功與否, 錯誤摘要)。任何一個版次失敗就算失敗（排程與手動共用）。"""
+    if result.get("error"):
+        return False, str(result["error"])
+    bad = [f"{ed}: {r.get('error') or 'failed'}" for ed, r in (result.get("results") or {}).items()
+           if isinstance(r, dict) and not r.get("ok")]
+    return (not bad), ("; ".join(bad) or None)
+
+
+def local_databases() -> list[tuple[str, datetime]]:
+    """本機已有的 mmdb（版次、檔案時間），給版本頁列「選用相依」用。"""
+    out: list[tuple[str, datetime]] = []
+    for ed in ALL_EDITIONS:
+        p = _db_path(ed)
+        if p.exists():
+            out.append((ed, datetime.fromtimestamp(p.stat().st_mtime, UTC)))
+    return out
+
+
 # ── 查詢 ──────────────────────────────────────────────────────
 _reader_cache: dict[str, tuple[float, Any]] = {}
 

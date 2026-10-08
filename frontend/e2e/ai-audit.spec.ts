@@ -1,3 +1,4 @@
+import { escapeRegExp } from "./fixtures/regexp";
 import { test, expect, type Page } from "@playwright/test";
 
 // AI 巡檢：儀表板區塊 → 巡檢頁（含免責說明與依據資料）→ 立即執行 → 忽略。
@@ -20,7 +21,10 @@ test.describe("AI 巡檢", () => {
     await page.goto("/ai-audit");
 
     // 免責說明必須看得到 —— 這些是模型推測，不是查核過的事實
-    await expect(page.getByText(/不是查核過的事實/)).toBeVisible();
+    // 免責說明的實際文案是「…不等於查核過的結論」。原本這裡寫的是舊版措辭
+    // （不是查核過的事實），文案調整後就再也對不上 —— 斷言取語意穩定的片段，
+    // 不要整句照抄。
+    await expect(page.getByText(/不等於查核過的結論/)).toBeVisible();
 
     const first = page.locator(".fx").first();
     await expect(first).toBeVisible({ timeout: 15_000 });
@@ -29,6 +33,9 @@ test.describe("AI 巡檢", () => {
 
     const before = await page.locator(".fx").count();
     await first.getByRole("button", { name: "忽略" }).click();
+    // 忽略要先確認過（n-popconfirm）—— 它不是「收起這一次」，而是往後同一件事
+    // 都不再報告。原本這裡只按一下就等清單變少，於是永遠等不到。
+    await page.locator(".n-popconfirm__action button").last().click();
     await expect(page.locator(".fx")).toHaveCount(before - 1, { timeout: 15_000 });
 
     // 忽略不是刪除：切到「已忽略」要看得到它
@@ -44,7 +51,7 @@ test.describe("AI 巡檢", () => {
     await expect(ip).toBeVisible({ timeout: 15_000 });
     const text = (await ip.textContent())!.trim();
     await ip.click();
-    await expect(page).toHaveURL(new RegExp(`/addresses\\?q=${text.replace(/\./g, "\\.")}`));
+    await expect(page).toHaveURL(new RegExp(`/addresses\\?q=${escapeRegExp(text)}`));
   });
 
   test("儀表板區塊：數字可點、進到巡檢頁", async ({ page }) => {
@@ -52,7 +59,9 @@ test.describe("AI 巡檢", () => {
     await page.goto("/");
     const card = page.locator(".dash-ai");
     await expect(card).toBeVisible({ timeout: 15_000 });
-    await expect(card.getByText(/AI 推測/)).toBeVisible();
+    // 儀表板上的數字要標明是 AI 判讀、不是查核過的事實。文案本身會調整
+    // （現在是「依據 IPAM 資料的 AI 判讀，建議自行確認」），所以只鎖語意關鍵字。
+    await expect(card.getByText(/AI 判讀/)).toBeVisible();
     await card.locator(".ai-cell").first().click();
     await expect(page).toHaveURL(/\/ai-audit/);
   });

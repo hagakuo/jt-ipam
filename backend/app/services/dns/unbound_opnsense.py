@@ -20,7 +20,7 @@ import base64
 
 import httpx
 
-from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.services.dns.base import DNSAdapter, DNSAdapterError, DNSRecordOp, DNSZoneInfo
 
 
@@ -46,7 +46,7 @@ class UnboundOPNsenseAdapter(DNSAdapter):
         except UnsafeOutboundURL as exc:
             raise DNSAdapterError(f"SSRF guard rejected URL: {exc}") from exc
         except httpx.HTTPError as exc:
-            raise DNSAdapterError(f"transport: {exc.__class__.__name__}") from exc
+            raise DNSAdapterError(f"transport: {transport_detail(exc)}") from exc
         if resp.status_code != 200:
             raise DNSAdapterError(
                 f"OPNsense Unbound GET {path}: {resp.status_code} {resp.text[:200]}"
@@ -68,7 +68,7 @@ class UnboundOPNsenseAdapter(DNSAdapter):
         except UnsafeOutboundURL as exc:
             raise DNSAdapterError(f"SSRF guard rejected URL: {exc}") from exc
         except httpx.HTTPError as exc:
-            raise DNSAdapterError(f"transport: {exc.__class__.__name__}") from exc
+            raise DNSAdapterError(f"transport: {transport_detail(exc)}") from exc
         if resp.status_code not in (200, 201):
             raise DNSAdapterError(
                 f"OPNsense Unbound POST {path}: {resp.status_code} {resp.text[:200]}"

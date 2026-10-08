@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// FortiGate 整合（Beta）：新增 → 測試連線（連不到必須回可讀診斷／錯誤）→ 刪除。
+// FortiGate 整合：新增 → 測試連線（連不到必須回可讀診斷／錯誤）→ 刪除。
 const ADMIN_USER = process.env.E2E_ADMIN_USER || "admin";
 const ADMIN_PASS = process.env.E2E_ADMIN_PASS || "";
 
@@ -14,12 +14,15 @@ async function login(page: Page) {
   await expect(page).not.toHaveURL(/\/login/, { timeout: 15_000 });
 }
 
-test.describe("FortiGate 整合（Beta）", () => {
+test.describe("FortiGate 整合", () => {
   test("新增 → 測試連線 → 刪除", async ({ page }) => {
     await login(page);
     await page.goto("/fortigate");
 
-    await expect(page.getByText("Beta", { exact: true }).first()).toBeVisible();
+    // 頁面確實渲染出來了才往下走。這裡原本斷言的是「Beta」標示，但那個標示在
+    // v0.5.199 就拿掉了（實機驗證過後移除），於是這條測試從那時起一直是紅的 ——
+    // 斷言頁面上偶然存在的字，會在文案調整時變成假警報。改斷言這一頁的功能入口。
+    await expect(page.getByRole("button", { name: "新增" }).first()).toBeVisible();
 
     const name = `e2e-fgt-${Date.now()}`;
     await page.getByRole("button", { name: "新增" }).first().click();

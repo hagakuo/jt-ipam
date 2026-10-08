@@ -3,9 +3,10 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NAlert, NButton, NCard, NCheckbox, NCheckboxGroup, NCode, NDataTable, NDivider,
-  NIcon, NInput, NPopconfirm, NRadio, NRadioGroup, NSpace, NSpin, NTag, useMessage,
+  NIcon, NInput, NPopconfirm, NRadio, NRadioGroup, NSpace, NSpin, useMessage,
 } from "naive-ui";
 import { AdminIcon, ExportIcon, ImportIcon } from "@/icons";
+import { srvText } from "@/utils/wsError";
 import { getTask } from "@/api/tasks";
 import {
   analyzeImport, applyImport, downloadExport, getTransferSchema, startExport,
@@ -102,6 +103,23 @@ const impMode = ref<"merge" | "replace">("merge");
 const impBusy = ref(false);
 const analyzed = ref<AnalyzeResult | null>(null);
 const report = ref<ImportReport | null>(null);
+
+/** 匯入時整列寫不進去的筆數。這個不能只當成表格裡的一欄 —— 客戶就是因為畫面
+ *  一律顯示綠色「匯入完成」，事後才發現裝置少了一半。 */
+const failedRows = computed(() => {
+  const r = report.value;
+  if (!r) return 0;
+  const t = Object.values(r.tables ?? {}).reduce((a, v) => a + (v.errored ?? 0), 0);
+  return t + (r.central_secrets?.errored ?? 0) + (r.deferred_refs?.errors?.length ?? 0);
+});
+const failureReasons = computed(() => {
+  const r = report.value;
+  if (!r) return [] as string[];
+  const out: string[] = [];
+  for (const v of Object.values(r.tables ?? {})) out.push(...(v.errors ?? []));
+  out.push(...(r.deferred_refs?.errors ?? []));
+  return out.slice(0, 5);
+});
 const impTaskId = ref<string | null>(null);
 const impTaskStatus = ref<string | null>(null);
 let impTimer: ReturnType<typeof setInterval> | null = null;
@@ -213,11 +231,17 @@ onUnmounted(() => { stopExpTimer(); stopImpTimer(); });
 
       <div class="st-group">
         <div class="st-label">{{ t("system_transfer.scope_label") }}</div>
+        <!-- 一項一列：名稱與筆數同一行（筆數靠右對齊），內容說明在下一行。以前三欄格子裡
+             名稱一長就把筆數擠到下一行，看起來亂（使用者回報） -->
         <n-checkbox-group v-model:value="scope">
-          <div class="st-scope-grid">
-            <n-checkbox v-for="cat in schema?.scopes ?? []" :key="cat" :value="cat">
-              {{ t(`system_transfer.scope.${cat}`) }}
-              <n-tag size="small" :bordered="false" style="margin-left: 6px">{{ scopeCount(cat) }}</n-tag>
+          <div class="st-scope-list">
+            <n-checkbox v-for="cat in schema?.scopes ?? []" :key="cat" :value="cat" class="st-scope-row"
+                        :data-testid="`st-scope-${cat}`">
+              <span class="st-scope-line">
+                <span class="st-scope-name">{{ t(`system_transfer.scope.${cat}`) }}</span>
+                <span class="st-scope-count">{{ scopeCount(cat).toLocaleString() }}</span>
+              </span>
+              <span class="st-scope-desc">{{ t(`system_transfer.scope_desc.${cat}`) }}</span>
             </n-checkbox>
           </div>
         </n-checkbox-group>
@@ -276,7 +300,7 @@ onUnmounted(() => { stopExpTimer(); stopImpTimer(); });
       <template v-if="analyzed">
         <n-divider style="margin: 8px 0" />
         <n-alert v-for="(w, i) in analyzed.warnings" :key="i" type="warning"
-                 :bordered="false" style="margin-bottom: 8px">{{ w }}</n-alert>
+                 :bordered="false" style="margin-bottom: 8px">{{ srvText(w) }}</n-alert>
 
         <div class="st-meta">
           <span>{{ t("system_transfer.source_version") }}:
@@ -318,8 +342,18 @@ onUnmounted(() => { stopExpTimer(); stopImpTimer(); });
           </span>
         </n-space>
 
-        <n-alert v-if="report && !report.dry_run" type="success" :bordered="false" style="margin-top: 12px">
+        <n-alert v-if="report && !report.dry_run && !failedRows" type="success"
+                 :bordered="false" style="margin-top: 12px">
           {{ t("system_transfer.import_done") }}
+        </n-alert>
+        <!-- 有寫不進去的列就不可以說「完成」：那些列是整筆不見，不是少一個欄位 -->
+        <n-alert v-else-if="report && !report.dry_run" type="warning"
+                 :bordered="false" style="margin-top: 12px"
+                 :title="t('system_transfer.import_partial', { n: failedRows })">
+          <div>{{ t("system_transfer.import_partial_hint") }}</div>
+          <ul v-if="failureReasons.length" class="fail-list">
+            <li v-for="(e, i) in failureReasons" :key="i">{{ e }}</li>
+          </ul>
         </n-alert>
       </template>
     </n-card>
@@ -328,12 +362,21 @@ onUnmounted(() => { stopExpTimer(); stopImpTimer(); });
 </template>
 
 <style scoped>
+.fail-list { margin: 6px 0 0; padding-left: 18px; font-size: 12px; opacity: 0.85; word-break: break-all; }
+.fail-list li { margin-bottom: 2px; }
 .st-wrap { display: flex; flex-direction: column; gap: 16px; }
 /* 匯出 / 匯入 並排；寬螢幕兩欄用滿版面，窄螢幕自動堆疊 */
-.st-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 16px; align-items: start; }
+.st-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr)); gap: 16px; align-items: start; }
 .st-group { margin-bottom: 18px; }
 .st-label { font-weight: 600; margin-bottom: 8px; }
 .st-hint { font-size: 12px; opacity: 0.65; margin-top: 6px; }
-.st-scope-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px 16px; }
+.st-scope-list { display: flex; flex-direction: column; border: 1px solid var(--n-border-color, rgba(128,128,128,.22)); border-radius: 8px; }
+.st-scope-row { display: flex; width: 100%; box-sizing: border-box; padding: 9px 12px; align-items: flex-start; margin-right: 0; }
+.st-scope-row + .st-scope-row { border-top: 1px solid var(--n-border-color, rgba(128,128,128,.16)); }
+.st-scope-row :deep(.n-checkbox__label) { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.st-scope-line { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.st-scope-name { font-weight: 500; }
+.st-scope-count { font-variant-numeric: tabular-nums; font-size: 12.5px; opacity: .7; white-space: nowrap; }
+.st-scope-desc { font-size: 12px; opacity: .6; line-height: 1.5; }
 .st-meta { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; margin-bottom: 14px; opacity: 0.85; }
 </style>

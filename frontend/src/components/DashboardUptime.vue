@@ -7,12 +7,13 @@
         </n-tag>
       </CardTitle>
     </template>
-    <template #header-extra>
+    <!-- 控制列：自標題列搬到內文最上方 -->
+    <n-space align="center" justify="end" style="margin-bottom: 10px">
       <n-button size="small" @click="openPicker">
         <template #icon><n-icon :component="SettingsIcon" /></template>
         {{ t("uptime.dash_edit") }}
       </n-button>
-    </template>
+    </n-space>
 
     <n-empty v-if="!ids.length" :description="t('uptime.dash_empty')" size="small">
       <template #extra>

@@ -21,6 +21,9 @@ export interface BackgroundTask {
 export async function listTasks(params: {
   status_in?: string;
   kind?: string;
+  trigger?: "manual" | "scheduled";
+  /** 搜尋類型、目標、錯誤訊息 */
+  q?: string;
   active_only?: boolean;
   page?: number;
   pageSize?: number;
@@ -29,11 +32,19 @@ export async function listTasks(params: {
     params: {
       status_in: params.status_in,
       kind: params.kind,
+      trigger: params.trigger,
+      q: params.q || undefined,
       active_only: params.active_only,
       page: params.page ?? 1,
       page_size: params.pageSize ?? 50,
     },
   });
+  return data;
+}
+
+/** 作業頁「類型」篩選的選項：看得到的作業裡出現過哪些類型 */
+export async function listTaskKinds(): Promise<string[]> {
+  const { data } = await apiClient.get<string[]>("/api/v1/tasks/kinds");
   return data;
 }
 

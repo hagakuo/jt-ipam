@@ -1,6 +1,6 @@
 """LibreNMS LLDP / CDP 鄰居同步（`links`）。
 
-⚠️ 開發時**沒有實機資料可驗**：prod 的 LibreNMS（mon5，82 台裝置）links 表是空的
+⚠️ 開發時**沒有實機資料可驗**：實機的 LibreNMS（約八十台裝置）links 表是空的
 ——`/api/v0/resources/links` 回 404 `{"message":"Links do not exist"}`。端點路徑本身
 已對實機確認正確（LibreNMS 認得該路由、回的是語意錯誤而非路由 404）。
 所以測試重點放在：**容錯解析**、**空來源不能當成失敗**、以及鏡像/清除語意。

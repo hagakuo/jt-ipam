@@ -1,0 +1,13 @@
+jt-ipam 對 guacamole-server 的修補，scripts/guacd/in-container-build.sh 依檔名順序套用。
+每一個修補都要說明為什麼需要、怎麼驗證，以及上游是否已有對應修正（有的話升版後就刪掉）。
+
+0001-ssh-prefer-provided-host-key-type.patch
+  問題：jt-ipam 把使用者確認過（TOFU）並釘選的主機金鑰以 host-key 參數交給 guacd。
+        伺服器通常有好幾把主機金鑰（RSA／ECDSA／Ed25519），libssh2 依自己的偏好（ECDSA 優先）交涉，
+        拿到的常常不是釘選的那一把 → 明明是同一台伺服器也回報「Host key did not match」。
+  修正：有 host-key 時，交涉時優先使用那把金鑰的演算法（OpenSSH 用戶端的作法），其餘演算法照留，
+        所以金鑰真的換了時仍然回報不符，而不是交握失敗。
+  不採用的替代方案：另開一條連線抓 libssh2 會拿到的那把金鑰再交給 guacd —— 那條連線沒有被釘選的
+        金鑰保護，中間人可以只攔那一條，等於偷偷多做一次未經使用者確認的首次信任。
+  驗證：scripts/guacd/verify.sh 的 SSH 實連（先釘 ed25519，再讓 guacd 去連）；e2e 的 guacd SSH 測試。
+  上游：截至 staging/1.6.1（d9ec474）沒有對應修正。

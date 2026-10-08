@@ -3,7 +3,7 @@ import { defineStore } from "pinia";
 import { i18n } from "@/i18n";
 
 type Theme = "light" | "dark" | "auto";
-type Locale = "zh-TW" | "en-US";
+type Locale = "zh-TW" | "en-US" | "ja-JP";
 
 function detectSystemDark(): boolean {
   if (typeof window === "undefined") return false;

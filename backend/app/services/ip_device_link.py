@@ -39,6 +39,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.sqlin import in_values
 from app.models.address import IPAddress
 from app.models.device import Device
 from app.models.ip_change_log import IPChangeLog
@@ -157,7 +158,7 @@ async def link_by_port_mac(
                Subnet.archived_at.is_(None))
     )
     if scope_subnet_ids is not None:
-        q = q.where(IPAddress.subnet_id.in_(scope_subnet_ids))
+        q = q.where(in_values(IPAddress.subnet_id, scope_subnet_ids))
     rows = (await session.execute(q)).all()
     if not rows:
         return stats

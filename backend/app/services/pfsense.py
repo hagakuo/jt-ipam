@@ -14,20 +14,25 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from sqlalchemy import delete, func, select
-from sqlalchemy import update as sa_update
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.core.security import decrypt_secret, encrypt_secret
-from app.models.address import IPAddress
 from app.models.pfsense import PfSenseFirewall, PfSenseSyncedAlias
-from app.services.hostname import apply_observation
+from app.services import arp_seen as arp_seen_svc
+from app.services.dhcp_leases import LeaseRun
+from app.services.fw_sightings import SightingBatch
+from app.services.hostname_reports import HostnameRun, enabled_peers
+from app.services.ip_autocreate import (
+    addable_subnets,
+    match_existing,
+)
 
 # pfSense-pkg-RESTAPI v2 端點（如不同版本路徑有異，於此集中調整）
 EP_VERSION = "/api/v2/system/version"
 EP_DHCP_LEASES = "/api/v2/status/dhcp_server/leases"
-# 發放範圍：每個介面一筆 DHCP server 設定（含主範圍 range_from/range_to 與巢狀額外池）
+# 發放範圍：每個介面一筆 DHCP server 設定（含主範圍 range_from/range_to 與巢狀額外集區）
 # 複數形才是列表端點（單數需要 id，會回 MODEL_REQUIRES_ID）——已對實機確認。
 EP_DHCP_SERVERS = "/api/v2/services/dhcp_servers"
 EP_DHCP_ADDRESS_POOLS = "/api/v2/services/dhcp_server/address_pools"
@@ -70,7 +75,7 @@ async def _api_get(fw: PfSenseFirewall, path: str, *, timeout: float = 15.0) -> 
     except UnsafeOutboundURL as exc:
         raise PfSenseError(f"SSRF guard rejected URL: {exc}") from exc
     except httpx.HTTPError as exc:
-        raise PfSenseError(f"transport: {exc.__class__.__name__}") from exc
+        raise PfSenseError(f"transport: {transport_detail(exc)}") from exc
     if resp.status_code != 200:
         raise PfSenseError(f"pfSense GET {path}: {resp.status_code} {resp.text[:200]}")
     body = resp.json()
@@ -86,29 +91,10 @@ async def test_connection(fw: PfSenseFirewall) -> dict[str, Any]:
 
 
 # ─────────────────── IP stamp（重疊網段安全）───────────────────
-async def _stamp_ip_seen(
-    session: AsyncSession, ip: str, *, mac: str | None = None, hostname: str | None = None,
-    subnet_ids: list[uuid.UUID] | None = None, dhcp: bool = False,
-) -> bool:
-    """找到 jt-ipam IPAddress 就 stamp last_seen_scanner（pfSense 證據等同 scanner）。"""
-    ip = _valid_ip(ip)
-    if ip is None:
-        return False
-    stmt = select(IPAddress).where(IPAddress.ip == ip)
-    if subnet_ids:
-        stmt = stmt.where(IPAddress.subnet_id.in_(subnet_ids))
-    ipa = (await session.execute(stmt.limit(1))).scalars().first()
-    if ipa is None:
-        return False
-    ipa.last_seen_scanner = datetime.now(UTC)
-    if dhcp:
-        ipa.in_dhcp_lease = True
-    if mac:
-        from app.services.arp_precedence import consider_mac
-        await consider_mac(session, ip=ipa, mac=mac, source="pfsense")
-    if hostname:
-        await apply_observation(session, ip=ipa, source="pfsense", hostname=hostname)
-    return True
+#: pfSense 也是 FreeBSD → ARP 的 max_age 預設同樣是 1200 秒
+_PF_ARP_MAX_AGE = 1200.0
+
+
 
 
 def _first(d: dict[str, Any], *keys: str) -> Any:
@@ -161,34 +147,31 @@ async def sync_dhcp_leases(session: AsyncSession, fw: PfSenseFirewall) -> int:
     if not isinstance(rows, list):
         return 0
     scope_ids = list(fw.scope_subnet_ids) if fw.scope_subnet_ids else None
+    create_in = await addable_subnets(session, scope_ids) if fw.auto_create_ips else None
     seen = 0
-    leased_ips: set[str] = set()
+    hn_run = HostnameRun(session, source="pfsense", origin=f"pfsense:{fw.id}:lease",
+                         peers=await enabled_peers(session, PfSenseFirewall))
+    lease_run = LeaseRun(session, source_type="pfsense", source_id=fw.id)
+    batch = SightingBatch(session, source="pfsense", subnet_ids=scope_ids, lease_run=lease_run,
+                          create_in=create_in, hn_run=hn_run)
     for d in rows:
         if not isinstance(d, dict):
             continue
         ip = _ip_of(d)
         if not ip:
             continue
-        ipstr = str(ip).split("/")[0]
-        leased_ips.add(ipstr)
-        if await _stamp_ip_seen(session, ipstr, mac=_mac_of(d), hostname=_host_of(d),
-                                subnet_ids=scope_ids, dhcp=True):
-            seen += 1
-    # 撤銷：scope 內原本標 in_dhcp_lease、但這次租約已消失的 IP（只在有設 scope 時做，
-    # 避免多台 pfSense/OPNsense 全域範圍互相清掉對方的標記）。
-    if scope_ids:
-        stmt = sa_update(IPAddress).where(
-            IPAddress.subnet_id.in_(scope_ids), IPAddress.in_dhcp_lease.is_(True))
-        if leased_ips:
-            stmt = stmt.where(func.host(IPAddress.ip).notin_(leased_ips))
-        await session.execute(stmt.values(in_dhcp_lease=False))
+        batch.add(str(ip).split("/")[0], evidence="lease:pfsense", mac=_mac_of(d), hostname=_host_of(d))
+    seen = sum(1 for found, _e in await batch.flush() if found)
+    # _api_get 失敗會往外拋、整輪還原 → 走到這裡就是完整的租約清單
+    await hn_run.finish(complete=True)
+    await lease_run.finish(complete=True)
     return seen
 
 
 def _range_pairs(d: dict) -> list[tuple[str, str]]:
     """從一筆 pfSense DHCP 設定取出所有 (起, 迄)。
 
-    主範圍是 range_from / range_to；額外池放在巢狀 `pool`（同樣的欄位名）。
+    主範圍是 range_from / range_to；額外集區放在巢狀 `pool`（同樣的欄位名）。
     不同版本欄位名可能微調，故多給幾個別名；抓不到就回空（不猜、不硬湊）。
     """
     out: list[tuple[str, str]] = []
@@ -214,7 +197,7 @@ def _range_pairs(d: dict) -> list[tuple[str, str]]:
 async def sync_dhcp_ranges(session: AsyncSession, fw: PfSenseFirewall) -> int:
     """把 pfSense 的 DHCP 發放範圍鏡像進 dhcp_pool_ranges（pfSense 自己的同步，與其他來源互不干涉）。
 
-    來源：每個介面一筆的 dhcp_servers（含巢狀額外池），再補獨立的 address_pools 端點。
+    來源：每個介面一筆的 dhcp_servers（含巢狀額外集區），再補獨立的 address_pools 端點。
     只有啟用中的介面才算（enable=false 的範圍不會被發放）。
     """
     from app.models.dhcp import DHCPPoolRange
@@ -232,10 +215,13 @@ async def sync_dhcp_ranges(session: AsyncSession, fw: PfSenseFirewall) -> int:
         for a, b in _range_pairs(d):
             parsed.append((str(iface) if iface else None, a, b))
 
-    # 額外位址池（獨立端點；抓不到就算了，不影響主範圍）
+    # 額外位址集區（獨立端點；舊版套件沒有 → 404 算「沒有」）。其他讀取錯誤要往外拋、
+    # 保留既有範圍：以前吞掉之後照樣整批取代，集區的範圍就被刪掉（2026-09-26 稽核）
     try:
         pools = await _api_get(fw, EP_DHCP_ADDRESS_POOLS, timeout=10.0)
-    except PfSenseError:
+    except PfSenseError as exc:
+        if "404" not in str(exc):
+            raise
         pools = []
     for d in pools if isinstance(pools, list) else []:
         if not isinstance(d, dict):
@@ -271,7 +257,11 @@ async def sync_dhcp_reservations(session: AsyncSession, fw: PfSenseFirewall) -> 
     rows: list[Reservation] = []
     try:
         data = await _api_get(fw, EP_DHCP_STATIC_MAPPINGS, timeout=10.0)
-    except PfSenseError:
+    except PfSenseError as exc:
+        # 404＝這個套件版本沒有這支端點（沒有固定分配可同步）。其他錯誤要往外拋、保留既有資料：
+        # 以前吞掉後用空清單取代，連不上就把固定分配全刪、「DHCP 固定分配」旗標跟著被清掉
+        if "404" not in str(exc):
+            raise
         data = []
     for d in data if isinstance(data, list) else []:
         if not isinstance(d, dict):
@@ -295,15 +285,29 @@ async def sync_arp_table(session: AsyncSession, fw: PfSenseFirewall) -> int:
         return 0
     scope_ids = list(fw.scope_subnet_ids) if fw.scope_subnet_ids else None
     seen = 0
+    hn_run = HostnameRun(session, source="pfsense", origin=f"pfsense:{fw.id}:arp",
+                         peers=await enabled_peers(session, PfSenseFirewall))
+    batch = SightingBatch(session, source="pfsense", subnet_ids=scope_ids, hn_run=hn_run)
     for d in rows:
         if not isinstance(d, dict):
             continue
         ip = _ip_of(d)
         if not ip:
             continue
-        if await _stamp_ip_seen(session, str(ip).split("/")[0], mac=_mac_of(d),
-                                hostname=_host_of(d), subnet_ids=scope_ids):
-            seen += 1
+        # 靜態項目不會隨機器關機消失 → 不能拿來宣稱上線
+        perm = str(d.get("permanent") or d.get("type") or "").strip().lower() in (
+            "1", "true", "yes", "permanent", "static")
+        if str(d.get("expired") or "").strip().lower() in ("1", "true", "yes"):
+            perm = True          # 已過期還列著＝「曾經看過」，不是「現在還在」
+        # 條目自己帶時間就用它（OPNsense 實機是 `expires` 剩餘秒數、FortiOS 是 `age`）。
+        # pfSense 的 REST 套件版本之間欄位不一定有 —— 兩種都試，都沒有就退回同步當下時間，
+        # 那時這筆的意思只剩「這一輪還在表裡」（ARP 逾時之內，仍然是有界的）。
+        when = (arp_seen_svc.seen_from_remaining(d.get("expires"), _PF_ARP_MAX_AGE)
+                or arp_seen_svc.seen_from_age(d.get("age")))
+        batch.add(str(ip).split("/")[0], evidence="arp:pfsense", mac=_mac_of(d),
+                  hostname=_host_of(d), permanent=perm, seen_at=when)
+    seen = sum(1 for found, _e in await batch.flush() if found)
+    await hn_run.finish(complete=True)
     return seen
 
 
@@ -408,10 +412,8 @@ async def sync_nat(session: AsyncSession, fw: PfSenseFirewall) -> int:
         target_ip = _valid_ip(_first(d, "target", "local_ip"))
         dst_ip_id = None
         if target_ip:
-            stmt = select(IPAddress.id).where(IPAddress.ip == target_ip)
-            if scope_ids:
-                stmt = stmt.where(IPAddress.subnet_id.in_(scope_ids))
-            dst_ip_id = (await session.execute(stmt.limit(1))).scalars().first()
+            hit, _amb = await match_existing(session, target_ip, scope_ids)   # 唯一才連
+            dst_ip_id = hit.id if hit is not None else None
         session.add(NATTranslation(
             name=str(_first(d, "descr", "name") or "port forward")[:200],
             type="port_forward",
@@ -431,19 +433,28 @@ async def sync_nat(session: AsyncSession, fw: PfSenseFirewall) -> int:
 async def sync_instance(session: AsyncSession, fw: PfSenseFirewall) -> dict[str, int]:
     """跑此實例所有啟用的同步；設定 last_sync_at / last_error。"""
     counts: dict[str, int] = {}
+    partial: list[str] = []
     if fw.sync_dhcp:
         counts["dhcp"] = await sync_dhcp_leases(session, fw)
     if fw.sync_dhcp_ranges:
-        counts["dhcp_ranges"] = await sync_dhcp_ranges(session, fw)
-        # 固定分配與發放範圍同屬「DHCP 設定」，沿用同一個開關，不再多一個設定項
-        counts["dhcp_reservations"] = await sync_dhcp_reservations(session, fw)
+        # 這兩個區段讀取失敗時各自保留既有資料（函式在取代之前就往外拋），但不拖垮整台的其他
+        # 同步 —— 以前是吞掉錯誤後拿空清單取代；改成往外拋又會讓一支沒權限的端點害整台每輪失敗
+        for key, fn in (("dhcp_ranges", sync_dhcp_ranges),
+                        # 固定分配與發放範圍同屬「DHCP 設定」，沿用同一個開關，不再多一個設定項
+                        ("dhcp_reservations", sync_dhcp_reservations)):
+            try:
+                counts[key] = await fn(session, fw)
+            except PfSenseError as exc:
+                partial.append(f"{key}: {str(exc)[:160]}（保留既有資料）")
     if fw.sync_arp:
         counts["arp"] = await sync_arp_table(session, fw)
     if fw.sync_aliases:
         counts["aliases"] = await sync_aliases(session, fw)
     if fw.sync_rules:
         counts["rules"] = await sync_rules(session, fw)
+        from app.services.fw_review import run_sentinel
+        await run_sentinel(session, source_type="pfsense", instance=fw)
         counts["nat"] = await sync_nat(session, fw)
     fw.last_sync_at = datetime.now(UTC)
-    fw.last_error = None
+    fw.last_error = ("部分區段失敗：" + "；".join(partial)) if partial else None
     return counts

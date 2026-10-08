@@ -32,6 +32,11 @@ class UUIDPrimaryKeyMixin:
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
+        # 程式端先產生：ORM 事先知道主鍵，同一次 flush 的多筆新增才能整批送出。只有資料庫預設時，
+        # 每一筆都要單獨 INSERT … RETURNING 取回主鍵 —— 一次同步寫三萬筆異動記錄就是三萬次來回
+        # （2026-09-30 大量資料測試）。資料庫預設留著，給直接寫 SQL 的地方（遷移、灌資料）。
+        default=uuid.uuid4,
+        insert_sentinel=True,
         server_default=func.gen_random_uuid(),  # 需要 pgcrypto extension
     )
 

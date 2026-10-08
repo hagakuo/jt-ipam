@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from app.core.ui_error import UiError
+
 MAX_TARGETS = 64
 MAX_CONCURRENCY = 32
 MAX_COUNT = 10
@@ -43,7 +45,7 @@ _HOSTNAME_RE = re.compile(
 )
 
 
-class NetDiagError(ValueError):
+class NetDiagError(UiError, ValueError):
     """輸入不合法或環境缺工具。"""
 
 
@@ -55,16 +57,16 @@ def normalize_target(raw: str) -> str:
     """接受 IP 或主機名稱，其餘拒絕。回傳去空白後的字串。"""
     t = (raw or "").strip()
     if not t:
-        raise NetDiagError("目標不可為空")
+        raise NetDiagError("目標不可為空", code="nd_target_empty")
     if len(t) > 253:
-        raise NetDiagError("目標過長")
+        raise NetDiagError("目標過長", code="nd_target_too_long")
     try:
         return str(ipaddress.ip_address(t))
     except ValueError:
         pass
     if _HOSTNAME_RE.match(t):
         return t
-    raise NetDiagError(f"不是有效的 IP 或主機名稱：{raw}")
+    raise NetDiagError(f"不是有效的 IP 或主機名稱：{raw}", code="nd_bad_target", value=raw)
 
 
 def expand_targets(raw: str | list[str]) -> list[str]:
@@ -85,11 +87,12 @@ def expand_targets(raw: str | list[str]) -> list[str]:
             try:
                 net = ipaddress.ip_network(p, strict=False)
             except ValueError as exc:
-                raise NetDiagError(f"不是有效的網段：{p}") from exc
+                raise NetDiagError(f"不是有效的網段：{p}", code="nd_bad_cidr", value=p) from exc
             hosts = list(net.hosts()) or [net.network_address]
             if len(out) + len(hosts) > MAX_TARGETS:
                 raise NetDiagError(
-                    f"{p} 展開後超過上限（最多 {MAX_TARGETS} 個目標）"
+                    f"{p} 展開後超過上限（最多 {MAX_TARGETS} 個目標）",
+                    code="nd_cidr_too_big", value=p, max=MAX_TARGETS,
                 )
             for h in hosts:
                 s = str(h)
@@ -102,9 +105,10 @@ def expand_targets(raw: str | list[str]) -> list[str]:
             seen.add(t)
             out.append(t)
     if not out:
-        raise NetDiagError("沒有可用的目標")
+        raise NetDiagError("沒有可用的目標", code="nd_no_targets")
     if len(out) > MAX_TARGETS:
-        raise NetDiagError(f"目標過多（{len(out)}），最多 {MAX_TARGETS} 個")
+        raise NetDiagError(f"目標過多（{len(out)}），最多 {MAX_TARGETS} 個",
+                           code="nd_too_many_targets", n=len(out), max=MAX_TARGETS)
     return out
 
 
@@ -415,7 +419,7 @@ async def ping_many(
     """對多個目標並行 ping。回傳順序與輸入一致（方便逐列對照）。"""
     native = icmp_socket_available()
     if not native and shutil.which("ping") is None and shutil.which("ping6") is None:
-        raise NetDiagUnavailable("伺服器上找不到 ping（請安裝 iputils-ping）")
+        raise NetDiagUnavailable("伺服器上找不到 ping（請安裝 iputils-ping）", code="nd_no_ping")
     count = max(1, min(count, MAX_COUNT))
     concurrency = max(1, min(concurrency, MAX_CONCURRENCY))
     timeout = max(0.5, min(timeout, 10.0))
@@ -458,6 +462,7 @@ async def ping_many(
 class TraceHop:
     hop: int
     host: str | None = None
+    fqdn: str | None = None      # 反查得到的名稱（查不到＝None，不顯示）
     rtt_ms: float | None = None
     note: str | None = None
 
@@ -469,6 +474,7 @@ class TraceResult:
     hops: list[TraceHop] = field(default_factory=list)
     path_mtu: int | None = None
     truncated: bool = False      # 逾時被截斷：下面的躍點是已探到的部分，不是完整路徑
+    reached: bool = False        # 最後一跳是不是目的地本人 —— 不是的話要明講，不能默默停在半路
     raw: str = ""
 
 
@@ -533,20 +539,22 @@ async def traceroute(target: str, *, max_hops: int = 20, timeout: float = 0.0) -
     # 逾時要跟著躍點數走：對不回 port-unreachable 的目標（如 8.8.8.8），tracepath
     # 會一路探到最大躍點，每跳都要等。固定 45 秒配預設 20 跳＝開箱必定逾時。
     timeout = max(5.0, min(timeout if timeout > 0 else 6.0 + max_hops * 3.5, OVERALL_DEADLINE))
-    if shutil.which("tracepath"):
+    tr = _find_tool("traceroute")
+    if tr:
+        argv = [tr, "-I", "-n", "-q", "1", "-m", str(max_hops), "-w", "2", target]
+        parse = parse_traceroute
+    elif shutil.which("tracepath"):
         argv = ["tracepath", "-n", "-m", str(max_hops), target]
         parse = parse_tracepath
-    elif shutil.which("traceroute"):
-        argv = ["traceroute", "-n", "-m", str(max_hops), "-w", "2", target]
-        parse = parse_traceroute
     else:
         raise NetDiagUnavailable(
-            "伺服器上找不到 tracepath 或 traceroute（請安裝 iputils-tracepath）"
+            "伺服器上找不到 traceroute 或 tracepath（請安裝 traceroute）",
+            code="nd_no_traceroute",
         )
     try:
         out, truncated = await _run_partial(argv, timeout)
     except OSError as exc:
-        raise NetDiagError(f"無法執行：{exc}") from exc
+        raise NetDiagError(f"無法執行：{exc}", code="nd_exec_failed", reason=str(exc)[:200]) from exc
     res = parse(target, out)
     res.truncated = truncated
     return res
@@ -582,7 +590,10 @@ class TracepathIncremental:
             "type": "hop", "hop": hop,
             "host": None if no_reply else host,
             "rtt_ms": float(m2.group(3)) if m2.group(3) else None,
+            # note 可能是路由器回的旗標（`!H`…）原文，所以留著；「無回應」是我們自己
+            # 造的句子，另外給代碼讓前端翻得動。
             "note": "無回應" if no_reply else ((m2.group(4) or "").strip() or None),
+            "note_code": "nd_no_reply" if no_reply else None,
         }
 
 
@@ -604,7 +615,36 @@ class TracerouteIncremental:
             "type": "hop", "hop": int(m.group(1)), "host": host,
             "rtt_ms": float(rtt.group(1)) if rtt else None,
             "note": None if host else "無回應",
+            "note_code": None if host else "nd_no_reply",
         }
+
+
+def _find_tool(name: str) -> str | None:
+    """找執行檔：服務的 PATH 常常沒有 /usr/sbin（systemd 環境），traceroute 就住在那
+    —— shutil.which 找不到不代表沒裝。明確補查常見 sbin 路徑。"""
+    import os
+    found = shutil.which(name)
+    if found:
+        return found
+    for cand in (f"/usr/sbin/{name}", f"/sbin/{name}", f"/usr/local/sbin/{name}"):
+        if os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+async def rdns(ip: str, timeout: float = 0.8) -> str | None:
+    """反查 FQDN：查得到就附在節點旁（跟終端機 traceroute 的體驗一致）。
+
+    短逾時、失敗回 None —— 反查慢或沒有 PTR 不該拖慢整條追蹤，更不該報錯。
+    """
+    import socket
+    try:
+        loop = asyncio.get_running_loop()
+        name, _ = await asyncio.wait_for(
+            loop.getnameinfo((ip, 0), socket.NI_NAMEREQD), timeout=timeout)
+        return None if name == ip else name
+    except Exception:
+        return None
 
 
 def trace_argv(target: str, *, max_hops: int) -> list[str]:
@@ -614,13 +654,19 @@ def trace_argv(target: str, *, max_hops: int) -> list[str]:
     緩衝的，所有行會等到行程結束才一次湧出（實測 6.02 秒時全部到達）。加了它才會
     +0.02 / +3.02 / +6.03 逐行送達。沒有 stdbuf 的系統仍可執行，只是退回一次呈現。
     """
-    if shutil.which("tracepath"):
+    # 優先 `traceroute -I`（ICMP）：tracepath 用 UDP 高埠，路徑後段與許多目的地
+    # （例如 8.8.8.8 之前的骨幹）會把它濾掉 —— 實測同一條路 mac 的 traceroute
+    # 9 跳到站，tracepath 第 8 跳起全靜默、永遠「未到達」。ICMP echo 幾乎都放行。
+    # CAP_NET_RAW 已由 systemd AmbientCapabilities 授予且子行程繼承（LXC ping 同一套）。
+    tr = _find_tool("traceroute")
+    if tr:
+        argv = [tr, "-I", "-n", "-q", "1", "-m", str(max_hops), "-w", "2", target]
+    elif shutil.which("tracepath"):
         argv = ["tracepath", "-n", "-m", str(max_hops), target]
-    elif shutil.which("traceroute"):
-        argv = ["traceroute", "-n", "-m", str(max_hops), "-w", "2", target]
     else:
         raise NetDiagUnavailable(
-            "伺服器上找不到 tracepath 或 traceroute（請安裝 iputils-tracepath）"
+            "伺服器上找不到 traceroute 或 tracepath（請安裝 traceroute）",
+            code="nd_no_traceroute",
         )
     return (["stdbuf", "-oL", *argv] if shutil.which("stdbuf") else argv)
 
@@ -636,7 +682,8 @@ async def traceroute_stream(
     max_hops = max(1, min(max_hops, MAX_HOPS))
     timeout = max(5.0, min(timeout if timeout > 0 else 6.0 + max_hops * 3.5, OVERALL_DEADLINE))
     argv = trace_argv(target, max_hops=max_hops)
-    tool = "tracepath" if "tracepath" in argv else "traceroute"
+    # argv 可能被 stdbuf -oL 前綴，判斷工具要掃整個 argv，不能只看第一個
+    tool = "traceroute" if any("traceroute" in a for a in argv[:3]) else "tracepath"
     parser: Any = (TracepathIncremental(target) if tool == "tracepath"
                    else TracerouteIncremental(target))
 
@@ -645,9 +692,10 @@ async def traceroute_stream(
             *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )
     except OSError as exc:
-        raise NetDiagError(f"無法執行：{exc}") from exc
+        raise NetDiagError(f"無法執行：{exc}", code="nd_exec_failed", reason=str(exc)[:200]) from exc
 
     truncated = False
+    last_host: str | None = None
     deadline = time.monotonic() + timeout
     try:
         while True:
@@ -664,6 +712,10 @@ async def traceroute_stream(
                 break
             hop = parser.feed(raw.decode("utf-8", "replace").rstrip())
             if hop:
+                host = hop.get("host")
+                if host and hop.get("note") != "no reply":
+                    last_host = str(host)
+                    hop["fqdn"] = await rdns(last_host)
                 yield hop
     finally:
         # 逾時或用戶端中斷時一定要收掉子行程，否則 tracepath 會繼續跑到自己結束
@@ -672,8 +724,11 @@ async def traceroute_stream(
             with contextlib.suppress(ProcessLookupError):
                 await proc.wait()
 
+    # 有到目的地嗎？最後一個「有回應」的躍點得是目標本人 —— 沒到要明講，
+    # 默默停在半路看起來像結果，其實是半份結果。
+    reached = last_host == target
     yield {"type": "done", "tool": tool, "target": target,
-           "path_mtu": parser.path_mtu, "truncated": truncated}
+           "path_mtu": parser.path_mtu, "truncated": truncated, "reached": reached}
 
 
 @dataclass
@@ -697,9 +752,9 @@ async def tcp_check(
     timeout = max(0.2, min(timeout, 10.0))
     for p in ports:
         if not 1 <= p <= 65535:
-            raise NetDiagError(f"埠號超出範圍：{p}")
+            raise NetDiagError(f"埠號超出範圍：{p}", code="nd_port_range", value=str(p))
     if len(targets) * len(ports) > MAX_TARGETS * 4:
-        raise NetDiagError("目標與埠的組合過多")
+        raise NetDiagError("目標與埠的組合過多", code="nd_too_many_pairs")
 
     sem = asyncio.Semaphore(concurrency)
     started = time.monotonic()
@@ -708,11 +763,15 @@ async def tcp_check(
         async with sem:
             if time.monotonic() - started > OVERALL_DEADLINE:
                 return PortResult(target=t, port=port, error="整體時間上限已到，未執行")
+            try:
+                addr = await _diag_addr(t, port)
+            except NetDiagError as exc:
+                return PortResult(target=t, port=port, error=str(exc))
             t0 = time.monotonic()
             writer = None
             try:
                 _, writer = await asyncio.wait_for(
-                    asyncio.open_connection(t, port), timeout=timeout)
+                    asyncio.open_connection(addr, port), timeout=timeout)
                 return PortResult(target=t, port=port, open=True,
                                   latency_ms=round((time.monotonic() - t0) * 1000, 2))
             except TimeoutError:
@@ -736,7 +795,7 @@ def tool_availability() -> dict[str, Any]:
     return {
         "ping": bool(shutil.which("ping") or shutil.which("ping6")),
         "tracepath": bool(shutil.which("tracepath")),
-        "traceroute": bool(shutil.which("traceroute")),
+        "traceroute": bool(_find_tool("traceroute")),
         "tcp": True,   # 純 Python，永遠可用
     }
 
@@ -809,9 +868,9 @@ async def udp_check(
     timeout = max(0.2, min(timeout, 10.0))
     for p in ports:
         if not 1 <= p <= 65535:
-            raise NetDiagError(f"埠號超出範圍：{p}")
+            raise NetDiagError(f"埠號超出範圍：{p}", code="nd_port_range", value=str(p))
     if len(targets) * len(ports) > MAX_TARGETS * 4:
-        raise NetDiagError("目標與埠的組合過多")
+        raise NetDiagError("目標與埠的組合過多", code="nd_too_many_pairs")
 
     sem = asyncio.Semaphore(concurrency)
     started = time.monotonic()
@@ -822,13 +881,19 @@ async def udp_check(
                 return UdpResult(target=host, port=port, detail="整體時間上限已到，未執行")
             name, payload = _UDP_PROBES.get(port, ("empty", b"\x00"))
             res = UdpResult(target=host, port=port, probe=name)
+            try:
+                addr = await _diag_addr(host, port)
+            except NetDiagError as exc:
+                res.state = "no_reply"
+                res.detail = str(exc)
+                return res
             loop = asyncio.get_running_loop()
             done: asyncio.Future = loop.create_future()
             transport = None
             t0 = time.monotonic()
             try:
                 transport, _ = await loop.create_datagram_endpoint(
-                    lambda: _UdpProto(done), remote_addr=(host, port))
+                    lambda: _UdpProto(done), remote_addr=(addr, port))
                 transport.sendto(payload)
                 state, data = await asyncio.wait_for(done, timeout=timeout)
                 res.state = state
@@ -918,13 +983,18 @@ async def tls_check(
         async with sem:
             sni = server_name or host
             res = TlsResult(target=host, port=port)
+            try:
+                addr = await _diag_addr(host, port)
+            except NetDiagError as exc:
+                res.error = str(exc)
+                return res
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
             writer = None
             try:
                 _reader, writer = await asyncio.wait_for(
-                    asyncio.open_connection(host, port, ssl=ctx, server_hostname=sni),
+                    asyncio.open_connection(addr, port, ssl=ctx, server_hostname=sni),
                     timeout=timeout)
                 sslobj = writer.get_extra_info("ssl_object")
                 der = sslobj.getpeercert(binary_form=True)
@@ -963,7 +1033,7 @@ async def tls_check(
                     except (OSError, ssl.SSLError):
                         pass
             if res.ok:
-                res.trusted = await _verify_trusted(host, port, sni, timeout)
+                res.trusted = await _verify_trusted(addr, port, sni, timeout)
             return res
 
     return list(await asyncio.gather(*(one(t) for t in targets)))
@@ -1025,6 +1095,125 @@ class HttpResult:
     error: str | None = None
 
 
+class DiagTargetBlocked(NetDiagError):
+    """HTTP 檢查不可以打到 jt-ipam 主機自己或雲端中繼資料位址。"""
+
+
+async def _assert_diag_http_target(url: str) -> None:
+    """HTTP 檢查的目標檢查（CodeQL 標出的 SSRF，2026-09-29）。
+
+    這是內網診斷工具，**私有網段是本來的用途，不擋**；但本機（127.0.0.0/8、::1）、link-local
+    （169.254.0.0/16 ＝ 雲端中繼資料 169.254.169.254、fe80::/10）、多播與未指定位址不是診斷對象 ——
+    打得到就等於任何登入的人都能讓伺服器替他去讀本機服務與雲端憑證。主機名稱要先解析，
+    解析出來的每個位址都檢查（DNS 可以把好看的名字指到 127.0.0.1）。
+    """
+    import asyncio
+    import socket
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise DiagTargetBlocked(f"not an http(s) URL: {url[:200]}")
+    host = parts.hostname
+    try:
+        addrs = [ipaddress.ip_address(host)]
+    except ValueError:
+        loop = asyncio.get_running_loop()
+        try:
+            infos = await loop.getaddrinfo(host, parts.port or (443 if parts.scheme == "https" else 80),
+                                           type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise DiagTargetBlocked(f"DNS resolution failed for {host}: {exc}") from exc
+        addrs = [ipaddress.ip_address(i[4][0]) for i in infos]
+    _diag_check(host, addrs)
+
+
+async def _diag_addr(host: str, port: int) -> str:
+    """TCP／UDP／TLS 檢查要連的位址：解析、套用診斷規則，回傳**檢查過的那個 IP**。
+
+    直接連那個 IP（不再讓 asyncio 自己解析一次），檢查與連線之間 DNS 換答案也不怕。
+    名稱解析失敗丟 NetDiagError（訊息跟以前 open_connection 給的一樣是系統的原因）。
+    """
+    from app.core.safe_http import UnsafeOutboundURL, _aresolve
+    try:
+        addrs = await _aresolve(host, port)
+    except UnsafeOutboundURL as exc:
+        cause = exc.__cause__
+        raise NetDiagError(getattr(cause, "strerror", None) or str(exc)) from exc
+    if not addrs:
+        raise NetDiagError(f"沒有可用的位址：{host}")
+    _diag_check(host, addrs)
+    return str(addrs[0])
+
+
+_LOCAL_CACHE: tuple[float, frozenset[str]] = (0.0, frozenset())
+
+
+def _local_addresses() -> frozenset[str]:
+    """這台伺服器自己的位址（迴路以外）。Linux 讀 /proc/net/fib_trie 的 LOCAL 項與 /proc/net/if_inet6；
+    讀不到就退回主機名稱解析。快取 60 秒（介面位址不常變，每次 HTTP 檢查都讀檔沒必要）。"""
+    import ipaddress
+    import socket
+    import time
+    global _LOCAL_CACHE
+    now = time.monotonic()
+    if now - _LOCAL_CACHE[0] < 60:
+        return _LOCAL_CACHE[1]
+    out: set[str] = set()
+    try:
+        last = None
+        with open("/proc/net/fib_trie", encoding="ascii", errors="replace") as fh:
+            for line in fh:
+                s = line.strip()
+                if s.startswith("|--"):
+                    last = s[3:].strip()
+                elif "host LOCAL" in s and last:
+                    out.add(last)
+    except OSError:
+        pass
+    try:
+        with open("/proc/net/if_inet6", encoding="ascii", errors="replace") as fh:
+            for line in fh:
+                h = line.split()[0] if line.split() else ""
+                if len(h) == 32:
+                    out.add(str(ipaddress.ip_address(int(h, 16))))
+    except (OSError, ValueError):
+        pass
+    if not out:
+        try:
+            out.update(socket.gethostbyname_ex(socket.gethostname())[2])
+        except OSError:
+            pass
+    clean = set()
+    for a in out:
+        try:
+            ip = ipaddress.ip_address(a)
+        except ValueError:
+            continue
+        if not ip.is_loopback:
+            clean.add(str(ip))
+    _LOCAL_CACHE = (now, frozenset(clean))
+    return _LOCAL_CACHE[1]
+
+
+def _diag_check(host: str, addrs: list[Any]) -> None:
+    """診斷工具的位址規則：私網是本來的用途（不擋），本機／link-local／多播不是。
+
+    送出前檢查一次（錯誤訊息清楚）；連線當下再套用一次（`GuardedTransport`）—— 兩次之間
+    DNS 可以換答案。`_ip_in` 會把 `::ffff:127.0.0.1` 這類 IPv4 對映位址當成它代表的 IPv4。
+    """
+    from app.core.safe_http import _BLOCKED_CIDRS, _ip_in
+
+    local = _local_addresses()
+    for ip in addrs:
+        if _ip_in(ip, _BLOCKED_CIDRS):
+            raise DiagTargetBlocked(f"{host} ({ip}) is loopback / link-local / multicast — not a diagnostic target")
+        # 伺服器自己的區網位址：打得到就能讀本機上只綁區網介面的服務（2026-10-06 CodeQL 判讀）
+        mapped = getattr(ip, "ipv4_mapped", None)
+        if str(ip) in local or (mapped is not None and str(mapped) in local):
+            raise DiagTargetBlocked(f"{host} ({ip}) is this server — not a diagnostic target")
+
+
 async def http_check(url: str, *, timeout: float = 10.0, max_redirects: int = 5,
                      verify_tls: bool = False) -> HttpResult:
     """取狀態碼、轉址鏈與幾個關鍵標頭。
@@ -1032,7 +1221,7 @@ async def http_check(url: str, *, timeout: float = 10.0, max_redirects: int = 5,
     預設**不驗證 TLS**：這是診斷工具，對方憑證有問題正是要看的事情之一，
     因驗證失敗而什麼都拿不到反而沒用（是否受信任請用 TLS 憑證檢查那支）。
     """
-    import httpx
+    from app.core.safe_http import guarded_client
 
     if not url.startswith(("http://", "https://")):
         url = "http://" + url
@@ -1042,9 +1231,11 @@ async def http_check(url: str, *, timeout: float = 10.0, max_redirects: int = 5,
     current = url
     t0 = time.monotonic()
     try:
-        async with httpx.AsyncClient(verify=verify_tls, follow_redirects=False,
-                                     timeout=timeout, trust_env=False) as client:
+        async with guarded_client(timeout=timeout, verify=verify_tls, http2=False,
+                                  check=_diag_check) as client:
             for _ in range(max_redirects + 1):
+                # 每一跳都先檢查目標（轉址可以把人帶去本機或雲端中繼資料位址）
+                await _assert_diag_http_target(current)
                 r = await client.get(current)
                 if r.is_redirect and r.headers.get("location"):
                     res.redirects.append(HttpHop(url=current, status=r.status_code,

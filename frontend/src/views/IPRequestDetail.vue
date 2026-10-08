@@ -126,38 +126,37 @@ onMounted(() => {
             <n-tag :type="tagType(detail.request.status)">{{ statusLabel(detail.request.status) }}</n-tag>
           </n-space>
         </template>
-        <template #header-extra>
-          <n-space>
-            <n-popconfirm
-              v-if="detail.request.can_approve"
-              @positive-click="approve"
-            >
-              <template #trigger>
-                <n-button type="primary">{{ t("request_detail.approve_btn") }}</n-button>
-              </template>
-              {{ t("request_detail.approve_confirm") }}
-            </n-popconfirm>
-            <n-button
-              v-if="detail.request.can_approve"
-              type="error"
-              @click="showReject = true"
-            >
-              {{ t("request_detail.reject_btn") }}
-            </n-button>
-            <n-popconfirm
-              v-if="
-                detail.request.status === 'pending' &&
-                (me?.id === detail.request.requester_user_id || me?.is_admin)
-              "
-              @positive-click="cancel"
-            >
-              <template #trigger>
-                <n-button>{{ t("request_detail.cancel_btn") }}</n-button>
-              </template>
-              {{ t("request_detail.cancel_confirm") }}
-            </n-popconfirm>
-          </n-space>
-        </template>
+<!-- 控制元件移到卡片內文最上方（標題列不放控制元件） -->
+        <n-space align="center" justify="end" style="margin-bottom: 10px">
+          <n-popconfirm
+            v-if="detail.request.can_approve"
+            @positive-click="approve"
+          >
+            <template #trigger>
+              <n-button type="primary">{{ t("request_detail.approve_btn") }}</n-button>
+            </template>
+            {{ t("request_detail.approve_confirm") }}
+          </n-popconfirm>
+          <n-button
+            v-if="detail.request.can_approve"
+            type="error"
+            @click="showReject = true"
+          >
+            {{ t("request_detail.reject_btn") }}
+          </n-button>
+          <n-popconfirm
+            v-if="
+              detail.request.status === 'pending' &&
+              (me?.id === detail.request.requester_user_id || me?.is_admin)
+            "
+            @positive-click="cancel"
+          >
+            <template #trigger>
+              <n-button>{{ t("request_detail.cancel_btn") }}</n-button>
+            </template>
+            {{ t("request_detail.cancel_confirm") }}
+          </n-popconfirm>
+        </n-space>
 
         <n-descriptions bordered :column="2" label-style="width: 160px">
           <n-descriptions-item :label="t('requests.col_subnet')">

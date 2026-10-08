@@ -68,7 +68,7 @@ docker compose logs -f backend   # 看遷移 / 啟動記錄
 
 > 版本號跟著原始碼走（`backend/app/version.py` / `frontend/package.json`），所以 `git pull` + 重建就是升版。
 
-## 內網／離線主機（外網 build、內網 run）
+## 內網/離線主機（外網 build、內網 run）
 
 若目標主機**沒有外網**（連不到 Docker Hub），就在有網路的主機把映像 build 好、帶進內網載入 —— 安裝與升級都適用。
 

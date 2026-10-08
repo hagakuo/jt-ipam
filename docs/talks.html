@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>jt-ipam: Talks</title>
+<meta name="description" content="Talk decks about jt-ipam." />
+<style>
+  :root{
+    --green:#18a058; --green-h:#36ad6a; --cyan:#22d3ee;
+    --ink:#0f172a; --body:#334155; --muted:#64748b;
+    --bg:#eef3ee; --card:#ffffff; --line:#e2e8e4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+    color:var(--body);background:var(--bg);line-height:1.7}
+  a{color:inherit;text-decoration:none}
+  /* 三語切換：只顯示目前語言的節點。搜尋與各種 innerText 讀不到 display:none 的內容，
+     所以同一段程式對三種語言都成立。 */
+  .zh,.en,.ja{display:none}
+  body.lang-zh .zh{display:initial}
+  body.lang-en .en{display:initial}
+  body.lang-ja .ja{display:initial}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+  /* ── 與首頁一致的頂列 ── */
+  nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.92);backdrop-filter:saturate(1.4) blur(8px);
+    border-bottom:1px solid var(--line)}
+  .nav-in{display:flex;align-items:center;gap:18px;height:60px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;color:var(--ink);font-size:18px}
+  .nav-links{display:flex;gap:16px;margin-left:auto;flex-wrap:wrap;align-items:center}
+  .nav-links a{color:var(--body);font-size:14px;font-weight:500}
+  .nav-links a:hover{color:var(--green)}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 18px;border-radius:10px;
+    font-weight:600;font-size:15px;line-height:1.3;border:1px solid transparent;cursor:pointer;font-family:inherit}
+  .btn-ghost{background:#fff;border-color:var(--line);color:var(--ink)}
+  .btn-ghost:hover{border-color:var(--green)}
+  .btn-sm{padding:6px 12px;font-size:13px}
+  /* ── 語言切換（自訂下拉） ── */
+  /* 不用原生 <select>：桌面瀏覽器會叫出作業系統自己的彈出視窗，長相與站上其他元件
+     完全不同，也套不上我們的配色與圓角。面板自己畫，行為才一致。
+     也不用三顆並排：那在窄視窗會把頂列擠開，每加一種語言就更擠。 */
+  .langsw{position:relative;display:inline-flex;align-items:center}
+  .langsw > button{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);
+    border-radius:10px;background:#fff;color:var(--ink);font-family:inherit;font-size:13px;
+    font-weight:600;padding:6px 11px;cursor:pointer;line-height:1.3;white-space:nowrap}
+  .langsw > button:hover{border-color:var(--green)}
+  .langsw > button:focus-visible{outline:none;border-color:var(--green);box-shadow:0 0 0 3px rgba(24,160,88,.12)}
+  .langsw .chev{width:7px;height:7px;flex:none;border-right:1.6px solid var(--muted);
+    border-bottom:1.6px solid var(--muted);transform:translateY(-2px) rotate(45deg);transition:transform .15s}
+  .langsw > button[aria-expanded="true"] .chev{transform:translateY(1px) rotate(-135deg)}
+  .langsw ul{position:absolute;top:calc(100% + 6px);right:0;z-index:60;margin:0;padding:5px;
+    list-style:none;min-width:140px;background:#fff;border:1px solid var(--line);border-radius:12px;
+    box-shadow:0 10px 28px rgba(15,23,42,.13)}
+  .langsw li{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;
+    font-size:13.5px;color:var(--body);cursor:pointer;white-space:nowrap}
+  .langsw li:hover{background:#f1f5f2;color:var(--ink)}
+  .langsw li[aria-selected="true"]{color:var(--green);font-weight:700}
+  .langsw li .tick{width:14px;flex:none;text-align:center;opacity:0}
+  .langsw li[aria-selected="true"] .tick{opacity:1}
+  /* 手機：頂列讓它自己長高換行，不要硬壓在 60px 裡把品牌名擠成兩行。 */
+  @media(max-width:560px){
+    .nav-in{height:auto;padding:10px 16px;flex-wrap:wrap;gap:10px}
+    .brand{font-size:16px;white-space:nowrap}
+    .nav-links{gap:8px;width:100%;justify-content:flex-end}
+  }
+  @media(max-width:920px){.nav-links a:not(.btn){display:none}}
+  /* ── 內容 ── */
+  h1{font-size:clamp(26px,4vw,36px);color:var(--ink);margin:30px 0 6px}
+  .sub{color:var(--muted);font-size:14.5px;margin:0 0 24px}
+  .tree{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 26px 26px;
+    box-shadow:0 1px 3px rgba(15,23,42,.05)}
+  .grp{font-weight:800;color:var(--ink);font-size:16.5px;margin:22px 0 6px;display:flex;align-items:center;gap:9px}
+  .grp:first-child{margin-top:6px}
+  .grp .ic{width:22px;height:22px;color:var(--green);flex:none}
+  /* 樹狀分支連線 */
+  ul.branch{list-style:none;margin:0;padding-left:30px}
+  ul.branch > li{position:relative;padding:3px 0 3px 20px;font-size:14.5px}
+  ul.branch > li::before{content:"";position:absolute;left:0;top:-4px;bottom:0;width:2px;background:var(--line)}
+  ul.branch > li:last-child::before{height:20px;bottom:auto}
+  ul.branch > li::after{content:"";position:absolute;left:0;top:16px;width:14px;height:2px;background:var(--line)}
+  ul.branch > li .leaf::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:var(--green);margin-right:8px;vertical-align:middle;opacity:.7}
+  footer{margin:30px 0 80px;font-size:12.5px;color:var(--muted);text-align:center}
+  footer a{color:var(--green)}
+</style>
+<style>
+  .talks{display:flex;flex-direction:column;gap:14px;margin:0 0 40px}
+  .talk{display:block;background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:18px 22px;box-shadow:0 1px 3px rgba(15,23,42,.05);transition:border-color .15s ease,transform .1s ease}
+  .talk:hover{border-color:var(--green);transform:translateY(-1px)}
+  .talk h2{margin:0 0 4px;font-size:19px;color:var(--ink)}
+  .talk .meta{font-size:13.5px;color:var(--muted)}
+  .talk .desc{margin-top:8px;font-size:14.5px}
+</style>
+<noscript><style>.en{display:initial}</style></noscript>
+</head>
+<body>
+<script>
+  /* 在內容繪製前先決定語言（避免閃爍）。優先序：網址 ?lang= > localStorage 偏好 > 預設英文。 */
+  (function(){
+    try{
+      function norm(v){ v = (v || '').toLowerCase();
+        if (v === 'en' || v === 'en-us') return 'en';
+        if (v === 'ja' || v === 'ja-jp') return 'ja';
+        if (v === 'zh' || v === 'zh-tw' || v === 'zh-hant') return 'zh';
+        return null; }
+      var u = null; try { u = norm(new URLSearchParams(location.search).get('lang')); } catch (e) {}
+      var lang = u || norm(localStorage.getItem('jtipam-doc-lang')) || 'en';
+      document.body.classList.add('lang-' + lang);
+      document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : lang === 'ja' ? 'ja' : 'zh-Hant');
+      if (u){ try {
+        localStorage.setItem('jtipam-doc-lang', u);
+        var url = new URL(location.href);
+        url.searchParams.set('lang', u === 'en' ? 'en' : u === 'ja' ? 'ja' : 'zh-TW');
+        history.replaceState(null, '', url);
+      } catch (e) {} }
+    } catch (e) {}
+  })();
+</script>
+<nav>
+  <div class="wrap nav-in">
+    <span class="brand">
+      <svg viewBox="0 0 64 64" width="28" height="28" aria-hidden="true">
+        <rect width="64" height="64" rx="14" fill="#18a058"/>
+        <g stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-opacity="0.9">
+          <line x1="18" y1="18" x2="32" y2="32"/><line x1="46" y1="18" x2="32" y2="32"/>
+          <line x1="18" y1="46" x2="32" y2="32"/><line x1="46" y1="46" x2="32" y2="32"/>
+        </g>
+        <g fill="#fff"><circle cx="18" cy="18" r="5"/><circle cx="46" cy="18" r="5"/>
+          <circle cx="18" cy="46" r="5"/><circle cx="46" cy="46" r="5"/></g>
+        <circle cx="32" cy="32" r="8" fill="#fff"/><circle cx="32" cy="32" r="3.5" fill="#18a058"/>
+      </svg>
+      jt-ipam
+    </span>
+    <div class="nav-links">
+      <a href="index.html#features"><span class="zh">特色</span><span class="en">Features</span><span class="ja">機能</span></a>
+      <a href="index.html#integrations"><span class="zh">整合</span><span class="en">Integrations</span><span class="ja">連携</span></a>
+      <a href="index.html#screens"><span class="zh">畫面</span><span class="en">Screenshots</span><span class="ja">画面</span></a>
+      <a href="index.html#ai">AI</a>
+      <a href="index.html#install"><span class="zh">安裝</span><span class="en">Install</span><span class="ja">インストール</span></a>
+      <a href="adoption.html"><span class="zh">導入流程</span><span class="en">Adoption roadmap</span><span class="ja">導入ガイド</span></a>
+      <a href="api.html">API</a>
+      <a class="btn btn-ghost btn-sm" href="index.html"><span class="zh">回首頁</span><span class="en">Home</span><span class="ja">ホーム</span></a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener">GitHub</a>
+      <span class="langsw">
+        <button type="button" id="langBtn" aria-haspopup="listbox" aria-expanded="false" aria-label="Language">
+          <span id="langCur">繁體中文</span><span class="chev" aria-hidden="true"></span>
+        </button>
+        <ul id="langMenu" role="listbox" hidden>
+          <li role="option" data-lang="zh"><span class="tick">✓</span>繁體中文</li>
+          <li role="option" data-lang="en"><span class="tick">✓</span>English</li>
+          <li role="option" data-lang="ja"><span class="tick">✓</span>日本語</li>
+        </ul>
+      </span>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap">
+  <h1><span class="zh">演講</span><span class="en">Talks</span><span class="ja">発表資料</span></h1>
+  <p class="sub">
+    <span class="zh">jt-ipam 相關的演講簡報，依時間新到舊排列。</span>
+    <span class="en">Decks from talks about jt-ipam, newest first.</span><span class="ja">jt-ipam に関する発表スライドです。新しい順に並んでいます。</span>
+  </p>
+
+  <div class="talks">
+    <a class="talk" href="talk-from-spreadsheet-to-ai-assistant.html">
+      <h2 id="from-spreadsheet-to-ai-assistant">從試算表到 AI 助理：讓 AI 讀懂企業網路資產</h2>
+      <div class="meta">2026-08 · <span class="zh">繁體中文</span><span class="en">Traditional Chinese</span><span class="ja">繁体字中国語</span></div>
+      <div class="desc">
+        <span class="zh">為什麼網路資產管理會從試算表走到 AI 助理，以及過程中在治理、資安與資料品質上的取捨。</span>
+        <span class="en">Why network asset management moves from spreadsheets to an AI assistant, and the governance, security and data-quality trade-offs along the way.</span><span class="ja">ネットワーク資産管理がなぜ表計算から AI アシスタントへ移っていくのか、そしてその過程でのガバナンス・セキュリティ・データ品質のトレードオフ。</span>
+      </div>
+    </a>
+  </div>
+</div>
+
+<footer>
+    <span class="zh">完整原始碼與文件見 </span><span class="en">Full source &amp; docs at </span><span class="ja">ソースとドキュメントは </span>
+    <a href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener">GitHub</a>
+  </footer>
+
+<script>
+  (function(){
+    // 初始語言已由 <body> 開頭的 inline script 決定（避免閃爍）；這裡只負責切換按鈕。
+    var KEY = 'jtipam-doc-lang';
+    var btn = document.getElementById('langBtn');
+    var menu = document.getElementById('langMenu');
+    var label = document.getElementById('langCur');
+    var items = menu ? Array.prototype.slice.call(menu.querySelectorAll('li')) : [];
+    function cur(){ return document.body.classList.contains('lang-ja') ? 'ja'
+                         : document.body.classList.contains('lang-en') ? 'en' : 'zh'; }
+    function mark(){
+      var c = cur();
+      items.forEach(function(li){ li.setAttribute('aria-selected', String(li.dataset.lang === c)); });
+      var on = items.filter(function(li){ return li.dataset.lang === c; })[0];
+      if (label && on) label.textContent = on.textContent.replace('✓', '').trim();
+    }
+    function open(v){
+      if (!menu || !btn) return;
+      menu.hidden = !v;
+      btn.setAttribute('aria-expanded', String(v));
+    }
+    function set(l){
+      document.body.classList.remove('lang-zh','lang-en','lang-ja');
+      document.body.classList.add('lang-' + l);
+      document.documentElement.setAttribute('lang', l === 'en' ? 'en' : l === 'ja' ? 'ja' : 'zh-Hant');
+      try {
+        localStorage.setItem(KEY, l);
+        var u = new URL(location.href);
+        u.searchParams.set('lang', l === 'en' ? 'en' : l === 'ja' ? 'ja' : 'zh-TW');
+        history.replaceState(null, '', u);
+      } catch (e) {}
+      mark(); open(false);
+      // 頁面上其他要跟著語言改字的東西（例如 api.html 的上一節/下一節標題）掛這個事件。
+      document.dispatchEvent(new CustomEvent('jtipam:langchange', { detail: { lang: l } }));
+    }
+    if (btn) btn.addEventListener('click', function(e){ e.stopPropagation(); open(menu.hidden); });
+    items.forEach(function(li){ li.addEventListener('click', function(){ set(li.dataset.lang); }); });
+    // 點面板外面、按 Esc 都要關：自己畫的面板不會自動有這些行為。
+    document.addEventListener('click', function(e){ if (menu && !menu.hidden && !menu.contains(e.target)) open(false); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape') open(false); });
+    mark();
+  })();
+</script>
+<script>
+  /* <title> / description / <html lang> 也要跟著語言走。
+     原本只有內文與截圖會切，文件本身的中繼資料留在原地，於是三種語言的
+     分頁標題、搜尋結果與分享預覽全都是中文。靜態值放預設語言（英文），
+     這樣沒有 JavaScript 的讀者與爬蟲拿到的也是對的那一份。 */
+  (function(){
+    var META = {"zh": ["jt-ipam：演講", "jt-ipam 相關演講的簡報。"], "en": ["jt-ipam: Talks", "Talk decks about jt-ipam."], "ja": ["jt-ipam：講演", "jt-ipam に関する講演のスライド。"]};
+    function cur(){
+      var c = document.body.className;
+      return c.indexOf('lang-ja') >= 0 ? 'ja' : c.indexOf('lang-zh') >= 0 ? 'zh' : 'en';
+    }
+    function apply(l){
+      var m = META[l] || META.en;
+      if (!m) return;
+      document.title = m[0];
+      var d = document.querySelector('meta[name="description"]');
+      if (d) d.setAttribute('content', m[1]);
+      document.documentElement.setAttribute('lang', {"zh": "zh-Hant", "en": "en", "ja": "ja"}[l] || 'en');
+    }
+    document.addEventListener('jtipam:langchange', function(e){ apply(e.detail.lang); });
+    apply(cur());
+  })();
+</script>
+<script src="anchors.js" defer></script>
+</body>
+</html>

@@ -20,6 +20,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -60,6 +61,13 @@ class PfSenseFirewall(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # 關聯子網路範圍（留空＝全域 IP 字串比對）；重疊網段時限定比對範圍
     scope_subnet_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
         ARRAY(UUID(as_uuid=True)), nullable=True,
+    )
+
+    # DHCP 有、IPAM 沒有的位址要不要自動建立。**預設關閉**：拿得到 DHCP 位址的機器
+    # 不等於該進 IPAM 的機器，開了之後私接的設備也會被自動收錄，而且從此不再出現在
+    # 「未授權 IP」異常偵測（那道偵測的判定就是「ARP 看得到、IPAM 沒有」）。
+    auto_create_ips: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
     )
     description: Mapped[str | None] = mapped_column(Text)
 

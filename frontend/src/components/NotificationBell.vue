@@ -15,20 +15,28 @@ import { listNotifications, markAllRead, markRead, type Notification } from "@/a
 import { BellIcon, CheckIcon } from "@/icons";
 import { fmtDateTime, fmtRelative } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
+import { notifTitle, notifBody } from "@/utils/notifText";
 import { useRouter } from "vue-router";
 
 const { t } = useI18n();
 const router = useRouter();
 
-// 有 i18n key 就依當前語言渲染（帶參數）；沒有則退回存起來的原字串（向下相容舊通知）
-function dispTitle(n: Notification): string {
-  return n.title_key ? t(n.title_key, (n.params || {}) as Record<string, unknown>) : n.title;
-}
-function dispBody(n: Notification): string {
-  return n.body_key ? t(n.body_key, (n.params || {}) as Record<string, unknown>) : (n.body || "");
-}
+const dispTitle = (n: Notification) => notifTitle(n, t);
+const dispBody = (n: Notification) => notifBody(n, t);
 
 const items = ref<Notification[]>([]);
+
+// 彈出框靠鈴鐺右緣對齊（bottom-end）往左展開；手機上鈴鐺離左邊不到 360px，固定寬度會超出畫面左邊
+// （使用者回報）。打開時量鈴鐺的位置，寬度最多用到離畫面左邊 8px 為止。寬度要含左右內距
+// （border-box），否則實際會再寬 28px。
+const POP_W = 360;
+const bellBtn = ref<{ $el?: HTMLElement } | null>(null);
+const popWidth = ref(POP_W);
+function onPopShow(show: boolean) {
+  if (!show) return;
+  const right = bellBtn.value?.$el?.getBoundingClientRect?.().right;
+  popWidth.value = right ? Math.max(240, Math.min(POP_W, Math.floor(right) - 8)) : POP_W;
+}
 const unread = ref(0);
 let timer: number | null = null;
 
@@ -52,6 +60,12 @@ async function clickItem(n: Notification) {
       // ignore
     }
   }
+  // 通知要帶得到現場：只標已讀等於使用者還得自己找那一頁（回報過）。
+  // link 是後端給的站內路徑（例如 /anomaly?tab=fw_rule_rot）；外部網址不接受，
+  // 避免通知內容變成開放導向。
+  if (n.link && n.link.startsWith("/") && !n.link.startsWith("//")) {
+    void router.push(n.link);
+  }
 }
 
 async function clearAll() {
@@ -74,9 +88,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <n-popover trigger="click" placement="bottom-end" style="width: 360px" :show-arrow="false">
+  <n-popover trigger="click" placement="bottom-end" :style="{ width: `${popWidth}px`, boxSizing: 'border-box' }" :show-arrow="false"
+             class="notif-pop" @update:show="onPopShow">
     <template #trigger>
-      <n-button text :focusable="false" aria-label="notifications"
+      <n-button ref="bellBtn" text :focusable="false" aria-label="notifications"
                 style="display: flex; align-items: center;">
         <n-badge :value="unread" :max="99" :show="unread > 0" :offset="[2, -2]"
                  style="display: flex; align-items: center;">
@@ -122,7 +137,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 通知過多時內部捲動，不讓彈窗長過畫面（標題與「查看全部」維持固定可見） */
+/* 通知過多時內部捲動，不讓彈窗長過畫面（標題與「檢視全部」維持固定可見） */
 .notif-scroll {
   max-height: min(60vh, 460px);
   overflow-y: auto;

@@ -1,0 +1,14 @@
+[Unit]
+Description=jt-ipam Recog fingerprint database weekly update check
+# No Requires= on the service: it would make `systemctl enable --now` (install / upgrade)
+# start the service right away, racing the installer's own run of the same job.
+
+[Timer]
+# Recog (github.com/rapid7/recog) publishes a release every 1-6 weeks; checking once a
+# week costs one GitHub API call and downloads only when there is a newer release.
+OnCalendar=Mon *-*-* 04:45:00
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

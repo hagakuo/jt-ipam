@@ -83,6 +83,46 @@ def _detect_query_kind(q: str) -> str:
     return "free"
 
 
+# 備註命中的分數帶。刻意壓得比其他命中低一整級：備註是自由文字，「這台備援指向
+# 203.0.113.9」不代表使用者在找這台。帶內仍分三級，讓整段就是備註的那筆排前面。
+# 說明與擁有者不壓分 —— 那兩欄是在描述這台機器本身，命中的理由跟主機名稱同級。
+_NOTE_EXACT = 0.15
+_NOTE_PREFIX = 0.10
+_NOTE_SUBSTR = 0.05
+# 主機名稱含查詢字時的分數下限。主機名稱是這個物件的身分 —— 打「kappa5」的人要的
+# 就是那台叫 kappa5 的機器。純看 trigram 會反過來：「kappa5 小組」比「kappa5-web」
+# 短，相似度反而高，於是「某某組負責的機器」排到「那台機器」前面。
+# 只墊底不封頂，所以更好的命中（精確 IP 1.0、MAC 0.95）仍然在前面。
+_HOSTNAME_SUBSTR_FLOOR = 0.85
+# 這些欄位可能很長；副標只放命中的那一段前後，整段塞進去會把結果列撐爆。
+_SNIPPET_PAD = 24
+
+
+def _note_score(note: str | None, q: str) -> float:
+    n = (note or "").strip().lower()
+    ql = q.strip().lower()
+    if not n or not ql:
+        return _NOTE_SUBSTR
+    if n == ql:
+        return _NOTE_EXACT
+    if n.startswith(ql):
+        return _NOTE_PREFIX
+    return _NOTE_SUBSTR
+
+
+def _snippet(value: str | None, q: str) -> str | None:
+    """欄位裡命中的那一段（含前後文）。"""
+    if not value:
+        return None
+    text_ = value.strip()
+    i = text_.lower().find(q.strip().lower())
+    if i < 0:
+        return text_[:_SNIPPET_PAD * 2] or None
+    start = max(0, i - _SNIPPET_PAD)
+    end = min(len(text_), i + len(q) + _SNIPPET_PAD)
+    return ("…" if start else "") + text_[start:end] + ("…" if end < len(text_) else "")
+
+
 async def _search_ip_exact(
     session: AsyncSession, *, user: User, ip: str, limit: int
 ) -> list[SearchHit]:
@@ -231,7 +271,7 @@ async def _search_vmid(
     if not ip_ids:
         return []
     ips = {ip.id: ip for ip in (await session.execute(
-        select(IPAddress).where(IPAddress.id.in_(ip_ids))
+        select(IPAddress).where(IPAddress.id.in_(ip_ids))  # bounded: one page of search hits
     )).scalars().all()}
     visible = set(await filter_visible(
         session, user=user, object_type="subnet",
@@ -258,7 +298,9 @@ async def _search_text_trgm(
     qlike = f"%{q}%"
     # 看起來像「IP 片段」：只含數字與點且至少有一個點
     #   e.g. "192.168"（首碼）/ ".1.189"（結尾）/ "1.189"（中段）/ "10.1."
-    looks_like_ip_fragment = bool(re.match(r"^[0-9.]*\.[0-9.]*$", q)) and any(ch.isdigit() for ch in q)
+    # 不用正規表示式：`[0-9.]*\.[0-9.]*` 在一長串數字上會回溯到平方時間（CodeQL 標出）
+    looks_like_ip_fragment = ("." in q and set(q) <= set("0123456789.")
+                              and any(ch.isdigit() for ch in q))
     ipfrag = f"%{q}%"  # IP 片段一律走子字串比對（首碼/結尾/中段都能撞到）
     # IP 片段 / IP / CIDR / MAC 查詢時不要用 trigram 模糊比對（否則 .200 會誤中 .201/.208）
     fuzzy = not (looks_like_ip_fragment or _detect_query_kind(q) in ("ip", "cidr", "mac"))
@@ -385,20 +427,33 @@ async def _search_text_trgm(
                 )
             )
 
-    # IP addresses (hostname)
+    # IP addresses（主機名稱／說明／擁有者／備註）
+    #
+    # 備註是使用者自己寫的自由文字，命中的理由最弱 —— 所以它只做子字串比對（不做
+    # trigram 模糊，否則自由文字會把雜訊推到前面），而且分數被壓在 _NOTE_* 那一段，
+    # 一律排在其他欄位的命中後面。ORDER BY 先看 strong：這樣就算備註命中一大堆，
+    # 也不會把主機名稱的命中擠出 LIMIT 之外。
     ip_sql = text(
         """
         SELECT a.id, host(a.ip) AS ip, a.hostname, a.subnet_id,
+               a.description, a.owner, a.note,
                GREATEST(
                  COALESCE(similarity(a.hostname, :q), 0),
-                 COALESCE(similarity(a.description, :q), 0)
-               ) AS score
+                 COALESCE(similarity(a.description, :q), 0),
+                 COALESCE(similarity(a.owner, :q), 0)
+               ) AS score,
+               (a.hostname ILIKE :qlike
+                OR a.description ILIKE :qlike
+                OR a.owner ILIKE :qlike
+                OR similarity(a.hostname, :q) > 0.2) AS strong
           FROM ip_addresses a
          WHERE (a.hostname ILIKE :qlike
             OR a.description ILIKE :qlike
+            OR a.owner ILIKE :qlike
+            OR a.note ILIKE :qlike
             OR similarity(a.hostname, :q) > 0.2)
            AND a.subnet_id IN (SELECT id FROM subnets WHERE archived_at IS NULL)
-         ORDER BY score DESC
+         ORDER BY strong DESC, score DESC
          LIMIT :limit
         """
     )
@@ -409,17 +464,34 @@ async def _search_text_trgm(
             object_ids=[r.subnet_id for r in ip_rows], required="read",
         )
     )
+    qlow = q.strip().lower()
     for r in ip_rows:
-        if r.subnet_id in visible_ip_subnets:
-            out.append(
-                SearchHit(
-                    type="ip_address",
-                    id=str(r.id),
-                    label=r.hostname or r.ip,
-                    sublabel=r.ip if r.hostname else None,
-                    score=min(float(r.score or 0), 1.0),
-                )
+        if r.subnet_id not in visible_ip_subnets:
+            continue
+        parts: list[str | None] = [r.ip if r.hostname else None]
+        # 命中的字不在 label 裡時，要指出是哪一欄命中的 —— 否則畫面上只是一個跟查詢
+        # 字看不出關係的 IP。副標含查詢字也讓後面的「子字串優先」篩選認得它；少了
+        # 這一步，說明／擁有者／備註的命中會被那道篩選整批濾掉（看起來就是「搜不到」）。
+        hostname_hit = bool(r.hostname and qlow in r.hostname.lower())
+        label_explains = hostname_hit or qlow in r.ip
+        if not label_explains:
+            parts += [_snippet(v, q) for v in (r.description, r.owner, r.note)
+                      if v and qlow in v.lower()]
+        if r.strong:
+            score = min(float(r.score or 0), 1.0)
+            if hostname_hit:
+                score = max(score, _HOSTNAME_SUBSTR_FLOOR)
+        else:
+            score = _note_score(r.note, q)
+        out.append(
+            SearchHit(
+                type="ip_address",
+                id=str(r.id),
+                label=r.hostname or r.ip,
+                sublabel=" · ".join(x for x in parts if x) or None,
+                score=score,
             )
+        )
 
     # Devices
     dev_sql = text(

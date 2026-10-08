@@ -1,0 +1,133 @@
+/**
+ * 相容 RustDesk 的網頁連線：map 模式的按鍵代碼（規格第 9.2 節、附錄 A）。
+ *
+ * KeyboardEvent.code（實體按鍵的位置）→ [Windows PS/2 set 1 掃描碼（延伸鍵 0xE0xx）、
+ * Linux X11 keycode、macOS 虛擬鍵碼（ANSI）]。null＝這個平台沒有對應，不送。
+ * 第一階段只有附錄 A 這張表；F13 以上、多媒體鍵、日韓文鍵第二階段再補。
+ */
+
+type Row = [number, number, number | null];
+
+export const KEYMAP: Readonly<Record<string, Row>> = {
+  AltLeft: [0x38, 64, 0x3a],
+  AltRight: [0xe038, 108, 0x3d],
+  Backspace: [0x0e, 22, 0x33],
+  CapsLock: [0x3a, 66, 0x39],
+  ControlLeft: [0x1d, 37, 0x3b],
+  ControlRight: [0xe01d, 105, 0x3e],
+  Delete: [0xe053, 119, 0x75],
+  ArrowUp: [0xe048, 111, 0x7e],
+  ArrowDown: [0xe050, 116, 0x7d],
+  ArrowLeft: [0xe04b, 113, 0x7b],
+  ArrowRight: [0xe04d, 114, 0x7c],
+  End: [0xe04f, 115, 0x77],
+  Escape: [0x01, 9, 0x35],
+  F1: [0x3b, 67, 0x7a],
+  F2: [0x3c, 68, 0x78],
+  F3: [0x3d, 69, 0x63],
+  F4: [0x3e, 70, 0x76],
+  F5: [0x3f, 71, 0x60],
+  F6: [0x40, 72, 0x61],
+  F7: [0x41, 73, 0x62],
+  F8: [0x42, 74, 0x64],
+  F9: [0x43, 75, 0x65],
+  F10: [0x44, 76, 0x6d],
+  F11: [0x57, 95, 0x67],
+  F12: [0x58, 96, 0x6f],
+  Home: [0xe047, 110, 0x73],
+  MetaLeft: [0xe05b, 133, 0x37],
+  PageDown: [0xe051, 117, 0x79],
+  PageUp: [0xe049, 112, 0x74],
+  Enter: [0x1c, 36, 0x24],
+  ShiftLeft: [0x2a, 50, 0x38],
+  ShiftRight: [0x36, 62, 0x3c],
+  Space: [0x39, 65, 0x31],
+  Tab: [0x0f, 23, 0x30],
+  PrintScreen: [0xe037, 107, null],
+  ScrollLock: [0x46, 78, null],
+  NumLock: [0x45, 77, 0x47],
+  Backquote: [0x29, 49, 0x32],
+  Digit1: [0x02, 10, 0x12],
+  Digit2: [0x03, 11, 0x13],
+  Digit3: [0x04, 12, 0x14],
+  Digit4: [0x05, 13, 0x15],
+  Digit5: [0x06, 14, 0x17],
+  Digit6: [0x07, 15, 0x16],
+  Digit7: [0x08, 16, 0x1a],
+  Digit8: [0x09, 17, 0x1c],
+  Digit9: [0x0a, 18, 0x19],
+  Digit0: [0x0b, 19, 0x1d],
+  Minus: [0x0c, 20, 0x1b],
+  Equal: [0x0d, 21, 0x18],
+  KeyQ: [0x10, 24, 0x0c],
+  KeyW: [0x11, 25, 0x0d],
+  KeyE: [0x12, 26, 0x0e],
+  KeyR: [0x13, 27, 0x0f],
+  KeyT: [0x14, 28, 0x11],
+  KeyY: [0x15, 29, 0x10],
+  KeyU: [0x16, 30, 0x20],
+  KeyI: [0x17, 31, 0x22],
+  KeyO: [0x18, 32, 0x1f],
+  KeyP: [0x19, 33, 0x23],
+  BracketLeft: [0x1a, 34, 0x21],
+  BracketRight: [0x1b, 35, 0x1e],
+  Backslash: [0x2b, 51, 0x2a],
+  KeyA: [0x1e, 38, 0x00],
+  KeyS: [0x1f, 39, 0x01],
+  KeyD: [0x20, 40, 0x02],
+  KeyF: [0x21, 41, 0x03],
+  KeyG: [0x22, 42, 0x05],
+  KeyH: [0x23, 43, 0x04],
+  KeyJ: [0x24, 44, 0x26],
+  KeyK: [0x25, 45, 0x28],
+  KeyL: [0x26, 46, 0x25],
+  Semicolon: [0x27, 47, 0x29],
+  Quote: [0x28, 48, 0x27],
+  IntlBackslash: [0x56, 94, 0x0a],
+  KeyZ: [0x2c, 52, 0x06],
+  KeyX: [0x2d, 53, 0x07],
+  KeyC: [0x2e, 54, 0x08],
+  KeyV: [0x2f, 55, 0x09],
+  KeyB: [0x30, 56, 0x0b],
+  KeyN: [0x31, 57, 0x2d],
+  KeyM: [0x32, 58, 0x2e],
+  Comma: [0x33, 59, 0x2b],
+  Period: [0x34, 60, 0x2f],
+  Slash: [0x35, 61, 0x2c],
+  Insert: [0xe052, 118, 0x72],
+  NumpadSubtract: [0x4a, 82, 0x4e],
+  NumpadAdd: [0x4e, 86, 0x45],
+  NumpadMultiply: [0x37, 63, 0x43],
+  NumpadDivide: [0xe035, 106, 0x4b],
+  NumpadDecimal: [0x53, 91, 0x41],
+  NumpadEnter: [0xe01c, 104, 0x4c],
+  Numpad0: [0x52, 90, 0x52],
+  Numpad1: [0x4f, 87, 0x53],
+  Numpad2: [0x50, 88, 0x54],
+  Numpad3: [0x51, 89, 0x55],
+  Numpad4: [0x4b, 83, 0x56],
+  Numpad5: [0x4c, 84, 0x57],
+  Numpad6: [0x4d, 85, 0x58],
+  Numpad7: [0x47, 79, 0x59],
+  Numpad8: [0x48, 80, 0x5b],
+  Numpad9: [0x49, 81, 0x5c],
+  MetaRight: [0xe05c, 134, 0x36],
+  ContextMenu: [0xe05d, 135, 0x6e],
+};
+
+/** 依 PeerInfo.platform 選欄位；查不到（或那個平台是「—」）回 null，不送。 */
+export function keyCodeFor(code: string, platform: string): number | null {
+  const row = Object.prototype.hasOwnProperty.call(KEYMAP, code) ? KEYMAP[code] : undefined;
+  if (!row) return null;
+  if (platform === "Windows") return row[0];
+  if (platform === "Linux") return row[1];
+  if (platform === "Mac OS") return row[2];
+  return null;          // Android 等：附錄 A 沒有這一欄
+}
+
+/** 鎖定鍵規則（9.2）：字母鍵帶 CapsLock 狀態、數字鍵盤帶 NumLock 狀態，其他按鍵不帶。 */
+export function lockModifiers(code: string, capsLock: boolean, numLock: boolean): number[] {
+  if (/^Key[A-Z]$/.test(code)) return capsLock ? [3] : [];
+  if (code.startsWith("Numpad")) return numLock ? [63] : [];
+  return [];
+}

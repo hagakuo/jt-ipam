@@ -110,11 +110,12 @@ onMounted(() => { void refresh(); void loadOutlets(); });
         {{ t("power_ports.title") }} ({{ ports.length }})
       </span>
     </template>
-    <template #header-extra>
+    <!-- 控制列：自標題列搬到內文最上方 -->
+    <n-space align="center" justify="end" style="margin-bottom: 10px">
       <n-button v-if="admin" size="small" type="primary" @click="openCreate">
         <template #icon><n-icon><PlusIcon /></n-icon></template>{{ t("power_ports.add") }}
       </n-button>
-    </template>
+    </n-space>
     <n-data-table :columns="cols" :data="ports" :loading="loading" :bordered="false" size="small">
       <template #empty><n-space justify="center" style="opacity:.6">{{ t("power_ports.empty") }}</n-space></template>
     </n-data-table>

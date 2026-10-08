@@ -296,9 +296,8 @@ async function save() {
     <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp"
            style="display:none" @change="onFile" />
 
-    <n-space align="center" style="margin-bottom: 10px" :wrap-item="false">
-      <n-icon :size="18"><RacksIcon /></n-icon>
-      <strong>{{ t("racks.floor_plan") }}</strong>
+    <!-- 標題由外面的卡片標題列負責（跟其他卡片同一個樣式）；這裡只放工具按鈕 -->
+    <n-space v-if="canEdit || hasPlan" align="center" style="margin-bottom: 10px" :wrap-item="false">
       <template v-if="canEdit">
         <n-button size="small" @click="pickFile">
           <template #icon><n-icon><PlusIcon /></n-icon></template>
@@ -329,6 +328,18 @@ async function save() {
       <span v-if="editMode" class="hint">{{ t("racks.fp_edit_hint") }}</span>
       <span v-else-if="hasPlan" class="hint">{{ t("racks.fp_view_hint") }}</span>
     </n-space>
+
+
+    <!-- 未擺放機櫃托盤（編輯模式）。放在平面圖**上面**而且要顯眼 —— 擺在最下面、用灰色
+         虛線小按鈕時，使用者根本不會發現「還有機櫃沒被放上去」，只會覺得平面圖少了一台。 -->
+    <div v-if="editMode && unplaced().length" class="tray">
+      <n-icon :size="15" class="tray-icon"><RacksIcon /></n-icon>
+      <span class="tray-label">{{ t("racks.fp_unplaced_count", { n: unplaced().length }) }}</span>
+      <n-button v-for="r in unplaced()" :key="r.id" size="tiny" type="warning"
+                @click="placeFromTray(r)">
+        {{ r.name }}
+      </n-button>
+    </div>
 
     <n-empty v-if="!hasPlan && !loading" :description="t('racks.fp_empty')" style="padding: 32px 0" />
 
@@ -374,13 +385,6 @@ async function save() {
       <n-button size="tiny" @click="resetView">{{ t("racks.fp_reset_view") }}</n-button>
     </div>
 
-    <!-- 未擺放機櫃托盤（編輯模式）-->
-    <div v-if="editMode && unplaced().length" class="tray">
-      <span class="tray-label">{{ t("racks.fp_unplaced") }}：</span>
-      <n-button v-for="r in unplaced()" :key="r.id" size="tiny" dashed @click="placeFromTray(r)">
-        {{ r.name }}
-      </n-button>
-    </div>
   </div>
 </template>
 
@@ -447,9 +451,16 @@ async function save() {
   background: #fff; border: 2px solid #2059b0; cursor: nwse-resize;
 }
 .tray {
-  margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
-  padding: 8px 10px; background: rgba(127,127,127,0.06); border-radius: 6px;
+  margin: 10px 0 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 8px 12px; border-radius: 8px;
+  /* 琥珀色：這是「還有事情沒做完」而不是一般資訊。用半透明疊色，淺色與深色主題都成立。 */
+  background: rgba(240, 160, 32, 0.14);
+  border: 1px solid rgba(240, 160, 32, 0.45);
 }
-.tray-label { font-size: 12px; opacity: 0.7; }
+.tray-icon { color: #f0a020; }
+.tray-label { font-size: 12px; font-weight: 600; color: #f0a020; }
+/* 淺色底上 #f0a020 對比只有約 2:1，12px 字讀不清楚 → 淺色主題改用深琥珀 */
+html[data-theme="light"] .tray-icon,
+html[data-theme="light"] .tray-label { color: #8a5300; }
 .hint { font-size: 12px; opacity: 0.6; }
 </style>

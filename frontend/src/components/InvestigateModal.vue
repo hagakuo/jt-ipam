@@ -46,6 +46,11 @@
             </div>
           </n-collapse-item>
 
+          <!-- 設備識別（2026-10-05 起的新段落都由 investigateSections 產生，匯出用的是同一份） -->
+          <n-collapse-item v-for="s in headList" :key="s.key" :title="s.title" :name="s.key">
+            <div v-for="(line, i) in s.lines" :key="i" class="inv-row">{{ line }}</div>
+          </n-collapse-item>
+
           <n-collapse-item v-if="d.hostname_sources.length"
                            :title="`${t('hostnameSrc.sources')}（${d.hostname_sources.length}）`"
                            name="names">
@@ -60,6 +65,10 @@
 
           <n-collapse-item v-if="monitorList.length" :title="t('investigate.monitoring')" name="mon">
             <div v-for="m in monitorList" :key="m" class="inv-row">{{ m }}</div>
+          </n-collapse-item>
+
+          <n-collapse-item v-for="s in midList" :key="s.key" :title="secTitle(s)" :name="s.key">
+            <div v-for="(line, i) in s.lines" :key="i" class="inv-row">{{ line }}</div>
           </n-collapse-item>
 
           <n-collapse-item v-if="d.arp.length" :title="`ARP（${d.arp.length}）`" name="arp">
@@ -84,6 +93,10 @@
             <div v-for="(r, i) in d.firewall_rules" :key="i" class="inv-row">
               {{ r.action }} {{ r.interface }} {{ r.protocol }}/{{ r.port }} — {{ r.description }}
             </div>
+          </n-collapse-item>
+
+          <n-collapse-item v-for="s in tailList" :key="s.key" :title="secTitle(s)" :name="s.key">
+            <div v-for="(line, i) in s.lines" :key="i" class="inv-row">{{ line }}</div>
           </n-collapse-item>
 
           <n-collapse-item v-if="d.changes.length"
@@ -119,7 +132,13 @@
                      think: thinkChars }) }}
               </span>
             </div>
-            <div class="inv-ai-note">{{ t("investigate.ai_note") }}</div>
+            <div class="inv-ai-note">
+              {{ t("investigate.ai_note") }}
+              <!-- 出自哪個模型是判讀品質的一部分（判讀可以另設模型，不一定是對話那個） -->
+              <span v-if="aiModel" class="inv-ai-model" data-testid="inv-ai-model">
+                {{ t("investigate.ai_model", { model: aiModel }) }}
+              </span>
+            </div>
             <div class="inv-ai-body" v-html="renderMarkdown(narrative)" />
           </template>
           <div v-if="narrativeError" class="inv-ai-err">{{ narrativeError }}</div>
@@ -145,59 +164,51 @@ import { investigate } from "@/api/investigate";
 import { narrativeStream } from "@/api/investigate";
 import { TestIcon } from "@/icons";
 import { fmtDateTime } from "@/utils/datetime";
+import { lnmsStatusLabel, wazuhStatusLabel } from "@/utils/integrationStatus";
 import { renderMarkdown } from "@/utils/markdown";
+import { aiErrText } from "@/utils/wsError";
 import { downloadReport, type ReportFormat, type ReportSection } from "@/utils/investigateReport";
+import {
+  conflictLines, headSections, midSections, monitorLines, tailSections,
+  type InvSection, type SectionHelpers,
+} from "@/utils/investigateSections";
 import ChangeValue from "@/components/ChangeValue.vue";
 
 const props = defineProps<{ show: boolean; ip: string }>();
 defineEmits<{ (e: "update:show", v: boolean): void }>();
-const { t, locale } = useI18n();
+const { t, te, locale } = useI18n();
 
 const d = ref<any>(null);
 const loading = ref(false);
 const asking = ref(false);
 const narrative = ref<string>("");
 const narrativeError = ref<string>("");
+const aiModel = ref<string>("");
 
-const defaultOpen = ["other", "names", "mon"];
+const defaultOpen = ["other", "identity", "names", "mon"];
+
+// 新段落的文字：畫面與匯出用同一份（utils/investigateSections）
+const helpers: SectionHelpers = { t: (k, p) => (p ? t(k, p) : t(k)), te: (k) => te(k), fmt: (v) => fmtDateTime(v) };
+const headList = computed(() => headSections(d.value, helpers));
+const midList = computed(() => midSections(d.value, helpers));
+const tailList = computed(() => tailSections(d.value, helpers));
+const secTitle = (s: InvSection) => (s.count != null ? `${s.title}（${s.count}）` : s.title);
 
 const osList = computed(() =>
   Object.entries(d.value?.os_candidates ?? {}).map(([k, v]) => `${k}：${v}`));
 
-const monitorList = computed(() => {
-  const m = d.value?.monitoring ?? {};
-  const out: string[] = [];
-  if (m.wazuh) {
-    out.push(`Wazuh ${m.wazuh.name ?? m.wazuh.agent_id}（${m.wazuh.status}）`
-      + (m.wazuh.sca_score != null ? ` · SCA ${m.wazuh.sca_score}` : ""));
-  }
-  if (m.librenms) out.push(`LibreNMS ${m.librenms.hostname ?? ""}（${m.librenms.status ?? "—"}）`);
-  return out;
-});
+const monitorList = computed(() => monitorLines(
+  d.value, helpers, (s) => wazuhStatusLabel(t, s), (s) => lnmsStatusLabel(t, s)));
 
-/** 一眼看得出的矛盾。這是整個功能的重點，所以放在最上面而不是埋在分頁裡。 */
-const conflicts = computed<string[]>(() => {
-  const v = d.value;
-  if (!v?.found) return [];
-  const out: string[] = [];
-  const names = new Set(
-    (v.hostname_sources ?? []).map((h: any) => String(h.hostname || "").toLowerCase())
-      .filter(Boolean));
-  if (names.size > 1) out.push(t("investigate.conflict_names", { n: names.size }));
-  if (v.monitoring?.wazuh && v.monitoring.wazuh.still_represents_this_ip === false) {
-    out.push(t("investigate.conflict_stale_agent", { name: v.monitoring.wazuh.name ?? "" }));
-  }
-  if (v.other_records?.length) {
-    out.push(t("investigate.conflict_duplicate", { n: v.other_records.length + 1 }));
-  }
-  const macs = new Set((v.arp ?? []).map((a: any) => a.mac));
-  if (macs.size > 2) out.push(t("investigate.conflict_macs", { n: macs.size }));
-  return out;
-});
+/** 一眼看得出的矛盾。這是整個功能的重點，所以放在最上面而不是埋在分頁裡。
+ *  清單由後端算（services/investigate.compute_conflicts）：畫面、匯出與 AI 判讀是同一份；
+ *  主機名稱只差大小寫、結尾的點、短名稱對上 FQDN 的，後端已經當成同一個名字。 */
+const conflicts = computed<string[]>(() => (d.value?.found ? conflictLines(d.value, helpers) : []));
 
 async function load() {
   loading.value = true;
   narrative.value = "";
+  aiModel.value = "";
   narrativeError.value = "";
   try {
     const r = await investigate(props.ip, false, locale.value);
@@ -215,6 +226,7 @@ async function ask() {
   asking.value = true;
   narrative.value = "";
   narrativeError.value = "";
+  aiModel.value = "";
   elapsed.value = 0;
   thinkChars.value = 0;
   ticker = setInterval(() => { elapsed.value += 1; }, 1000);
@@ -222,8 +234,11 @@ async function ask() {
     await narrativeStream(props.ip, locale.value, (ev) => {
       if (ev.type === "thinking") thinkChars.value += (ev.text ?? "").length;
       else if (ev.type === "content") narrative.value += ev.text ?? "";
-      else if (ev.type === "done") { if (ev.text) narrative.value = ev.text; }
-      else if (ev.type === "error") narrativeError.value = ev.detail ?? "";
+      else if (ev.type === "done") {
+        if (ev.text) narrative.value = ev.text;
+        aiModel.value = ev.model ?? "";
+      }
+      else if (ev.type === "error") narrativeError.value = aiErrText(ev, ev.detail ?? "");
       if (ev.elapsed != null) elapsed.value = Math.round(ev.elapsed);
     });
   } catch (e: any) {
@@ -245,11 +260,15 @@ function sectionsForReport(): ReportSection[] {
     const head = `${fmtDateTime(c.at)} · ${c.field || c.event}`;
     return (c.old || c.new) ? `${head}：${c.old ?? "—"} → ${c.new ?? "—"}` : head;
   };
+  const plain = (list: { title: string; lines: string[] }[]) =>
+    list.map((x) => ({ title: x.title, lines: x.lines }));
   return [
+    ...plain(headList.value),
     { title: t("investigate.sec_names"),
       lines: (v.hostname_sources ?? []).map((h: any) => `${h.source}：${h.hostname}`) },
     { title: "OS", lines: osList.value },
     { title: t("investigate.sec_mon"), lines: monitorList.value },
+    ...plain(midList.value),
     { title: "ARP",
       lines: (v.arp ?? []).map((a: any) => `${a.mac} · ${fmtDateTime(a.last_seen_at)}`) },
     { title: "DNS",
@@ -262,6 +281,7 @@ function sectionsForReport(): ReportSection[] {
       lines: (v.firewall_rules ?? []).map((r: any) =>
         `${r.action} ${r.interface} ${r.protocol}/${r.port}`
         + (r.description ? ` — ${r.description}` : "")) },
+    ...plain(tailList.value),
     { title: t("investigate.sec_other"),
       lines: (v.other_records ?? []).map((o: any) =>
         `${o.subnet} · ${o.hostname ?? "—"} · ${o.effective_status ?? "—"}`) },
@@ -286,10 +306,21 @@ function doExport(fmt: ReportFormat) {
     conflicts: conflicts.value,
     sections: sectionsForReport(),
     narrative: narrative.value || undefined,
-    narrativeNote: narrative.value ? t("investigate.ai_note") : undefined,
+    narrativeNote: narrative.value
+      ? t("investigate.ai_note") + (aiModel.value ? `（${t("investigate.ai_model", { model: aiModel.value })}）` : "")
+      : undefined,
     // HTML 版把判讀的 markdown 真的渲染出來（**粗體**、`code`、清單），
     // 不要把原始標記直接印在報告上
     narrativeHtml: narrative.value ? renderMarkdown(narrative.value) : undefined,
+    labels: {
+      title: t("investigate.report_title", { ip: props.ip }),
+      generatedAt: t("investigate.report_generated_at"),
+      conflicts: t("investigate.report_conflicts"),
+      narrative: t("investigate.report_narrative"),
+      csvSection: t("investigate.report_col_section"),
+      csvContent: t("investigate.report_col_content"),
+      htmlLang: t("common.html_lang"),
+    },
   }, fmt);
 }
 
@@ -306,6 +337,7 @@ watch(() => [props.show, props.ip], ([s]) => { if (s) void load(); }, { immediat
 .inv-ai { margin-top: 14px; border-top: 1px solid var(--n-border-color, #eee); padding-top: 12px; }
 .inv-ai-hd { font-weight: 600; margin-bottom: 2px; }
 .inv-ai-note { font-size: 11.5px; opacity: .6; margin-bottom: 8px; }
+.inv-ai-model { margin-left: 8px; white-space: nowrap; }
 .inv-ai-body { font-size: 13px; line-height: 1.85; }
 .inv-ai-err { color: #d03050; font-size: 12.5px; margin-top: 6px; }
 .inv-export { display: flex; align-items: center; gap: 6px; margin-top: 14px;

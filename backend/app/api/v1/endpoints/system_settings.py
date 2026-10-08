@@ -10,13 +10,15 @@ from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from fastapi.responses import PlainTextResponse
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
-from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
+from app.core.ui_error import ui_detail
 from app.models.ip_hostname import HOSTNAME_SOURCES
 from app.schemas.base import StrictModel
 from app.services import os_precedence
@@ -342,9 +344,85 @@ async def put_ui_display(
     return UiDisplayOut(change_log_dim_days=days)
 
 
-class ConsoleSecurityOut(StrictModel):
+class DevicePortFilterOut(StrictModel):
+    # 匯入裝置連接埠時，過濾掉符合這些名稱樣式（正則）的偽介面（Windows NDIS / WAN Miniport
+    # 等）。filter_pseudo 是總開關；關閉時匯入不過濾也不清除。
+    filter_pseudo: bool = True
+    ignore_patterns: list[str] = Field(default_factory=list)
+
+
+@router.get("/device-port-filter", response_model=DevicePortFilterOut)
+async def get_device_port_filter_endpoint(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> DevicePortFilterOut:
+    from app.services.system_config import get_device_port_filter
+    cfg = await get_device_port_filter(session)
+    return DevicePortFilterOut(**cfg)
+
+
+@router.put("/device-port-filter", response_model=DevicePortFilterOut)
+async def put_device_port_filter(
+    payload: DevicePortFilterOut,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> DevicePortFilterOut:
+    from app.services.system_config import set_device_port_filter
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "device_ports", "filter_pseudo": payload.filter_pseudo,
+              "ignore_patterns": payload.ignore_patterns},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    cfg = await set_device_port_filter(
+        session, filter_pseudo=payload.filter_pseudo,
+        ignore_patterns=payload.ignore_patterns, updated_by_user_id=user.id)
+    return DevicePortFilterOut(**cfg)
+
+
+class ConsoleSecurityIn(StrictModel):
+    """可以改的部分。"""
+
     # 允許 RDP 控制端把文字貼到被控端（剪貼簿單向重導；預設關閉）
     rdp_clipboard_paste: bool = False
+    # RDP 連線引擎：guacd（預設，jt-ipam-guacd 服務，見 app/services/guacd.py）、
+    # aardwolf（純 Python）、freerdp（相容性較好，需外部行程）。
+    # 沒帶＝維持原值（以前預設成 aardwolf：沒帶這個欄位的舊頁面一存就把引擎改回去）
+    rdp_engine: Literal["aardwolf", "freerdp", "guacd"] | None = None
+    # VNC／SSH 連線引擎：builtin（一路以來的實作）或 guacd（VNC 的預設）。
+    # 沒帶＝維持原值：還開著舊版頁面的人按儲存，不可以把別人剛設好的引擎改回去
+    vnc_engine: Literal["builtin", "guacd"] | None = None
+    ssh_engine: Literal["builtin", "guacd"] | None = None
+    # SFTP 單檔上下傳上限（MB）；沒帶＝維持原值（理由同上）。上界見 SFTP_MAX_FILE_MB_LIMIT
+    sftp_max_file_mb: Annotated[int, Field(ge=1, le=102_400)] | None = None
+    # 允許主控台經由掃描代理中繼（issue #24 階段二，預設關）；沒帶＝維持原值
+    console_relay: bool | None = None
+
+
+class ConsoleSecurityOut(ConsoleSecurityIn):
+    """再加上「這台機器實際上能不能用」。
+
+    設定頁要看得到這一段：選項擺在那裡、按下去才發現缺套件，比沒有這個選項更糟。
+    缺什麼與怎麼裝都由後端算好 —— 前端不該自己維護一份套件清單（兩份遲早不一致）。
+    """
+
+    freerdp_available: bool = False
+    freerdp_missing: list[str] = []
+    #: aardwolf（預設引擎與 VNC 主控台都靠它）有沒有裝起來，以及這台的 Python 版本 ——
+    #: 裝不起來最常見的原因是 Python 太新、沒有預編譯套件（issue #39）
+    aardwolf_available: bool = False
+    python_version: str = ""
+    freerdp_install_cmd: str = ""
+    #: guacd：服務有沒有在跑、哪些協定的外掛載得到（設定頁要看得到，選了才發現不能用更糟）
+    guacd_available: bool = False
+    guacd_protocols: dict[str, bool] = {}
+    guacd_address: str = ""
+    guacd_error: str = ""
+    guacd_install_cmd: str = ""
 
 
 @public_router.get("/console-security", response_model=ConsoleSecurityOut)
@@ -352,29 +430,131 @@ async def get_console_security(
     _user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ConsoleSecurityOut:
-    from app.services.system_config import get_rdp_clipboard_paste
-    return ConsoleSecurityOut(rdp_clipboard_paste=await get_rdp_clipboard_paste(session))
+    from app.services.system_config import (
+        get_console_relay_enabled,
+        get_rdp_clipboard_paste,
+        get_rdp_engine,
+        get_sftp_max_file_mb,
+        get_ssh_engine,
+        get_vnc_engine,
+    )
+    return await _console_security_out(
+        rdp_clipboard_paste=await get_rdp_clipboard_paste(session),
+        rdp_engine=await get_rdp_engine(session),
+        vnc_engine=await get_vnc_engine(session),
+        ssh_engine=await get_ssh_engine(session),
+        sftp_max_file_mb=await get_sftp_max_file_mb(session),
+        console_relay=await get_console_relay_enabled(session),
+    )
 
 
 @router.put("/console-security", response_model=ConsoleSecurityOut)
 async def put_console_security(
-    payload: ConsoleSecurityOut,
+    payload: ConsoleSecurityIn,
     user: CurrentUser,
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> ConsoleSecurityOut:
-    from app.services.system_config import set_rdp_clipboard_paste
+    from app.services.system_config import (
+        get_console_relay_enabled,
+        get_rdp_engine,
+        get_sftp_max_file_mb,
+        get_ssh_engine,
+        get_vnc_engine,
+        set_console_relay_enabled,
+        set_rdp_clipboard_paste,
+        set_rdp_engine,
+        set_sftp_max_file_mb,
+        set_ssh_engine,
+        set_vnc_engine,
+    )
     await append_audit(
         session, actor_user_id=str(user.id),
         actor_ip=request.client.host if request.client else None,
         actor_user_agent=request.headers.get("user-agent"),
         object_type="system", object_id=None, action="update",
-        diff={"target": "console_security", "rdp_clipboard_paste": payload.rdp_clipboard_paste},
+        # 換引擎會改變「連得上／連不上」，稽核要看得出是誰換的
+        diff={"target": "console_security",
+              "rdp_clipboard_paste": payload.rdp_clipboard_paste,
+              "rdp_engine": payload.rdp_engine,
+              "vnc_engine": payload.vnc_engine, "ssh_engine": payload.ssh_engine,
+              "sftp_max_file_mb": payload.sftp_max_file_mb,
+              "console_relay": payload.console_relay},
         request_id=getattr(request.state, "request_id", None),
     )
     enabled = await set_rdp_clipboard_paste(
         session, enabled=payload.rdp_clipboard_paste, updated_by_user_id=user.id)
-    return ConsoleSecurityOut(rdp_clipboard_paste=enabled)
+    engine = (await set_rdp_engine(session, engine=payload.rdp_engine, updated_by_user_id=user.id)
+              if payload.rdp_engine else await get_rdp_engine(session))
+    vnc_engine = (await set_vnc_engine(session, engine=payload.vnc_engine, updated_by_user_id=user.id)
+                  if payload.vnc_engine else await get_vnc_engine(session))
+    ssh_engine = (await set_ssh_engine(session, engine=payload.ssh_engine, updated_by_user_id=user.id)
+                  if payload.ssh_engine else await get_ssh_engine(session))
+    sftp_mb = (await set_sftp_max_file_mb(session, mb=payload.sftp_max_file_mb, updated_by_user_id=user.id)
+               if payload.sftp_max_file_mb is not None else await get_sftp_max_file_mb(session))
+    relay = (await set_console_relay_enabled(session, enabled=payload.console_relay, updated_by_user_id=user.id)
+             if payload.console_relay is not None else await get_console_relay_enabled(session))
+    return await _console_security_out(rdp_clipboard_paste=enabled, rdp_engine=engine,
+                                       vnc_engine=vnc_engine, ssh_engine=ssh_engine,
+                                       sftp_max_file_mb=sftp_mb, console_relay=relay)
+
+
+async def _console_security_out(*, rdp_clipboard_paste: bool, rdp_engine: str,
+                                vnc_engine: str = "guacd", ssh_engine: str = "builtin",
+                                sftp_max_file_mb: int = 100,
+                                console_relay: bool = False) -> ConsoleSecurityOut:
+    from app.services import guacd as guac
+    from app.services.rdp_freerdp import availability, freerdp_apt_hint
+
+    av = availability()
+    missing = list(av["missing_packages"]) + list(av["missing_modules"])
+    from app.api.v1.endpoints.rdp_console import RDP_AVAILABLE, python_version
+    gst = await guac.probe(use_cache=False)
+    return ConsoleSecurityOut(
+        rdp_clipboard_paste=rdp_clipboard_paste,
+        rdp_engine=rdp_engine,  # type: ignore[arg-type]
+        vnc_engine=vnc_engine,  # type: ignore[arg-type]
+        ssh_engine=ssh_engine,  # type: ignore[arg-type]
+        sftp_max_file_mb=sftp_max_file_mb,
+        console_relay=console_relay,
+        freerdp_available=bool(av["ok"]),
+        freerdp_missing=missing,
+        freerdp_install_cmd="" if av["ok"] else freerdp_apt_hint(),
+        aardwolf_available=RDP_AVAILABLE,
+        python_version=python_version(),
+        guacd_available=bool(gst["ok"]),
+        guacd_protocols=dict(gst["protocols"]),
+        guacd_address=str(gst["address"]),
+        guacd_error=str(gst.get("error") or ""),
+        guacd_install_cmd="" if gst["ok"] else "sudo /opt/jt-ipam/scripts/jt-ipam.sh upgrade --with-guacd",
+    )
+
+
+@router.post("/sftp-probe/ticket")
+async def issue_sftp_probe_ticket(user: CurrentUser, request: Request) -> dict[str, Any]:
+    """SFTP 傳輸路徑測試的票證（管理者限定，見 app/services/sftp_probe.py）。
+
+    測試要由瀏覽器發起、走跟 SFTP 同一條 WebSocket 路徑 —— 只有那樣才會經過前面的反向代理。
+    不寫稽核：不讀也不改任何資料，只把一段隨機資料來回送一次。
+    """
+    import json as _json
+    import secrets as _secrets
+
+    from app.api.v1.endpoints.sftp_console import _probe_ticket_key, _redis_client
+    from app.core.rate_limit import limit_per_ip
+    from app.services import sftp_probe
+
+    await limit_per_ip(request, name="ssh")
+    ticket = _secrets.token_urlsafe(32)
+    await _redis_client().set(_probe_ticket_key(ticket),
+                              _json.dumps({"user_id": str(user.id)}), ex=60)
+    return {
+        "ticket": ticket,
+        "ws_path": f"/api/v1/addresses/{sftp_probe.PROBE_ADDRESS_ID}/sftp/ws",
+        "up_bytes": sftp_probe.DEFAULT_TEST_BYTES,
+        "down_bytes": sftp_probe.DEFAULT_TEST_BYTES,
+        "ttl": 60,
+    }
 
 
 # 本機地圖圖磚代理（OSM）：讓「OpenStreetMap」供應商在維持嚴格 CSP（img-src 'self'）+ COEP require-corp
@@ -465,8 +645,89 @@ async def put_rack_name_align(
 
 
 # ─────────────────── 上線判定閾值（全域，管理員設）───────────────────
+class LivenessSourceOut(StrictModel):
+    """設定頁要顯示的一個候選來源。"""
+
+    key: str
+    #: 這個來源的證據會不會過期 —— 不會過期的勾了就等於「看過一次就永遠上線」
+    aging: bool
+    #: 這個站台真的有這個整合嗎（沒有的就別佔版面）
+    configured: bool
+
+
 class OnlineGraceOut(StrictModel):
     minutes: Annotated[int, Field(ge=1, le=43200)]
+    #: 哪些證據算「上線」。LibreNMS 的 ARP 預設不勾：它沒有時間概念，來源設備的
+    #: 快取不老化就會讓關機的機器一直顯示上線（來源契約見 services/evidence.py）
+    sources: list[str] = ["scanner", "librenms"]
+    #: 候選來源（GET 才有值；PUT 的回應沿用同一個模型，可為空）
+    available: list[LivenessSourceOut] = []
+
+
+class CooldownOut(StrictModel):
+    days: Annotated[int, Field(ge=0, le=3650)]
+
+
+class CertExpiryOut(StrictModel):
+    """憑證到期通知的**全域預設**天數。每張憑證仍可各自覆寫。"""
+
+    days: Annotated[int, Field(ge=1, le=365)]
+
+
+@public_router.get("/cert-expiry-alert", response_model=CertExpiryOut)
+async def get_cert_expiry_alert(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CertExpiryOut:
+    from app.services.system_config import get_cert_expiry_days
+    return CertExpiryOut(days=await get_cert_expiry_days(session))
+
+
+@router.put("/cert-expiry-alert", response_model=CertExpiryOut)
+async def put_cert_expiry_alert(
+    payload: CertExpiryOut, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CertExpiryOut:
+    from app.services.system_config import set_cert_expiry_days
+    days = await set_cert_expiry_days(session, days=payload.days, updated_by_user_id=user.id)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "cert_expiry_alert", "days": days},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return CertExpiryOut(days=days)
+
+
+@public_router.get("/ip-cooldown", response_model=CooldownOut)
+async def get_ip_cooldown(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CooldownOut:
+    from app.services.ip_lifecycle import get_cooldown_days
+    return CooldownOut(days=await get_cooldown_days(session))
+
+
+@router.put("/ip-cooldown", response_model=CooldownOut)
+async def put_ip_cooldown(
+    payload: CooldownOut, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CooldownOut:
+    from app.services.ip_lifecycle import set_cooldown_days
+    days = await set_cooldown_days(session, days=payload.days, updated_by_user_id=user.id)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "ip_cooldown", "days": days},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return CooldownOut(days=days)
 
 
 @public_router.get("/online-grace", response_model=OnlineGraceOut)
@@ -474,14 +735,58 @@ async def get_online_grace(
     _user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> OnlineGraceOut:
-    from app.models.system_setting import SystemSetting
-    row = await session.get(SystemSetting, "online_grace_minutes")
-    m = (row.value.get("minutes") if row and isinstance(row.value, dict) else None) or 30
-    try:
-        m = int(m)
-    except (TypeError, ValueError):
-        m = 30
-    return OnlineGraceOut(minutes=min(43200, max(1, m)))
+    from app.services.system_config import get_liveness_config
+    cfg = await get_liveness_config(session)
+    chosen = list(cfg["sources"])
+    return OnlineGraceOut(
+        minutes=int(cfg["minutes"]), sources=chosen,
+        available=await _liveness_candidates(session, chosen),
+    )
+
+
+async def _liveness_candidates(
+    session: AsyncSession, chosen: list[str],
+) -> list[LivenessSourceOut]:
+    """候選來源清單：**只列這個站台真的有的整合**，加上已經被勾選的（不能讓設定
+    因為某個整合被停用就從畫面消失、卻仍在後端生效）。
+
+    掃描代理永遠列出來（它是內建能力，不是整合）。
+    """
+    from sqlalchemy import func, select
+
+    from app.models.firewall import OPNsenseFirewall
+    from app.models.fortigate import FortiGateFirewall
+    from app.models.librenms import LibreNMSInstance
+    from app.models.mikrotik import MikroTikRouter
+    from app.models.paloalto import PaloAltoFirewall
+    from app.models.pfsense import PfSenseFirewall
+    from app.models.wazuh import WazuhInstance
+    from app.models.zabbix import ZabbixInstance
+    from app.services.evidence import LIVENESS_SOURCES, is_aging
+
+    async def _has(model: Any) -> bool:
+        return bool(await session.scalar(select(func.count()).select_from(model)))
+
+    present = {
+        "scanner": True,
+        "librenms": await _has(LibreNMSInstance),
+        "wazuh": await _has(WazuhInstance),
+        "zabbix": await _has(ZabbixInstance),
+        "opnsense": await _has(OPNsenseFirewall),
+        "pfsense": await _has(PfSenseFirewall),
+        "fortigate": await _has(FortiGateFirewall),
+        "paloalto": await _has(PaloAltoFirewall),
+        "mikrotik": await _has(MikroTikRouter),
+    }
+    out: list[LivenessSourceOut] = []
+    for key in LIVENESS_SOURCES:
+        vendor = key.split(":", 1)[1] if ":" in key else key
+        # 舊的籠統 "arp" 等同 arp:librenms
+        configured = present.get("librenms" if key == "arp" else vendor, False)
+        if configured or key in chosen:
+            out.append(LivenessSourceOut(
+                key=key, aging=is_aging(key), configured=configured))
+    return out
 
 
 @router.put("/online-grace", response_model=OnlineGraceOut)
@@ -494,12 +799,14 @@ async def put_online_grace(
     from sqlalchemy.orm.attributes import flag_modified
 
     from app.models.system_setting import SystemSetting
+    from app.services.evidence import LIVENESS_SOURCES
     m = min(43200, max(1, int(payload.minutes)))
+    srcs = [s for s in payload.sources if s in LIVENESS_SOURCES]
     row = await session.get(SystemSetting, "online_grace_minutes")
     if row is None:
         row = SystemSetting(key="online_grace_minutes", value={}, updated_by=user.id)
         session.add(row)
-    row.value = {"minutes": m}
+    row.value = {"minutes": m, "sources": srcs}
     row.updated_by = user.id
     flag_modified(row, "value")
     await append_audit(
@@ -507,11 +814,12 @@ async def put_online_grace(
         actor_ip=request.client.host if request.client else None,
         actor_user_agent=request.headers.get("user-agent"),
         object_type="system", object_id=None, action="update",
-        diff={"target": "online_grace_minutes", "minutes": m},
+        diff={"target": "online_grace_minutes", "minutes": m, "sources": ",".join(srcs)},
         request_id=getattr(request.state, "request_id", None),
     )
     await session.commit()
-    return OnlineGraceOut(minutes=m)
+    return OnlineGraceOut(minutes=m, sources=srcs,
+                          available=await _liveness_candidates(session, srcs))
 
 
 # ─────────────────── GeoIP（MaxMind 本地 mmdb + 排程更新）───────────────────
@@ -574,7 +882,11 @@ async def update_geoip_now(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     """立即下載/更新本地 mmdb（手動觸發；排程由 systemd timer 跑）。"""
-    from app.services.geoip import get_geoip_config, update_databases
+    from datetime import UTC, datetime
+
+    from app.services.background_tasks import record_finished_task
+    from app.services.geoip import get_geoip_config, update_databases, update_outcome
+    started = datetime.now(UTC)
     result = await update_databases(session)
     await append_audit(
         session, actor_user_id=str(user.id),
@@ -585,6 +897,9 @@ async def update_geoip_now(
         request_id=getattr(request.state, "request_id", None),
     )
     await session.commit()
+    ok, err = update_outcome(result)
+    await record_finished_task(session, kind="geoip.refresh", ok=ok, actor_user_id=user.id,
+                               started_at=started, summary=result, error=err)
     cfg = await get_geoip_config(session)
     return {"result": result, "config": cfg}
 
@@ -596,15 +911,25 @@ class LLMConfigOut(StrictModel):
     api_key_set: bool = False
     url: str
     embedding_model: str
+    # 嵌入模型的位址；空＝沿用 url（GitHub issue #33：兩種模型常分開部署）
+    embedding_base_url: str = ""
     chat_model: str
     timeout: float
     num_ctx: int | None = None
     mcp_external_enabled: bool = False
     mcp_api_key_set: bool = False        # 是否已產生對外 MCP 金鑰（不回明文）
     ai_audit_enabled: bool = False
-    ai_audit_times: list[str] = []       # 每天執行的時刻（"HH:MM"，伺服器本地時區）
+    ai_audit_times: list[str] = []       # 執行時刻（"HH:MM"，伺服器本地時區）
+    # 排程的「哪幾天」：daily / weekly（配 weekdays）／monthly（配 month_day）
+    ai_audit_frequency: str = "daily"
+    ai_audit_weekdays: list[int] = []    # 1=週一 … 7=週日
+    ai_audit_month_day: int = 1          # 1–31；短月自動落在該月最後一天
     ai_audit_model: str | None = None    # None＝沿用對話模型
     ai_audit_num_ctx: int | None = None  # None＝沿用對話模型的上下文長度
+    # AI 判讀（未授權 IP 判讀／IP 調查／防火牆規則異動解讀）；None＝沿用對話模型
+    ai_interpret_model: str | None = None
+    ai_interpret_num_ctx: int | None = None
+    chat_thinking: bool = True           # AI 對話允許模型先思考（False＝送關閉思考的參數）
     server_timezone: str = ""            # 排程時刻是照這個時區算的，UI 要講清楚
 
 
@@ -615,18 +940,28 @@ class LLMConfigPatch(StrictModel):
     api_key: Annotated[str | None, Field(min_length=0, max_length=512)] = None
     url: Annotated[str | None, Field(min_length=4, max_length=512)] = None
     embedding_model: Annotated[str | None, Field(min_length=1, max_length=128)] = None
+    # 空字串＝清掉，回到「沿用對話模型的位址」，所以 min_length 是 0
+    embedding_base_url: Annotated[str | None, Field(min_length=0, max_length=512)] = None
     chat_model: Annotated[str | None, Field(min_length=1, max_length=128)] = None
     timeout: Annotated[float | None, Field(ge=1.0, le=600.0)] = None
     # 0 / 空＝沿用模型/Ollama 預設；上限取寬鬆合理值（128k）
     num_ctx: Annotated[int | None, Field(ge=0, le=131072)] = None
     mcp_external_enabled: bool | None = None
     ai_audit_enabled: bool | None = None
-    # 每天執行的時刻清單（"HH:MM"）。不合法的項目會被丟掉，不會整組失效。
+    # 執行時刻清單（"HH:MM"）。不合法的項目會被丟掉，不會整組失效。
     ai_audit_times: Annotated[list[str] | None, Field(max_length=24)] = None
+    ai_audit_frequency: Literal["daily", "weekly", "monthly"] | None = None
+    # 1=週一 … 7=週日；空清單不會被存（那等於排程永遠不觸發，但畫面上還開著）
+    ai_audit_weekdays: Annotated[list[int] | None, Field(max_length=7)] = None
+    ai_audit_month_day: Annotated[int | None, Field(ge=1, le=31)] = None
     # 巡檢專用模型；空字串＝清掉，回去沿用對話模型（所以 min_length 是 0）
     ai_audit_model: Annotated[str | None, Field(max_length=128)] = None
     # 巡檢專用上下文長度；0＝清掉，回去沿用對話模型的設定
     ai_audit_num_ctx: Annotated[int | None, Field(ge=0, le=131072)] = None
+    # AI 判讀專用模型／上下文長度；空字串／0 ＝清掉，回去沿用對話模型
+    ai_interpret_model: Annotated[str | None, Field(max_length=128)] = None
+    ai_interpret_num_ctx: Annotated[int | None, Field(ge=0, le=131072)] = None
+    chat_thinking: bool | None = None
 
 
 def _server_tz() -> str:
@@ -640,6 +975,7 @@ def _llm_out(cfg: Any) -> LLMConfigOut:
     return LLMConfigOut(
         enabled=cfg.enabled, url=cfg.url,
         embedding_model=cfg.embedding_model,
+        embedding_base_url=getattr(cfg, "embedding_base_url", None) or "",
         chat_model=cfg.chat_model, timeout=cfg.timeout,
         provider=cfg.provider, api_key_set=bool(cfg.api_key),
         num_ctx=cfg.num_ctx,
@@ -647,8 +983,14 @@ def _llm_out(cfg: Any) -> LLMConfigOut:
         mcp_api_key_set=bool(cfg.mcp_api_key),
         ai_audit_enabled=cfg.ai_audit_enabled,
         ai_audit_times=cfg.ai_audit_times,
+        ai_audit_frequency=cfg.ai_audit_frequency,
+        ai_audit_weekdays=cfg.ai_audit_weekdays,
+        ai_audit_month_day=cfg.ai_audit_month_day,
         ai_audit_model=cfg.ai_audit_model,
         ai_audit_num_ctx=cfg.ai_audit_num_ctx,
+        ai_interpret_model=cfg.ai_interpret_model,
+        ai_interpret_num_ctx=cfg.ai_interpret_num_ctx,
+        chat_thinking=cfg.chat_thinking,
         server_timezone=_server_tz(),
     )
 
@@ -676,14 +1018,21 @@ async def patch_llm(
         api_key=changes.get("api_key"),
         url=changes.get("url"),
         embedding_model=changes.get("embedding_model"),
+        embedding_base_url=changes.get("embedding_base_url"),
         chat_model=changes.get("chat_model"),
         timeout=changes.get("timeout"),
         num_ctx=changes.get("num_ctx"),
         mcp_external_enabled=changes.get("mcp_external_enabled"),
         ai_audit_enabled=changes.get("ai_audit_enabled"),
         ai_audit_times=changes.get("ai_audit_times"),
+        ai_audit_frequency=changes.get("ai_audit_frequency"),
+        ai_audit_weekdays=changes.get("ai_audit_weekdays"),
+        ai_audit_month_day=changes.get("ai_audit_month_day"),
         ai_audit_model=changes.get("ai_audit_model"),
         ai_audit_num_ctx=changes.get("ai_audit_num_ctx"),
+        ai_interpret_model=changes.get("ai_interpret_model"),
+        ai_interpret_num_ctx=changes.get("ai_interpret_num_ctx"),
+        chat_thinking=changes.get("chat_thinking"),
         updated_by_user_id=user.id,
     )
     await append_audit(
@@ -751,10 +1100,26 @@ async def list_ollama_models(
     headers = ai_mod.auth_headers(provider, getattr(cfg, "api_key", None))
     try:
         resp = await safe_request("GET", url, timeout=10.0, headers=headers)
+    except UnsafeOutboundURL as exc:
+        # 被自己的 SSRF 防護擋下**是預期內的結果**，不是伺服器故障 —— 尤其
+        # 預設的 Ollama 位址就是 loopback（`http://127.0.0.1:11434`），而 loopback
+        # 在 safe_http 是一律封鎖的。原本這裡只接 httpx 的錯誤，於是設定頁一開就是
+        # 四個 500，畫面上只有「伺服器發生錯誤」，看不出被擋的是哪個位址、怎麼放行。
+        return {"models": [], "error_detail": ui_detail(
+            "llm_models_ssrf_blocked",
+            f"{exc} —— 這個位址被連外防護擋下了。若確定要連到這台機器上的服務，"
+            f"請在 backend.env 的 OUTBOUND_ALLOW_CIDRS 加入該網段（例如 127.0.0.0/8）"
+            f"後重啟後端。",
+            reason=str(exc)[:200],
+        )}
     except httpx.HTTPError as exc:
-        return {"models": [], "error": f"{type(exc).__name__}: {exc}"}
+        return {"models": [], "error_detail": ui_detail(
+            "llm_models_unreachable", f"{type(exc).__name__}: {exc}",
+            reason=f"{type(exc).__name__}: {exc}"[:200])}
     if resp.status_code != 200:
-        return {"models": [], "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
+        return {"models": [], "error_detail": ui_detail(
+            "llm_models_http", f"HTTP {resp.status_code}: {resp.text[:200]}",
+            status=resp.status_code, body=resp.text[:200])}
     return {"models": ai_mod.parse_models(resp.json() or {}, provider)}
 
 
@@ -983,14 +1348,32 @@ def _gather_version_info() -> dict[str, Any]:
     from importlib.metadata import version as _pkgver
     from pathlib import Path
 
-    from app.version import __version__
+    from app.version import __license__, __version__
+
+    # 授權條款：優先讀安裝後的套件 metadata（那份是由 pyproject 產生的，不會與封裝
+    # 脫節）；沒有 metadata 時（直接從原始碼跑）退回程式碼裡的常數。
+    def _license() -> str:
+        try:
+            from importlib.metadata import metadata as _dist_meta
+            declared = _dist_meta("jt-ipam-backend").get("License")
+        except Exception:
+            declared = None
+        return declared or __license__
 
     # 後端 Python 套件（含連線管理用：asyncssh〔SSH〕、aardwolf〔RDP/VNC，選用〕、
     #                    websockets〔PVE noVNC/xterm 主控台代理〕、Pillow）
+    # 完整列出 pyproject 的執行期相依（使用者要求核對「有沒有沒顯示出來的」）——
+    # 新增相依時記得同步這份清單（TEST_CHECKLIST 手動點檢版本頁時會對照）。
     pkgs = [
-        "fastapi", "starlette", "sqlalchemy", "pydantic", "asyncpg", "alembic",
-        "uvicorn", "httpx", "redis", "argon2-cffi", "cryptography", "defusedxml",
-        "authlib", "mcp", "asyncssh", "aardwolf", "websockets", "pillow",
+        "fastapi", "starlette", "sqlalchemy", "pydantic", "pydantic-settings",
+        "asyncpg", "alembic", "uvicorn", "httpx", "redis", "celery",
+        "argon2-cffi", "cryptography", "defusedxml", "pyjwt", "pyotp",
+        "python-multipart", "email-validator", "urllib3",
+        "authlib", "python3-saml", "ldap3", "pyrad",
+        "pymysql", "asyncssh", "dnspython", "pywinrm", "geoip2",
+        "pgvector", "mcp",
+        "aardwolf", "websockets", "pillow",
+        "structlog", "python-json-logger",
     ]
     versions: dict[str, str | None] = {}
     for p in pkgs:
@@ -1002,8 +1385,14 @@ def _gather_version_info() -> dict[str, Any]:
     # 前端框架版本（讀 frontend/node_modules/<pkg>/package.json 的實裝版本）
     frontend: dict[str, str | None] = {}
     fe_root = Path(__file__).resolve().parents[5] / "frontend" / "node_modules"
+    # 完整列出 package.json 的執行期相依（＋建置工具 vite/typescript）。
+    # 這份清單與後端那份一樣是手寫的，會靜靜過期 —— tests/test_dependency_page.py
+    # 會拿它跟實際宣告的相依比對，漏了就擋下來。
     for p in ["vue", "naive-ui", "vite", "typescript", "pinia", "vue-router",
-              "vue-i18n", "axios", "@xterm/xterm", "@novnc/novnc", "@iconoir/vue"]:
+              "vue-i18n", "axios", "@xterm/xterm", "@xterm/addon-fit",
+              "@xterm/addon-unicode11", "@xterm/addon-web-links",
+              "@novnc/novnc", "@iconoir/vue", "@vueuse/core",
+              "cytoscape", "cytoscape-cose-bilkent", "fzstd", "qrcode", "tweetnacl", "vfonts", "zod"]:
         ver: str | None = None
         try:
             ver = json.loads((fe_root / p / "package.json").read_text(encoding="utf-8")).get("version")
@@ -1043,11 +1432,49 @@ def _gather_version_info() -> dict[str, Any]:
     }
     return {
         "current": __version__,
+        "license": _license(),
         "python": sys.version.split()[0],
         "packages": versions,
         "frontend": frontend,
         "host": host,
     }
+
+
+@router.get("/doctor")
+async def system_doctor(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """系統診斷（admin）：後端查得到的檢查一次跑完，每一項都附「該怎麼修」。
+
+    由來（2026-09-05 客戶回報）：儀表板數得出 55 台裝置、裝置清單卻是 500 加空白，
+    原因是資料庫結構落後於程式。系統其實查得出來，卻沒有任何地方講 ——
+    這一支就是把「後端知道但沒說」的事情攤開來。
+
+    系統層的檢查（systemd、nginx、備份檔、掃描代理）後端看不到，回應裡會註明，
+    要用伺服器上的 `jt-ipam.sh doctor`。
+    """
+    from app.services.self_check import run_checks
+    return (await run_checks(session)).as_dict()
+
+
+@router.get("/doctor/stats")
+async def system_doctor_stats(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """系統診斷的「資料統計」：各類資料各有幾筆（admin）。只在本機計算，不回傳、不蒐集。"""
+    from datetime import UTC, datetime
+
+    from app.services.data_stats import collect
+    return {"generated_at": datetime.now(UTC).isoformat(), "groups": await collect(session)}
+
+
+@router.get("/doctor/report", response_class=PlainTextResponse)
+async def system_doctor_report(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> str:
+    """同一份診斷的純文字版 —— 給「下載記錄檔」用，可直接貼進工單。"""
+    from app.services.self_check import run_checks
+    return (await run_checks(session)).as_text()
 
 
 @router.get("/version")
@@ -1074,14 +1501,167 @@ async def get_version_info() -> dict[str, Any]:
     # 在這裡露出來，管理員才不用等使用者回報「按了沒反應」才發現缺套件。
     from app.services.netdiag import tool_availability
     caps = tool_availability()
+    # traceroute 是路徑追蹤的主力（ICMP；v0.5.185 起優先）、tracepath 只是退路——
+    # 分開列，缺主力時管理員才知道該補哪個套件。
     info["host"]["optional_tools"] = {
         "ping": {"present": caps["ping"], "package": "iputils-ping",
                  "used_by": "Tools → IP addresses → ping"},
-        "tracepath": {"present": caps["tracepath"] or caps["traceroute"],
-                      "package": "iputils-tracepath",
-                      "used_by": "Tools → IP addresses → traceroute"},
+        "traceroute": {"present": caps["traceroute"], "package": "traceroute",
+                       "used_by": "Tools → IP addresses → traceroute"},
+        "tracepath": {"present": caps["tracepath"], "package": "iputils-tracepath",
+                      "used_by": "traceroute fallback"},
     }
+    # FreeRDP 引擎要的那幾個。列在這裡是因為這一頁正是管理員用來確認「這台裝了什麼」
+    # 的地方 —— 選了 FreeRDP 卻連不上時，第一個該看的就是這裡，而不是去翻日誌。
+    import shutil as _shutil
+
+    from app.services.rdp_freerdp import binary_present, required_binaries
+    _rdp_used_by = {
+        "xfreerdp": "RDP console (FreeRDP engine)",
+        "Xvfb": "RDP console (FreeRDP engine) — virtual display",
+        "ffmpeg": "RDP console (FreeRDP engine) — screen capture",
+    }
+    for exe, pkg in required_binaries().items():
+        info["host"]["optional_tools"][exe] = {
+            # xfreerdp＝RDP 用戶端，FreeRDP 2（xfreerdp）或 3（xfreerdp3）任一個都算
+            "present": binary_present(exe),
+            "package": pkg,
+            "used_by": _rdp_used_by.get(exe, "RDP console (FreeRDP engine)"),
+        }
+    info["host"]["optional_tools"]["xclip"] = {
+        "present": _shutil.which("xclip") is not None,
+        "package": "xclip",
+        "used_by": "RDP console (FreeRDP engine) — clipboard paste",
+    }
+    # aardwolf：以前是 RDP 的預設引擎、VNC 唯一的引擎；2026-09-27 起只是選用的備用引擎
+    # （guacd 連不到時才用）。Python 3.14 上它會當掉（GitHub issue #42），缺了不影響服務。
+    from app.api.v1.endpoints.rdp_console import RDP_AVAILABLE
+    info["host"]["optional_tools"]["aardwolf"] = {
+        "present": RDP_AVAILABLE,
+        "package": "aardwolf (pip: .[rdp])",
+        "used_by": "RDP / VNC console — fallback engine when guacd is down",
+        # 備用：沒裝不發警告（Python 3.14 根本裝不起來，「upgrade 會補上」也不成立）
+        "fallback": True,
+    }
+    info["host"]["required_tools"] = await _required_tools()
+    # Recog 指紋庫（選用資料庫）：列進選用相依，沒裝時跟缺套件一樣會出現在警告裡
+    try:
+        from app.core.db import SessionLocal
+        from app.services import recog
+        async with SessionLocal() as s:
+            info["recog"] = await recog.status(s)
+        info["host"]["optional_tools"]["recog"] = {
+            "present": info["recog"]["installed"],
+            "package": "Recog fingerprint database (github.com/rapid7/recog)",
+            "used_by": "IP probe — recognises devices / OS from banners, page titles and certificates",
+            "version": info["recog"]["release"],
+        }
+    except SQLAlchemyError:
+        info["recog"] = None
+    # MAC 製造商資料庫（Wireshark manuf，每月排程更新）：跟 Recog 一樣是下載來的資料庫。
+    # 表是空的時候 IP 清單、MAC 歷程、異常偵測的製造商欄全部空白，卻沒有地方講（2026-10-06 使用者）。
+    try:
+        from app.services import oui
+        async with SessionLocal() as s:
+            st = await oui.stats(s)
+        info["host"]["optional_tools"]["oui"] = {
+            "present": st["count"] > 0,
+            "package": "MAC vendor database (Wireshark manuf)",
+            "used_by": "MAC vendor names in IP lists, MAC history, anomaly detection and the IP probe",
+            "version": st["last_updated"][:10] if st["last_updated"] else None,
+        }
+    except SQLAlchemyError:
+        pass
+    # GeoIP：本機 mmdb 優先、沒有就走 MaxMind web service；兩者都要管理員自己的帳號，
+    # 沒設定是正常狀態 → opt_in：列出來但不進「缺少」警告
+    try:
+        from app.services import geoip
+        dbs = geoip.local_databases()
+        async with SessionLocal() as s:
+            acct, key = await geoip.get_geoip_creds(s)
+        if dbs:
+            geo_ver: str | None = max(ts for _, ts in dbs).date().isoformat()
+        else:
+            geo_ver = "web service" if acct and key else None
+        info["host"]["optional_tools"]["geoip"] = {
+            "present": bool(dbs) or bool(acct and key),
+            "package": "GeoIP database (MaxMind GeoLite2 / GeoIP2)",
+            "used_by": "Tools → GeoIP and the AI GeoIP tool: country, city and ASN of public IPs",
+            "version": geo_ver,
+            "opt_in": True,
+        }
+    except SQLAlchemyError:
+        pass
     return info
+
+
+@router.get("/recog/status")
+async def recog_status(session: Annotated[AsyncSession, Depends(get_session)]) -> dict[str, Any]:
+    """Recog 指紋庫的狀態與每個指紋檔的筆數（Recog 頁；版本頁只列版本）。"""
+    from sqlalchemy import func, select
+
+    from app.models.recog import RecogDatabase
+    from app.services import recog
+    out = await recog.status(session)
+    out["database_list"] = [
+        {"key": k, "protocol": proto, "database_type": dtype, "fingerprints": int(n or 0)}
+        for k, proto, dtype, n in (await session.execute(
+            select(RecogDatabase.key, RecogDatabase.protocol, RecogDatabase.database_type,
+                   func.jsonb_array_length(RecogDatabase.fingerprints)).order_by(RecogDatabase.key))).all()
+    ]
+    return out
+
+
+@router.post("/recog/update")
+async def update_recog_now(
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """立即檢查 Recog 指紋庫有沒有新版，有就下載安裝（手動觸發；排程是每週的 jt-ipam-recog-refresh.timer）。"""
+    from datetime import UTC, datetime
+
+    from app.services import recog
+    from app.services.background_tasks import record_finished_task
+    started = datetime.now(UTC)
+    result = await recog.check_and_update(session)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="system", object_id=None, action="update",
+        diff={"target": "recog_db_update", "result": {k: v for k, v in result.items() if k != "error"},
+              "error": result.get("error")},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    await record_finished_task(
+        session, kind="recog.refresh", ok=result.get("status") != "error", actor_user_id=user.id,
+        started_at=started, error=result.get("error"),
+        summary={k: result.get(k) for k in ("status", "release", "previous", "latest",
+                                            "databases", "fingerprints", "skipped")})
+    return {"result": result, "status": await recog.status(session)}
+
+
+async def _required_tools() -> dict[str, dict[str, Any]]:
+    """必要相依（缺了對應功能就不能正常運作）。
+
+    guacd：RDP 與 VNC 的預設引擎，2026-09-27 起必裝（GitHub issue #42）。不是 pip 套件，
+    是安裝腳本裝的 jt-ipam-guacd 服務 —— 版本頁要看得到「有沒有裝、有沒有在跑、哪個版本」。
+    """
+    from app.services import guacd as guac
+    st = await guac.probe()
+    ver = guac.installed_version()
+    return {"guacd": {
+        "present": ver is not None or bool(st["ok"]),
+        "running": bool(st["ok"]),
+        "version": ver,
+        "protocols": st.get("protocols") or {},
+        "address": st.get("address"),
+        "error": st.get("error") or "",
+        "package": "jt-ipam-guacd (jt-ipam.sh install / upgrade)",
+        "used_by": "RDP / VNC console (default engine); SSH when selected",
+    }}
 
 
 def _ver_tuple(v: str | None) -> tuple[int, ...]:
@@ -1119,7 +1699,7 @@ async def check_latest_version() -> dict[str, Any]:
             if m:
                 latest = m.group(1)
     except (UnsafeOutboundURL, httpx.HTTPError) as exc:
-        error = f"transport: {exc.__class__.__name__}"
+        error = f"transport: {transport_detail(exc)}"
 
     # 退回：releases/latest →（無 release）tags。GitHub tags 順序非語意序 → 取數字序最大者。
     if latest is None and error is None:
@@ -1147,14 +1727,15 @@ async def check_latest_version() -> dict[str, Any]:
             else:
                 error = f"github http {resp.status_code}"
         except (UnsafeOutboundURL, httpx.HTTPError) as exc:
-            error = f"transport: {exc.__class__.__name__}"
+            error = f"transport: {transport_detail(exc)}"
 
     return {
         "current": __version__,
         "latest": latest,
         # 只有「數字序確實比現行新」才算有更新（修 0.4.79>0.4.199 的字串比較 bug）
         "update_available": bool(latest and _ver_tuple(latest) > _ver_tuple(__version__)),
-        "release_url": f"https://github.com/{_GITHUB_REPO}/releases",
+        # 專案不建 GitHub release，/releases 是空頁 → 連去專案首頁
+        "release_url": f"https://github.com/{_GITHUB_REPO}",
         "error": error,
     }
 
@@ -1416,6 +1997,8 @@ async def integration_presence(
     from app.models.esxi import ESXiInstance
     from app.models.firewall import OPNsenseFirewall
     from app.models.fortigate import FortiGateFirewall
+    from app.models.mikrotik import MikroTikRouter
+    from app.models.paloalto import PaloAltoFirewall
     from app.models.pfsense import PfSenseFirewall
     from app.models.virt import ProxmoxInstance
 
@@ -1424,6 +2007,8 @@ async def integration_presence(
         ("opnsense", OPNsenseFirewall),
         ("pfsense", PfSenseFirewall),
         ("fortigate", FortiGateFirewall),
+        ("paloalto", PaloAltoFirewall),
+        ("mikrotik", MikroTikRouter),
         ("dns", DNSServer),
         ("cert_agents", CertAgent),
         ("proxmox", ProxmoxInstance),

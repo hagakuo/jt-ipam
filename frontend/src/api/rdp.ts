@@ -46,6 +46,8 @@ export interface RdpTicket {
   default_size: { width: number; height: number };
   has_saved_creds: boolean;
   clipboard_paste?: boolean;   // 管理者是否允許「控制端貼上文字到被控端」
+  /** 這次用哪個引擎（系統設定）；`guacd` 時畫面交給 GuacView */
+  engine?: string;
   ttl: number;
 }
 

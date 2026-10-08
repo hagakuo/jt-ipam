@@ -1,4 +1,5 @@
 import { apiClient } from "@/api/client";
+import type { ServerMessage } from "@/utils/wsError";
 
 // 全系統匯出／匯入（跨機搬移）。路徑帶 /api/v1 前綴（baseURL 為 /）。
 
@@ -23,7 +24,7 @@ export interface AnalyzeResult {
   target_schema_version: string | null;
   counts: Record<string, number>;
   central_secrets: number;
-  warnings: string[];
+  warnings: ServerMessage[];
 }
 
 export interface TableCount {
@@ -39,6 +40,8 @@ export interface ImportReport {
   dry_run: boolean;
   tables: Record<string, TableCount>;
   central_secrets?: TableCount;
+  /** 匯入時先留空、事後補回的往後指外鍵（devices.primary_ip_id 這類） */
+  deferred_refs?: { fixed: number; total: number; errors?: string[] };
 }
 
 export async function getTransferSchema(): Promise<TransferSchema> {

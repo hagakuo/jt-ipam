@@ -1,0 +1,14 @@
+# 會改「全站設定」的 spec（LLM 設定、主控台引擎、SFTP 上限…）：平行跑時會讓同時間的其他 spec 看到不一樣的系統，
+# 發版用 e2e/run-release.sh 時這幾支另外單一 worker 依序跑。只改自己帳號設定的請改用 helpers/tempAdmin.ts，
+# 不要加到這裡。backend/tests/test_e2e_global_specs.py 會檢查：寫入 /api/v1/system/ 的 spec 都要列在這裡。
+chat-provider-badge.spec.ts
+console-guacd.spec.ts
+llm-chat-thinking.spec.ts
+llm-interpret-model.spec.ts
+rdp-engine.spec.ts
+sftp-limit-probe.spec.ts
+sftp-stream-download.spec.ts
+# 自己建 RustDesk 伺服器與裝置：「裝置」頁籤的數量是全部伺服器加總，平行跑會讓 rustdesk.spec 的 (3) 變成 (4)
+rustdesk-peer-delete.spec.ts
+# 會改共用 admin 的主題偏好（伺服器端）：平行時別的 spec 動到偏好，深色那支會拿到淺色（2026-10-06 發版 e2e）
+rack-floorplan-tray.spec.ts

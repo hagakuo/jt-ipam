@@ -31,6 +31,9 @@ export async function getAddress(id: string): Promise<IPAddress> {
 }
 
 export interface IPAddressUpdate {
+  /** 主控台的連線出口（issue #24）：空＝沿用所屬子網路；跳板與掃描代理擇一 */
+  jump_host_id?: string | null;
+  console_agent_id?: string | null;
   hostname?: string | null;
   description?: string | null;
   state?: string | null;
@@ -50,6 +53,7 @@ export interface IPAddressUpdate {
   vnc_enabled?: boolean | null;
   novnc_enabled?: boolean | null;
   bmc_enabled?: boolean | null;
+  rustdesk_enabled?: boolean | null;
   is_dhcp_server?: boolean | null;
 }
 
@@ -74,6 +78,9 @@ export interface IPAddressCreate {
   note?: string | null;
   customer_id?: string | null;
   device_id?: string | null;
+  /** 主控台的連線出口（issue #24）：空＝沿用所屬子網路 */
+  jump_host_id?: string | null;
+  console_agent_id?: string | null;
 }
 
 export async function createAddress(payload: IPAddressCreate): Promise<IPAddress> {
@@ -102,5 +109,58 @@ export interface NotifyStaleResult { notified_admins: number; ip_count: number; 
 export async function notifyStaleAddresses(subnetId: string, ids: string[], days: number): Promise<NotifyStaleResult> {
   const { data } = await apiClient.post<NotifyStaleResult>("/api/v1/addresses/notify-stale",
     { subnet_id: subnetId, ids, days });
+  return data;
+}
+
+export interface SiblingIP {
+  id: string;
+  ip: string;
+  mac: string | null;
+  mac_vendor: string | null;
+  /** MAC 與本 IP 相同 —— 幾乎可以確定是同一張網卡 */
+  same_mac: boolean;
+}
+
+export interface DeviceSuggestion {
+  suggested_name: string | null;
+  existing_device_id: string | null;
+  existing_device_name: string | null;
+  match_reason: string | null;
+  /** 同主機名稱、尚未關聯的其他 IP。**候選，不是結論** —— 見元件裡的說明 */
+  siblings: SiblingIP[];
+  can_create: boolean;
+}
+
+/** 這個 IP 看起來屬於哪一台裝置 —— 或該建立哪一台。**只查詢，不會動到任何資料。** */
+export async function getDeviceSuggestion(id: string): Promise<DeviceSuggestion> {
+  const { data } = await apiClient.get(`/api/v1/addresses/${id}/device-suggestion`);
+  return data;
+}
+
+/** 套用建議：關聯到既有裝置，或建立一台再關聯（可一併接上同名的其他 IP）。 */
+export async function applyDeviceSuggestion(
+  id: string,
+  body: { device_id?: string; create_name?: string; link_ip_ids?: string[] },
+): Promise<IPAddress> {
+  const { data } = await apiClient.post(
+    `/api/v1/addresses/${id}/device-suggestion/apply`, body);
+  return data;
+}
+
+
+/** 沒有 IP 記錄、但最近看得到在用的位址（掃描代理目擊＋LibreNMS ARP）：指示計的「未納管」格子 */
+export interface UnmanagedAddress {
+  ip: string;
+  last_seen_at: string | null;
+  /** scanner／arp:librenms … */
+  sources: string[];
+  mac: string | null;
+  vendor: string | null;
+  hostname: string | null;
+}
+
+export async function listUnmanaged(subnetId: string): Promise<UnmanagedAddress[]> {
+  const { data } = await apiClient.get<UnmanagedAddress[]>("/api/v1/addresses/unmanaged",
+                                                           { params: { subnet_id: subnetId } });
   return data;
 }

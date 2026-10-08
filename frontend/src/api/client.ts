@@ -13,10 +13,46 @@ const DETAIL_I18N: Record<string, string> = {
   "Forbidden": "errors.forbidden",
 };
 
+/**
+ * 下載類請求（responseType: "blob"）出錯時，錯誤內容也是 Blob —— 不先轉回 JSON，
+ * `detail` 讀不到，畫面只剩「伺服器錯誤」，後端講的原因使用者永遠看不到。
+ * 只轉 JSON 型態的；真的檔案內容原樣保留。
+ */
+export async function unwrapBlobError(error: AxiosError): Promise<void> {
+  const data: unknown = error.response?.data;
+  if (typeof Blob === "undefined" || !(data instanceof Blob) || !/json/i.test(data.type || "")) return;
+  try {
+    // Blob.text() 瀏覽器都有；測試環境（jsdom）沒有，退回 FileReader
+    const text = typeof (data as any).text === "function"
+      ? await data.text()
+      : await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result ?? ""));
+        r.onerror = () => reject(r.error);
+        r.readAsText(data);
+      });
+    (error.response as any).data = JSON.parse(text);
+  } catch { /* 不是合法 JSON 就維持原樣 */ }
+}
+
 function localizeDetail(error: AxiosError): void {
   const data: any = error.response?.data;
   const detail = data?.detail;
   const t = (i18n.global as any).t;
+  // 結構化訊息 `{code, params, message}`（後端的 core/ui_error.ui_detail）：
+  // 句子在這裡組，後端只講「是哪一種錯、參數是什麼」。這樣英文與日文介面才不會
+  // 拿到中文 —— 伺服器產生的文字沒辦法跟著使用者的語言走，實際被回報過。
+  // 沒有對應翻譯時退回 message，不會變成空白或 [object Object]。
+  if (detail && typeof detail === "object" && typeof detail.code === "string") {
+    const key = `errors.${detail.code}`;
+    const out = t(key, detail.params ?? {});
+    data.detail = out === key ? (detail.message ?? out) : out;
+    // 攤平成字串是為了讓既有 202 處 `data.detail` 讀取者不必改；但有少數呼叫端是靠
+    // 代碼決定流程（例如 PVE 回 tfa_required 要跳出驗證碼欄位），代碼攤掉就等於那個
+    // 分支永遠不會成立 —— 所以另外掛一份在 detail_code 上。
+    data.detail_code = detail.code;
+    return;
+  }
   if (typeof detail === "string") {
     const key = DETAIL_I18N[detail];
     if (key) {
@@ -38,9 +74,13 @@ function localizeDetail(error: AxiosError): void {
  */
 export function apiErrMsg(e: unknown): string {
   const detail = (e as any)?.response?.data?.detail;
-  return typeof detail === "string" && detail
-    ? detail
-    : (i18n.global as any).t("errors.network");
+  if (typeof detail === "string" && detail) return detail;
+  // 結構化的 detail（例如冷卻期擋下建立時會附上 until / previous_hostname）：
+  // 取 message 顯示。少了這段會變成「[object Object]」——那比沒有訊息還糟。
+  if (detail && typeof detail === "object" && typeof detail.message === "string") {
+    return detail.message;
+  }
+  return (i18n.global as any).t("errors.network");
 }
 
 /**
@@ -129,6 +169,7 @@ apiClient.interceptors.response.use(
       // 反正畫面正要被導向登入頁。
       return new Promise(() => {});
     }
+    await unwrapBlobError(error);
     localizeDetail(error);
     return Promise.reject(error);
   },

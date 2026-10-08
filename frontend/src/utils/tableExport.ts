@@ -10,6 +10,8 @@ export type ExportFormat = "csv" | "txt" | "md" | "pdf" | "ods" | "odt" | "xlsx"
 export interface ExportColumn {
   key: string;
   label: string;
+  /** 自帶匯出值：欄位 key 不等於資料欄位名、或畫面用 render 顯示時用（DataTable 欄位寫 exportValue） */
+  value?: (row: Record<string, any>) => unknown;
 }
 
 // ── 下載 ──
@@ -25,8 +27,8 @@ function download(filename: string, data: Blob | Uint8Array, mime: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function cell(row: Record<string, any>, key: string): string {
-  const v = row[key];
+export function cellText(row: Record<string, any>, col: ExportColumn): string {
+  const v = col.value ? col.value(row) : row[col.key];
   if (v == null) return "";
   if (Array.isArray(v)) return v.join(", ");
   if (typeof v === "object") return JSON.stringify(v);
@@ -42,16 +44,17 @@ function xmlEscape(s: string): string {
 function toCSV(cols: ExportColumn[], rows: Record<string, any>[]): string {
   const esc = (s: string) => `"${s.replace(/"/g, '""')}"`;
   const head = cols.map((c) => esc(c.label)).join(",");
-  const body = rows.map((r) => cols.map((c) => esc(cell(r, c.key))).join(",")).join("\r\n");
+  const body = rows.map((r) => cols.map((c) => esc(cellText(r, c))).join(",")).join("\r\n");
   return "﻿" + head + "\r\n" + body;   // BOM → Excel 正確辨識 UTF-8
 }
 
 // ── Markdown ──
 function toMarkdown(cols: ExportColumn[], rows: Record<string, any>[]): string {
-  const esc = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
+  // 先跳脫反斜線再跳脫 |：不然值結尾的「\」會把後面補上的跳脫吃掉，| 又變回欄位分隔（CodeQL 標出）
+  const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n/g, " ");
   const head = "| " + cols.map((c) => esc(c.label)).join(" | ") + " |";
   const sep = "| " + cols.map(() => "---").join(" | ") + " |";
-  const body = rows.map((r) => "| " + cols.map((c) => esc(cell(r, c.key))).join(" | ") + " |").join("\n");
+  const body = rows.map((r) => "| " + cols.map((c) => esc(cellText(r, c))).join(" | ") + " |").join("\n");
   return [head, sep, body].join("\n") + "\n";
 }
 
@@ -59,7 +62,7 @@ function toMarkdown(cols: ExportColumn[], rows: Record<string, any>[]): string {
 function toTXT(cols: ExportColumn[], rows: Record<string, any>[]): string {
   const clean = (s: string) => s.replace(/[\t\n\r]/g, " ");
   const head = cols.map((c) => clean(c.label)).join("\t");
-  const body = rows.map((r) => cols.map((c) => clean(cell(r, c.key))).join("\t")).join("\n");
+  const body = rows.map((r) => cols.map((c) => clean(cellText(r, c))).join("\t")).join("\n");
   return head + "\n" + body + "\n";
 }
 
@@ -70,7 +73,7 @@ function exportXLSX(filename: string, cols: ExportColumn[], rows: Record<string,
   const rowXml = (vals: string[]) => `<row>${vals.map(cellXml).join("")}</row>`;
   const sheetRows = [
     rowXml(cols.map((c) => c.label)),
-    ...rows.map((r) => rowXml(cols.map((c) => cell(r, c.key)))),
+    ...rows.map((r) => rowXml(cols.map((c) => cellText(r, c)))),
   ].join("");
   const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
     + `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
@@ -108,7 +111,7 @@ function exportXLSX(filename: string, cols: ExportColumn[], rows: Record<string,
 function exportPDF(title: string, cols: ExportColumn[], rows: Record<string, any>[]) {
   const head = cols.map((c) => `<th>${xmlEscape(c.label)}</th>`).join("");
   const body = rows.map((r) =>
-    "<tr>" + cols.map((c) => `<td>${xmlEscape(cell(r, c.key))}</td>`).join("") + "</tr>",
+    "<tr>" + cols.map((c) => `<td>${xmlEscape(cellText(r, c))}</td>`).join("") + "</tr>",
   ).join("");
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${xmlEscape(title)}</title>
     <style>
@@ -215,7 +218,7 @@ function odfRows(cols: ExportColumn[], rows: Record<string, any>[]): string {
     `<table:table-cell office:value-type="string"><text:p>${xmlEscape(s)}</text:p></table:table-cell>`;
   const headRow = `<table:table-row>${cols.map((c) => tcell(c.label)).join("")}</table:table-row>`;
   const bodyRows = rows.map((r) =>
-    `<table:table-row>${cols.map((c) => tcell(cell(r, c.key))).join("")}</table:table-row>`,
+    `<table:table-row>${cols.map((c) => tcell(cellText(r, c))).join("")}</table:table-row>`,
   ).join("");
   return headRow + bodyRows;
 }
@@ -308,7 +311,13 @@ export function columnsForExport(tableColumns: any[]): ExportColumn[] {
       try { label = c.title(); } catch { label = c.key; }
     }
     if (label == null || typeof label === "object") label = c.key;
-    out.push({ key: String(c.key), label: String(label) });
+    out.push({ key: String(c.key), label: String(label),
+               ...(typeof c.exportValue === "function" ? { value: c.exportValue } : {}) });
   }
   return out;
+}
+
+/** 替 DataTable 欄位加上匯出值（DataTableColumns 的型別不認得 exportValue，直接寫會型別錯誤）。 */
+export function withExportValue<C>(col: C, fn: (row: any) => unknown): C {
+  return Object.assign(col as object, { exportValue: fn }) as C;
 }

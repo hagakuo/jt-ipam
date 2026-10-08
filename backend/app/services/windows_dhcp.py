@@ -2,7 +2,7 @@
 
 與 Windows DNS 共用同一套安全作法：
 - `_check_address_safe`：SSRF 防護（封鎖 metadata/link-local；私網需 OUTBOUND_ALLOW_PRIVATE）
-- `_safe_ps_arg`：PowerShell 參數白名單，杜絕指令注入（A03）
+- `_safe_ps_arg`：PowerShell 參數允許清單，杜絕指令注入（A03）
 - 阻塞式 pywinrm 包進 `asyncio.to_thread`，不卡住 event loop
 
 只做 GET 類的 cmdlet（Get-*），絕不改 Windows DHCP 任何設定。
@@ -18,14 +18,12 @@ import socket
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select
-from sqlalchemy import update as sa_update
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.safe_http import _BLOCKED_CIDRS, _PRIVATE_CIDRS, _ip_in
 from app.core.security import decrypt_secret, encrypt_secret
-from app.models.address import IPAddress
 from app.models.windows_dhcp import WindowsDhcpServer
 
 _PS_SAFE = re.compile(r"^[A-Za-z0-9._:\-/]+$")
@@ -262,18 +260,26 @@ async def sync_scopes(session: AsyncSession, inst: WindowsDhcpServer) -> int:
 async def sync_leases(session: AsyncSession, inst: WindowsDhcpServer) -> int:
     """把租約標記到「既有」IP 上（in_dhcp_lease + MAC/主機名稱），**不自動新建 IP**。
 
-    與 OPNsense / pfSense 的行為一致；撤銷同樣只在有設 scope_subnet_ids 時做，
-    避免多台 DHCP 在全域範圍互相清掉對方的標記。
+    租約旗標逐來源記錄（services/dhcp_leases.py）：每個 scope 都讀成功才清掉這台不再發的，
+    不會清到別台 DHCP 還發著的。
     """
-    from app.services.arp_precedence import consider_mac
-    from app.services.hostname import apply_observation
+    from app.services.fw_sightings import SightingBatch
 
     cli = _client(inst)
     scopes = await asyncio.to_thread(cli.get_scopes)
     scope_ids = list(inst.scope_subnet_ids) if inst.scope_subnet_ids else None
 
     seen = 0
-    leased: set[str] = set()
+    failed_scopes: list[str] = []
+    from app.models.windows_dhcp import WindowsDhcpServer as _Srv
+    from app.services.dhcp_leases import LeaseRun
+    from app.services.hostname_reports import HostnameRun, enabled_peers
+    hn_run = HostnameRun(session, source="windows_dhcp", origin=f"windows_dhcp:{inst.id}",
+                         peers=await enabled_peers(session, _Srv))
+    lease_run = LeaseRun(session, source_type="windows_dhcp", source_id=inst.id)
+    # 整批（以前每筆租約各比對一次 IP、再判斷一次 MAC：10 萬筆租約一輪約 40 萬次查詢）
+    batch = SightingBatch(session, source="windows_dhcp", subnet_ids=scope_ids,
+                          lease_run=lease_run, hn_run=hn_run)
     for sc in scopes:
         sid = _as_str(sc.get("ScopeId"))
         if not sid:
@@ -281,36 +287,28 @@ async def sync_leases(session: AsyncSession, inst: WindowsDhcpServer) -> int:
         try:
             leases = await asyncio.to_thread(cli.get_leases, sid)
         except WindowsDhcpError:
-            continue   # 單一 scope 失敗不拖垮整批
+            failed_scopes.append(sid)
+            continue   # 單一 scope 失敗不拖垮整批（但這一輪就不能清任何東西，見下方）
         for ls in leases:
             ip_text = _as_str(ls.get("IPAddress"))
             if not ip_text:
                 continue
-            leased.add(ip_text)
-            stmt = select(IPAddress).where(func.host(IPAddress.ip) == ip_text)
-            if scope_ids:
-                stmt = stmt.where(IPAddress.subnet_id.in_(scope_ids))
-            # 重疊網段同 IP 可能多筆 → 取一筆即可（見已知地雷 #7）
-            ipa = (await session.execute(stmt.limit(1))).scalars().first()
-            if ipa is None:
+            # 清單也列出過期／被拒絕的（不屬於任何人）與沒人在用的保留位址（InactiveReservation）：
+            # 前兩種整筆略過；後者名稱仍是這個位址設定的名字，但不算「有租約」
+            state = (_as_str(ls.get("AddressState")) or "").lower()
+            if state.startswith(("expired", "declined")):
                 continue
-            ipa.in_dhcp_lease = True
-            mac = _norm_mac(ls.get("ClientId"))
-            if mac:
-                await consider_mac(session, ip=ipa, mac=mac, source="windows_dhcp")
+            active = not state or state.startswith(("active", "offered"))
+            # 唯一才算：重疊網段同 IP 多筆又沒設範圍時不猜（以前任意取一筆，見已知地雷 #7）
             hostname = _as_str(ls.get("HostName"))
-            if hostname:
-                await apply_observation(
-                    session, ip=ipa, source="windows_dhcp", hostname=hostname.split(".")[0],
-                )
-            seen += 1
+            batch.add(ip_text, evidence=None, mac=_norm_mac(ls.get("ClientId")),
+                      hostname=hostname.split(".")[0] if hostname else None, lease=active)
+    seen = sum(1 for found, _e in await batch.flush() if found)
 
-    if scope_ids:
-        stmt2 = sa_update(IPAddress).where(
-            IPAddress.subnet_id.in_(scope_ids), IPAddress.in_dhcp_lease.is_(True))
-        if leased:
-            stmt2 = stmt2.where(func.host(IPAddress.ip).notin_(leased))
-        await session.execute(stmt2.values(in_dhcp_lease=False))
+    # 有 scope 讀取失敗：那個 scope 的租約這一輪沒看到，不代表過期 —— 名稱與租約旗標都不清。
+    # 以前會照清：失敗 scope 裡每一筆 IP 的「有 DHCP 租約」都被拿掉（2026-09-26 稽核）
+    await hn_run.finish(complete=not failed_scopes)
+    await lease_run.finish(complete=not failed_scopes)
     return seen
 
 

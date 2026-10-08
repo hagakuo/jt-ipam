@@ -36,7 +36,8 @@ const { t } = useI18n();
 const router = useRouter();
 function goPerms(r: User) { router.push({ name: "permissions", query: { ptype: "user", pid: r.id } }); }
 
-const { visibleKeys: usrVis, setVisible: usrSet, reset: usrReset } = useColumnPrefs(
+const { visibleKeys: usrVis, setVisible: usrSet, reset: usrReset,
+  order: usrOrder, setOrder: usrSetOrder, orderColumns: usrOrderCols } = useColumnPrefs(
   "users",
   ["username", "email", "display_name", "auth_provider", "is_active", "is_admin", "can_ssh", "last_login_at", "locked_until", "actions"],
   ["username", "email", "display_name", "auth_provider", "is_active", "is_admin", "can_ssh", "last_login_at", "locked_until", "actions"],
@@ -228,8 +229,23 @@ function iconAction(icon: any, label: string, onClick: () => void, type?: any) {
     default: () => label,
   });
 }
+// 帳號的領域後綴（jason@ldap）在有「認證方式」欄位時是重複資訊；只去掉已知領域，
+// 不動一般含 @ 的帳號（例如以 email 當帳號的本機使用者）
+const REALM_SUFFIXES = ["@ldap", "@radius", "@oidc", "@saml"];
+function stripRealm(username: string): string {
+  for (const suf of REALM_SUFFIXES) {
+    if (username.toLowerCase().endsWith(suf)) return username.slice(0, -suf.length);
+  }
+  return username;
+}
+
 const allColumns = computed<DataTableColumns<User>>(() => autoSort([
-  { title: t("users.username"), key: "username", minWidth: 160, ellipsis: { tooltip: true } },
+  {
+    // 領域已有獨立欄位 → 帳號欄不再重複顯示 @ldap 後綴（實際 username 不變，
+    // tooltip 仍給完整值，避免「畫面看到的跟真正的帳號不同」造成另一種混淆）
+    title: t("users.username"), key: "username", minWidth: 160, ellipsis: { tooltip: true },
+    render: (r) => h("span", { title: r.username }, stripRealm(r.username)),
+  },
   { title: t("users.email"), key: "email", minWidth: 150, ellipsis: { tooltip: true } },
   { title: t("users.display_name"), key: "display_name", minWidth: 120, ellipsis: { tooltip: true }, render: (r) => r.display_name ?? "—" },
   {
@@ -246,11 +262,21 @@ const allColumns = computed<DataTableColumns<User>>(() => autoSort([
   },
   {
     title: t("users.is_admin"), key: "is_admin", width: 90,
-    render: (r) => h(NSwitch, {
-      value: r.is_admin,
-      "onUpdate:value": () => toggleAdmin(r),
-      size: "small",
-    }),
+    // 外部帳號（LDAP / SSO）如果站台設了「管理員群組對應」，這個開關每次登入都會被
+    // 目錄的判定覆寫。讓人按下去、下次登入又變回去，卻不說為什麼，是最糟的一種行為 ——
+    // 所以這裡直接把規則寫在提示裡（沒設對應時就不會被覆寫，可以照常用）。
+    render: (r) => {
+      const sw = h(NSwitch, {
+        value: r.is_admin,
+        "onUpdate:value": () => toggleAdmin(r),
+        size: "small",
+      });
+      if ((r.auth_provider ?? "local") === "local") return sw;
+      return h(NTooltip, null, {
+        trigger: () => sw,
+        default: () => t("users.admin_external_hint"),
+      });
+    },
   },
   {
     title: t("users.can_ssh"), key: "can_ssh", width: 110,
@@ -288,7 +314,7 @@ const allColumns = computed<DataTableColumns<User>>(() => autoSort([
 ]));
 
 const columns = computed<DataTableColumns<User>>(() =>
-  allColumns.value.filter((c: any) => usrVis.value.includes(c.key)),
+  usrOrderCols(allColumns.value.filter((c: any) => usrVis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); });
@@ -316,7 +342,8 @@ onMounted(() => { void refresh(); });
         {{ t("users.create_user") }}
       </n-button>
       <ColumnPicker :all="usrPicker" :visible="usrVis"
-                    @update:visible="usrSet" @reset="usrReset" />
+                    @update:visible="usrSet" @reset="usrReset"
+                    :order="usrOrder" @update:order="usrSetOrder" />
       <ExportButton :columns="columns" :rows="rows" :fetch-all="fetchAllForExport"
                     filename="users" :title="t('users.title')" />
       <span style="opacity: 0.6">{{ t("common.total_n", { n: total }) }}</span>

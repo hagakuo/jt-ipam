@@ -2,7 +2,7 @@
 
 設計取捨：
 - 只檢查 role == "user" 的內容（system/assistant 是我們自己或先前回應，不重複檢查）
-- 注入偵測採「高訊號片語」白名單式 regex，避免誤殺正常 IPAM 提問
+- 注入偵測採「高訊號片語」允許清單式 regex，避免誤殺正常 IPAM 提問
 - 結構性防線在別處（工具皆唯讀、LLM 輸出當不可信、輸入長度上限、專屬 rate limit）；
   本模組是 defense-in-depth
 

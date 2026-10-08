@@ -12,7 +12,7 @@
 
 - Debian 12 / Ubuntu 22.04+（Proxmox LXC 範本即可）
 - 2 vCPU / 4 GB RAM / 20 GB 磁碟（最小）
-- Python 3.12、PostgreSQL 16、Redis 7、Node 20+
+- Python 3.12、PostgreSQL 16、Redis 7、Node 22 LTS（只用來建置前端）
 - **TLS 強制**（兩種模式擇一，見 §1.3）
 
 ### 1.2 一鍵安裝
@@ -160,7 +160,7 @@ sudo systemctl daemon-reload
 sudo systemctl restart jt-ipam-backend
 ```
 
-> **注意**：自簽憑證瀏覽器會出現警告。可選擇：(1) 使用者端匯入 CA／信任憑證；(2) 內網架小型 CA（step-ca、smallstep）；(3) 改回模式 A 走 Let's Encrypt。
+> **注意**：自簽憑證瀏覽器會出現警告。可選擇：(1) 使用者端匯入 CA/信任憑證；(2) 內網架小型 CA（step-ca、smallstep）；(3) 改回模式 A 走 Let's Encrypt。
 
 優點：少一個元件、設定簡單、適合 LXC 小型部署。
 缺點：HTTP/2 / HTTP/3 / 多 site 不便、自簽憑證信任問題、效能不如 nginx。

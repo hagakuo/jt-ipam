@@ -235,3 +235,51 @@ async def test_backward_compat_unknown_table_skipped(db_session):
     report = await importer.apply_import(db_session, inner, mode="merge", dry_run=False)
     assert "future_feature_table" not in report["tables"]
     assert report["tables"]["customers"]["inserted"] == 1
+
+
+async def test_streamed_export_is_the_same_file_format(db_session, tmp_path):
+    """串流匯出（2026-09-30：整份組在記憶體裡的話，14.5 萬個 IP 的站台要 1.7～5.4 GB）產出的檔案，
+    用原本的 open_envelope 解開要跟 build_export 一模一樣 —— 匯入端與舊檔都不必改。"""
+    import io
+    import json as _json
+
+    from app.services.system_transfer import exporter
+
+    await _seed(db_session)
+    scope = ["settings", "users_rbac", "core", "integrations"]
+    expected = await exporter.build_export(db_session, scope)
+    raw, counts = await exporter.export_compressed(db_session, scope)
+    assert counts == expected["counts"]
+    buf = io.BytesIO()
+    size = crypto.write_sealed(buf, raw, "s3cret-pass-2026", metadata={"app_version": "9.9.9", "scope": scope},
+                               rng=_rng)
+    assert size == len(buf.getvalue())
+    env = _json.loads(buf.getvalue().decode("utf-8"))
+    assert crypto.read_metadata(env)["scope"] == scope
+    got = crypto.open_envelope(env, "s3cret-pass-2026")
+    assert _json.loads(_json.dumps(got)) == _json.loads(_json.dumps(expected, default=str))
+    # 跨過 base64 分段邊界（3 MiB）也要接得起來
+    import base64
+    buf2 = io.BytesIO()
+    n_raw = 7 * 1024 * 1024 + 5
+    crypto.write_sealed(buf2, b"x" * n_raw, "pw-1234567890", metadata={}, rng=_rng)
+    payload = _json.loads(buf2.getvalue())["payload"]
+    assert len(base64.b64decode(payload, validate=True)) == n_raw + 16      # 密文＝明文＋16 位元組的 tag
+
+
+async def test_batched_import_isolates_a_bad_row(db_session, monkeypatch):
+    """整批寫入（2026-09-30）：一批裡有一列違反約束時，其他列照寫、壞掉的那一列照樣報出來。"""
+    import uuid as _uuid
+
+    from app.models.customer import Customer
+    from app.services.system_transfer import importer as imp
+    from sqlalchemy import func, select
+
+    monkeypatch.setattr(imp, "_IMPORT_BATCH", 4)
+    rows = [{"id": str(_uuid.uuid4()), "name": f"cust-{i}"} for i in range(9)]
+    rows[5]["name"] = "cust-1"                      # 與第 2 列同名（name 是 unique）
+    res = await imp._import_table(db_session, "customers", rows, mode="merge")
+    assert (res.inserted, res.errored) == (8, 1)
+    assert rows[5]["id"] in res.errors[0]
+    n = (await db_session.execute(select(func.count()).select_from(Customer))).scalar_one()
+    assert n == 8

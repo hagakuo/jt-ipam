@@ -72,7 +72,10 @@ async def resolve_token(token: str):  # type: ignore[no-untyped-def]
         user = await session.get(User, api_token.user_id)
         if user is None or not user.is_active:
             return None, False
-        return user, token_is_readonly(api_token.scopes)
+        user._api_token_scopes = list(api_token.scopes or [])
+        user._api_token_object_filters = api_token.object_filters
+        readonly = token_is_readonly(api_token.scopes) or "mcp:read" in user._api_token_scopes
+        return user, readonly
 
 
 async def _dispatch_call(name: str, arguments: dict[str, Any], user, session, *, readonly: bool = False):  # type: ignore[no-untyped-def]
@@ -97,9 +100,11 @@ def _is_notification(body: dict[str, Any]) -> bool:
     return "id" not in body or method.startswith("notifications/")
 
 
-async def process_message(body: dict[str, Any], user, *, readonly: bool = False) -> dict[str, Any] | None:  # type: ignore[no-untyped-def]
+async def process_message(body: dict[str, Any], user, *, readonly: bool = False,  # type: ignore[no-untyped-def]
+                          origin: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """處理單筆 JSON-RPC 訊息；notification 回 None（不回應）。HTTP 與 stdio 共用。
-    readonly=True（對外 MCP 金鑰）時，工具清單隱藏、且呼叫一律擋下會異動資料的工具。"""
+    readonly=True（對外 MCP 金鑰）時，工具清單隱藏、且呼叫一律擋下會異動資料的工具。
+    `origin`：{channel, ip, user_agent}，寫進異動工具的稽核記錄。"""
     if not isinstance(body, dict):
         return {"jsonrpc": "2.0", "id": None,
                 "error": {"code": -32600, "message": "Invalid Request"}}
@@ -136,6 +141,19 @@ async def process_message(body: dict[str, Any], user, *, readonly: bool = False)
                 raise IPAMToolError("params.name is required")
             async with SessionLocal() as s:
                 tool_result = await _dispatch_call(name, arguments, user, s, readonly=readonly)
+                from app.mcp.tools import MUTATING_TOOLS, summarize_action
+                if name in MUTATING_TOOLS:
+                    # 異動要留稽核（與 AI 對話按確認後的 ai_tool_exec 對齊）。以前走 MCP 的寫入什麼都沒記：
+                    # 用 admin 權杖從外部建子網路、改 IP，稽核記錄裡看不到（2026-09-30 盤點 API 手冊時抓到）
+                    from app.core.audit import append_audit
+                    o = origin or {}
+                    await append_audit(
+                        s, actor_user_id=str(user.id), actor_ip=o.get("ip"),
+                        actor_user_agent=o.get("user_agent"), object_type="ai", object_id=None,
+                        action="mcp_tool_exec",
+                        diff={"tool": name, "summary": summarize_action(name, arguments),
+                              "channel": o.get("channel") or "mcp"},
+                        request_id=None)
                 await s.commit()   # 寫入類工具要 commit，否則 async with 結束會回滾
             result = {
                 "content": [{"type": "text", "text": _safe_json(tool_result)}],
@@ -229,8 +247,10 @@ def build_mcp_app() -> FastAPI:
         has_initialize = any(isinstance(m, dict) and m.get("method") == "initialize" for m in messages)
 
         responses: list[dict[str, Any]] = []
+        origin = {"channel": "mcp-http", "ip": request.client.host if request.client else None,
+                  "user_agent": request.headers.get("user-agent")}
         for m in messages:
-            resp = await process_message(m, user, readonly=readonly)
+            resp = await process_message(m, user, readonly=readonly, origin=origin)
             if resp is not None:
                 responses.append(resp)
 

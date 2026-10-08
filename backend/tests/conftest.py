@@ -34,6 +34,34 @@ os.environ.setdefault("OUTBOUND_ALLOW_PRIVATE", "true")
 # 測試一律關閉限流：全部請求來自 127.0.0.1，共用 Redis bucket 會在測試間累積、
 # 觸發 429/401 連鎖失敗，且會污染 prod 的 rl:* bucket。
 os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
+# 上傳檔（系統匯入的暫存、機房平面圖）寫到這次測試自己的暫存目錄：預設的 /var/lib/jt-ipam 在
+# GitHub CI 上不存在、也沒有權限建（v0.6.58 的 CI 因此紅）；dev1 以 root 跑才剛好過，而且會寫進系統目錄。
+if "UPLOAD_DIR" not in os.environ:
+    import tempfile
+    os.environ["UPLOAD_DIR"] = os.path.join(tempfile.mkdtemp(prefix="jtipam-test-"), "uploads")
+
+
+# 這一套測試會在**每個測試前 TRUNCATE 所有資料表**。也就是說 JTIPAM_TEST_DATABASE_URL
+# 指到哪裡，哪裡就會被清空 —— 貼錯一次連線字串（prod、或本機那份 prod-like 的 jt_ipam）
+# 就是不可逆的資料損失，而且不會有任何確認步驟。
+#
+# 所以這裡擋在最前面：只接受名字看得出是拋棄式的資料庫。這條規則刻意用「名字」而不是
+# 主機位址 —— CI 與本機的測試庫都在 127.0.0.1，用主機分不出來；真正要防的是「同一台機器上
+# 的另一個資料庫」。
+_DISPOSABLE_SUFFIXES = ("_test", "_e2e")
+
+
+def _assert_disposable(url: str) -> None:
+    from urllib.parse import urlparse
+
+    name = urlparse(url.replace("postgresql+asyncpg://", "postgresql://")).path.lstrip("/")
+    if not name.endswith(_DISPOSABLE_SUFFIXES):
+        raise RuntimeError(
+            f"JTIPAM_TEST_DATABASE_URL 指向 {name!r}，這不是拋棄式測試庫。\n"
+            f"測試會在每個測試前清空整個資料庫，所以只接受名稱以 "
+            f"{' / '.join(_DISPOSABLE_SUFFIXES)} 結尾的資料庫（例如 jt_ipam_test）。\n"
+            f"要對其他資料庫跑，請先把它複製成一個 *_test 的拋棄式副本。"
+        )
 
 
 def _apply_test_db_env() -> None:
@@ -50,6 +78,8 @@ def _apply_test_db_env() -> None:
     if not url:
         return
     from urllib.parse import urlparse
+
+    _assert_disposable(url)
     p = urlparse(url.replace("postgresql+asyncpg://", "postgresql://"))
     if p.hostname:
         os.environ["POSTGRES_HOST"] = p.hostname
@@ -135,6 +165,18 @@ async def db_session(_engine):  # type: ignore[no-untyped-def]
 
 
 @pytest.fixture
+def session_factory(_engine):  # type: ignore[no-untyped-def]
+    """可開「多個各自獨立連線」的 session 工廠。
+
+    給需要模擬並行的測試用（例如多個 uvicorn worker 同時啟動時的 seed 競態）——
+    共用同一個 session 模擬不出競態，那只是同一條連線上的循序操作。
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    return async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)
+
+
+@pytest.fixture
 async def client():  # type: ignore[no-untyped-def]
     """FastAPI httpx async client；endpoint 用真正的 get_session。"""
     from httpx import ASGITransport, AsyncClient
@@ -177,19 +219,15 @@ async def auth_headers(admin_user):  # type: ignore[no-untyped-def]
 
 @pytest.fixture(autouse=True)
 def _reset_precedence_caches():
-    """清掉各 precedence 服務的 in-process 60s 快取，避免測試間互相污染：
-    DB 交易每測試 rollback，但模組級 `_cache` 不會，導致前一個測試設過的
-    順序/停用在 TTL 內被後面的測試讀到（CI 機器快、更容易踩到）。"""
-    import importlib
-    for _mod in (
-        "app.services.hostname",
-        "app.services.device_name_precedence",
-        "app.services.arp_precedence",
-        "app.services.model_precedence",
-    ):
-        try:
-            _m = importlib.import_module(_mod)
-            getattr(_m, "_cache", {}).clear()
-        except Exception:
-            pass
+    """清掉來源優先序的 in-process 60s 快取，避免測試間互相污染。
+
+    DB 交易每個測試都 rollback，但模組級快取不會 —— 前一個測試設過的順序／停用會在
+    TTL 內被後面的測試讀到（CI 機器跑得快，更容易踩到）。
+
+    ⚠️ 這裡刻意**直接 import**、不做 `getattr(..., "_cache", {})` 那種容錯：
+    快取搬家時（v0.5.209 收斂到 services/precedence）容錯寫法會安靜地什麼都不清，
+    測試就開始互相污染，而且看起來只是「某支測試偶爾失敗」。寧可 import 失敗炸掉。
+    """
+    from app.services.precedence import bust_all
+    bust_all()
     yield

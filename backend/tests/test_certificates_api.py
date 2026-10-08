@@ -251,6 +251,41 @@ async def test_download_version_formats(client, auth_headers):
     assert rb.status_code == 400
 
 
+async def test_pfx_password_goes_in_the_body_not_the_url(client, auth_headers):
+    """PFX 的保護密碼不能放在網址參數裡。
+
+    0.6.43 的 ZAP 登入後掃描抓到：`?password=` 會原封不動寫進 nginx 存取日誌、瀏覽器歷史、
+    任何中間代理的記錄。改用 POST，密碼放在 body；GET 帶了 password 直接拒絕 ——
+    靜靜照收的話，舊的呼叫方式照樣把密碼寫進日誌。
+    """
+    from cryptography.hazmat.primitives.serialization import pkcs12
+
+    cid = await _create_cert(client, auth_headers)
+    cert_pem, key_pem = _make_cert(sans=("p.example.com",))
+    vid = (await client.post(f"/api/v1/certificates/{cid}/versions", headers=auth_headers,
+                             files=_files(cert_pem, key_pem))).json()["id"]
+    base = f"/api/v1/certificates/{cid}/versions/{vid}/file"
+
+    r = await client.post(base, headers=auth_headers, json={"fmt": "pfx", "password": "S3cret-pfx"})
+    assert r.status_code == 200, r.text
+    assert ".pfx" in r.headers["content-disposition"]
+    key, cert, _ = pkcs12.load_key_and_certificates(r.content, b"S3cret-pfx")
+    assert key is not None and cert is not None, "要能用 body 裡的密碼打開"
+
+    r = await client.get(f"{base}?fmt=pfx&password=S3cret-pfx", headers=auth_headers)
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "cert_export_password_in_url"
+
+    r = await client.post(base, headers=auth_headers, json={"fmt": "evil"})
+    assert r.status_code == 400
+
+    # API 文件（OpenAPI）也不能再公布 GET 有 password 參數 —— 0.6.47 的 ZAP 登入後掃描照文件
+    # 送了 ?password=，雖然會被拒絕，但公布出去等於告訴別人可以這樣傳
+    from app.main import app
+    params = app.openapi()["paths"]["/api/v1/certificates/{cert_id}/versions/{version_id}/file"]["get"].get("parameters", [])
+    assert "password" not in {p["name"] for p in params}
+
+
 async def test_requires_admin(client, db_session):
     u = User(username=f"na-{uuid.uuid4().hex[:6]}", email=f"{uuid.uuid4().hex[:6]}@t.local",
              display_name="NA", password_hash=hash_password("TestPassword2026!"),

@@ -21,7 +21,8 @@ import ExportButton from "@/components/ExportButton.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 const { t } = useI18n();
 
-const { visibleKeys: dnsVis, setVisible: dnsSet, reset: dnsReset } = useColumnPrefs(
+const { visibleKeys: dnsVis, setVisible: dnsSet, reset: dnsReset,
+  order: dnsOrder, setOrder: dnsSetOrder, orderColumns: dnsOrderCols } = useColumnPrefs(
   "dns_admin",
   ["name", "type", "endpoint", "enabled", "actions"],
   ["name", "type", "endpoint", "enabled", "actions"],
@@ -224,7 +225,7 @@ const allCols = computed<DataTableColumns<DNSServer>>(() => autoSort([
 ]));
 
 const cols = computed<DataTableColumns<DNSServer>>(() =>
-  allCols.value.filter((c: any) => dnsVis.value.includes(c.key)),
+  dnsOrderCols(allCols.value.filter((c: any) => dnsVis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); void loadSubnetOptions(); });
@@ -250,7 +251,8 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         {{ t("dns_admin.create") }}
       </n-button>
       <ColumnPicker :all="dnsPicker" :visible="dnsVis"
-                    @update:visible="dnsSet" @reset="dnsReset" />
+                    @update:visible="dnsSet" @reset="dnsReset"
+                    :order="dnsOrder" @update:order="dnsSetOrder" />
       <ExportButton :columns="cols" :rows="rows" filename="dns-servers" :title="t('dns_admin.title')" />
     </n-space>
 

@@ -15,10 +15,13 @@ OWASP A04 / A06：LLM URL 走 safe_request（私網允許）；任何回到該�
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -26,7 +29,9 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.safe_http import UnsafeOutboundURL, safe_request, safe_stream
+from app.core.safe_http import UnsafeOutboundURL, safe_request, safe_stream, transport_detail
+
+log = logging.getLogger(__name__)
 
 
 class AINotConfigured(RuntimeError):
@@ -34,7 +39,72 @@ class AINotConfigured(RuntimeError):
 
 
 class AIError(RuntimeError):
-    pass
+    """模型那一端的錯誤。訊息是給日誌與管理員看的原文；給一般帳號看的是 `code`（ai_error_event）。"""
+
+    code = "ai_failed"
+
+
+class AIBlocked(AIError):
+    """LLM 位址被出站防護擋下。"""
+
+    code = "ai_ssrf_blocked"
+
+
+class AIUnreachable(AIError):
+    """連不上 LLM 伺服器（名稱解析、拒絕連線、TLS…）。"""
+
+    code = "ai_unreachable"
+
+
+class AITimeout(AIError):
+    """LLM 伺服器沒有在時限內回覆完。"""
+
+    code = "ai_timeout"
+
+
+class AIUpstream(AIError):
+    """LLM 伺服器回了錯誤（HTTP 狀態、串流裡的 error）。"""
+
+    code = "ai_upstream_error"
+
+
+#: 錯誤代碼的退路文字（前端有翻譯 errors.<code> 就不會用到）
+_AI_PUBLIC: dict[str, str] = {
+    "ai_failed": "AI 判讀失敗",
+    "ai_disabled": "LLM 未啟用",
+    "ai_ssrf_blocked": "LLM 伺服器的位址被出站防護擋下，請管理員檢查 LLM 設定",
+    "ai_unreachable": "連不上 LLM 伺服器",
+    "ai_timeout": "LLM 伺服器沒有在時限內回覆",
+    "ai_upstream_error": "LLM 伺服器回報錯誤",
+}
+
+
+def ai_error_code(exc: BaseException) -> str:
+    import asyncio
+    if isinstance(exc, AIError):
+        return exc.code
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "ai_timeout"
+    return "ai_failed"
+
+
+def ai_error_event(exc: BaseException | None, *, admin: bool, code: str | None = None,
+                   reason: str | None = None) -> dict[str, Any]:
+    """串流與判讀的錯誤：`{"code", "params", "detail"}`。
+
+    CodeQL 判讀（2026-10-01，#11／#15／#16）：以前把例外原文直接給任何登入帳號看 —— 內部 LLM 主機名稱、
+    出站防護規則、上游 401 回應的前 200 字（有的閘道會回遮罩過的金鑰）。現在一般帳號只拿到代碼（前端照
+    語系翻譯）；**管理員**另外附上原因（`params.reason`），因為診斷要靠它。完整原因一律寫進日誌。
+    """
+    code = code or (ai_error_code(exc) if exc is not None else "ai_failed")
+    if exc is not None:
+        log.warning("AI call failed (%s)", code, exc_info=exc)
+    params: dict[str, Any] = {}
+    if admin:
+        raw = reason if reason is not None else (str(exc) if exc is not None else "")
+        if raw:
+            params["reason"] = raw[:300]
+    return {"code": code, "params": params, "detail": _AI_PUBLIC.get(code, _AI_PUBLIC["ai_failed"])}
 
 
 # 單一工具結果回填上下文的字元上限（避免超大清單拖慢/逾時模型）
@@ -146,7 +216,81 @@ def chat_body(cfg: Any, provider: str, *, messages: list[Any], tools: list[Any])
         body["tools"] = tools
     if provider == "ollama":
         body["options"] = _chat_options(cfg)
+    body.update(chat_thinking_off(cfg, provider, cfg.chat_model))
     return body
+
+
+def chat_thinking_off(cfg: Any, provider: str, model: str) -> dict[str, Any]:
+    """AI 對話設成不允許思考時要送的參數（允許時回空）。
+
+    Ollama 用它自己的 `think: false`；OpenAI 相容服務與閘道（LiteLLM、vLLM、llama.cpp…）用
+    reasoning_effort 等三個（見 _openai_reasoning_off）。官方 OpenAI 對不認得的欄位回 400，不送。
+    這台伺服器先前拒絕過的不再送（_strip_rejected_controls 記下的）。
+    """
+    if getattr(cfg, "chat_thinking", True):
+        return {}
+    skip = _rejected_controls(chat_url(getattr(cfg, "url", ""), provider), model)
+    if provider == "ollama":
+        return {} if "think" in skip else {"think": False}
+    if _is_official_openai(getattr(cfg, "url", "")):
+        return {}
+    return {k: v for k, v in _openai_reasoning_off().items() if k not in skip}
+
+
+def _drop_rejected_thinking(body: dict[str, Any], status: int, text: str, url: str) -> bool:
+    """伺服器拒絕了某個關閉思考的參數 → 拿掉並記住（回 True＝該重送）。
+
+    舊版 Ollama 不認 `think`；OpenAI 相容服務與閘道的另外三個交給 _strip_rejected_controls。
+    """
+    if status in (400, 422) and "think" in body and "think" in (text or "").lower():
+        body.pop("think", None)
+        key = (url, str(body.get("model") or ""))
+        _REJECTED_CONTROLS[key] = (time.monotonic(), _rejected_controls(*key) | {"think"})
+        return True
+    return _strip_rejected_controls(body, status, text, url)
+
+
+class _ReadResponse:
+    """已經讀完主體的失敗回應（_chat_stream 看完錯誤、判斷不必重送時交回給呼叫端）。"""
+
+    def __init__(self, status_code: int, text: str) -> None:
+        self.status_code = status_code
+        self._text = text
+
+    async def aread(self) -> bytes:
+        return self._text.encode("utf-8")
+
+    async def aiter_lines(self) -> AsyncIterator[str]:
+        return
+        yield  # pragma: no cover
+
+
+@asynccontextmanager
+async def _chat_stream(url: str, body: dict[str, Any], headers: dict[str, str], timeout: float,
+                       ) -> AsyncIterator[Any]:
+    """開對話的串流；伺服器拒絕關閉思考的參數時拿掉被點名的再開（還沒吐出任何東西，可以重來）。"""
+    for _ in range(len(_REASONING_OFF_KEYS) + 2):
+        async with safe_stream("POST", url, headers=headers, json=body, timeout=timeout) as resp:
+            if resp.status_code in (400, 422):
+                text = (await resp.aread()).decode("utf-8", "replace")
+                if _drop_rejected_thinking(body, resp.status_code, text, url):
+                    continue
+                yield _ReadResponse(resp.status_code, text)
+                return
+            yield resp
+            return
+    raise AIUpstream("LLM server kept rejecting the request")
+
+
+async def _post_chat(url: str, body: dict[str, Any], headers: dict[str, str], timeout: float) -> Any:
+    """非串流的對話請求；同樣會拿掉被拒絕的關閉思考參數再送。"""
+    resp = await safe_request("POST", url, headers=headers, json=body, timeout=timeout)
+    for _ in range(len(_REASONING_OFF_KEYS) + 1):
+        if resp.status_code not in (400, 422) or not _drop_rejected_thinking(
+                body, resp.status_code, getattr(resp, "text", ""), url):
+            break
+        resp = await safe_request("POST", url, headers=headers, json=body, timeout=timeout)
+    return resp
 
 
 def provider_label(provider: str) -> str:
@@ -155,6 +299,119 @@ def provider_label(provider: str) -> str:
     回「Ollama chat 401」但實際打的是 OpenAI 端點，只會把人送去查錯的地方。
     """
     return "OpenAI-compatible" if provider == "openai" else "Ollama"
+
+
+# ─────────────────── 串流：兩種格式 ───────────────────
+#
+# Ollama 串流是逐行 JSON；OpenAI 相容是 SSE —— 每一行是 `data: {...}`，最後一行
+# `data: [DONE]`，中間可能夾 `: keep-alive` 註解或 `event:` 行。以前三處串流都直接把
+# 整行丟給 json.loads，SSE 那種每行都失敗、被靜靜跳過：巡檢拿到「空回應」（issue #36），
+# 對話則解析不到工具呼叫，一路走到「強制作答」的後援 —— 有回答，但沒有查任何資料。
+
+def _stream_payload(line: str) -> dict[str, Any] | None:
+    """把串流的一行解成 dict；不是資料的行（空行、註解、SSE 欄位、[DONE]）回 None／哨兵。"""
+    s = line.strip()
+    if not s or s.startswith(":"):
+        return None
+    if s.startswith("data:"):
+        s = s[5:].strip()
+        if s == "[DONE]":
+            return {"done": True}
+    elif s.split(":", 1)[0] in ("event", "id", "retry"):
+        return None
+    try:
+        data = json.loads(s)
+    except ValueError:
+        return None           # Ollama 偶爾夾非 JSON 行；跳過即可
+    return data if isinstance(data, dict) else None
+
+
+@dataclass
+class _StreamDelta:
+    content: str = ""
+    thinking: str = ""
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    done: bool = False
+    done_reason: str | None = None
+    error: str = ""
+
+
+def _stream_delta(chunk: dict[str, Any]) -> _StreamDelta:
+    """把一個串流片段正規化（Ollama: message；OpenAI: choices[0].delta）。"""
+    err = chunk.get("error")
+    error = ""
+    if err:
+        error = str(err.get("message") or err) if isinstance(err, dict) else str(err)
+    choices = chunk.get("choices")
+    if isinstance(choices, list):
+        ch = choices[0] if choices and isinstance(choices[0], dict) else {}
+        d = ch.get("delta") or ch.get("message") or {}
+        finish = ch.get("finish_reason")
+        return _StreamDelta(
+            content=str(d.get("content") or ""),
+            # 推論模型的思考內容：vLLM／DeepSeek 用 reasoning_content，部分服務用 reasoning
+            thinking=str(d.get("reasoning_content") or d.get("reasoning") or d.get("thinking") or ""),
+            tool_calls=list(d.get("tool_calls") or []),
+            done=finish is not None, done_reason=finish, error=error)
+    m = chunk.get("message") or {}
+    return _StreamDelta(
+        content=str(m.get("content") or ""), thinking=str(m.get("thinking") or ""),
+        tool_calls=list(m.get("tool_calls") or []),
+        done=bool(chunk.get("done")), done_reason=chunk.get("done_reason"), error=error)
+
+
+def _with_call_ids(calls: list[dict[str, Any]], provider: str) -> list[dict[str, Any]]:
+    """從文字還原的工具呼叫沒有 id。OpenAI 相容要 id（工具結果靠它對回去）與字串 arguments；
+    Ollama 維持原樣（它要的 arguments 是物件）。"""
+    if provider != "openai":
+        return calls
+    out = []
+    for i, c in enumerate(calls):
+        fn = dict(c.get("function") or {})
+        args = fn.get("arguments")
+        if not isinstance(args, str):
+            fn["arguments"] = json.dumps(args or {}, ensure_ascii=False)
+        out.append({"id": c.get("id") or f"call_inline_{i}", "type": "function", "function": fn})
+    return out
+
+
+class _ToolCallBuffer:
+    """收集串流裡的工具呼叫。
+
+    Ollama 一次給完整的呼叫；OpenAI 把一個呼叫拆成好幾段送，靠 `index` 對回同一個，
+    arguments 是要接起來的字串片段。接好之後維持 OpenAI 的形狀（id／type／字串
+    arguments）送回對話 —— 工具結果要用那個 id 對回去，不然嚴格的服務會拒絕。
+    """
+
+    def __init__(self) -> None:
+        self._whole: list[dict[str, Any]] = []
+        self._by_index: dict[int, dict[str, Any]] = {}
+
+    def add(self, calls: list[dict[str, Any]]) -> None:
+        for c in calls or []:
+            if not isinstance(c, dict):
+                continue
+            idx = c.get("index")
+            if idx is None:
+                self._whole.append(c)
+                continue
+            cur = self._by_index.setdefault(int(idx), {"type": "function",
+                                                       "function": {"name": "", "arguments": ""}})
+            if c.get("id"):
+                cur["id"] = c["id"]
+            if c.get("type"):
+                cur["type"] = c["type"]
+            fn = c.get("function") or {}
+            if fn.get("name"):
+                cur["function"]["name"] = fn["name"]
+            args = fn.get("arguments")
+            if isinstance(args, str):
+                cur["function"]["arguments"] += args
+            elif isinstance(args, dict):
+                cur["function"]["arguments"] = json.dumps(args, ensure_ascii=False)
+
+    def calls(self) -> list[dict[str, Any]]:
+        return self._whole + [self._by_index[i] for i in sorted(self._by_index)]
 
 
 def json_chat_body(
@@ -186,6 +443,12 @@ def json_chat_body(
             body["response_format"] = {"type": "json_object"}
         if max_output_tokens:
             body["max_tokens"] = int(max_output_tokens)
+        if no_thinking and not _is_official_openai(getattr(cfg, "url", "")):
+            # 以前這條路完全忽略 no_thinking（issue #36）：推論模型把整個產出額度寫成思考，
+            # 答案 0 字。官方 OpenAI 不送 —— 它對不認得的欄位直接回 400。
+            # 這台伺服器先前拒絕過的欄位不再送（見 _strip_rejected_controls）
+            skip = _rejected_controls(chat_url(getattr(cfg, "url", ""), provider), body["model"])
+            body.update({k: v for k, v in _openai_reasoning_off().items() if k not in skip})
         return body
     options = _chat_options(cfg)
     if max_output_tokens:
@@ -200,6 +463,95 @@ def json_chat_body(
     return body
 
 
+
+
+#: 自架 OpenAI 相容服務的「不要思考」。llama.cpp（b9882 原始碼確認）每個請求都認這兩個：
+#: `chat_template_kwargs.enable_thinking` 交給聊天樣板（樣板有沒有理它看模型），
+#: `thinking_budget_tokens` 是取樣層強制結束思考 —— 任何有思考標記的模型都有效。
+#: vLLM 也認 chat_template_kwargs。被拒絕時會拿掉重送一次（見 _strip_rejected_controls）。
+#: `reasoning_effort: "none"` 是 OpenAI 標準欄位，llama.cpp 自 b10434 起才真的照做（修正前會忽略，
+#: 見 ggml-org/llama.cpp#27023）—— 回報者升級後單送它就解決了。三個一起送：新舊版本都蓋到。
+_REASONING_OFF_KEYS = ("chat_template_kwargs", "thinking_budget_tokens", "reasoning_effort")
+
+
+def _openai_reasoning_off() -> dict[str, Any]:
+    return {"chat_template_kwargs": {"enable_thinking": False}, "thinking_budget_tokens": 0,
+            "reasoning_effort": "none"}
+
+
+def _is_official_openai(url: str) -> bool:
+    """官方 OpenAI／Azure OpenAI：對不認得的請求欄位回 400，不能送自架服務用的欄位。"""
+    from urllib.parse import urlparse
+    host = (urlparse(url or "").hostname or "").lower()
+    return host == "api.openai.com" or host.endswith(".openai.com") or host.endswith(
+        ".openai.azure.com")
+
+
+#: 這台伺服器、這個模型不收哪些「不要思考」的欄位：{(請求網址, 模型): (記下的時間, 欄位)}。
+#: 記住才不必每個請求都先失敗一次（延遲加倍）；一小時後重試一次（伺服器可能升級了）。
+_REJECTED_CONTROLS: dict[tuple[str, str], tuple[float, frozenset[str]]] = {}
+_REJECT_TTL = 3600.0
+
+
+def _rejected_controls(url: str, model: str) -> frozenset[str]:
+    hit = _REJECTED_CONTROLS.get((url, model))
+    return hit[1] if hit and time.monotonic() - hit[0] < _REJECT_TTL else frozenset()
+
+
+def _strip_rejected_controls(body: dict[str, Any], status: int, text: str, url: str = "") -> bool:
+    """伺服器因為不認得「不要思考」的欄位而拒絕時，把**被點名的那幾個**拿掉（回 True＝該重送）。
+
+    只認 400／422 而且錯誤訊息點名了這些欄位 —— 其他 400（例如超出上下文）照常報錯，重送也不會好。
+    以前一個被拒就三個一起拿掉：LiteLLM 這類閘道預設拒絕它不認得的欄位（例如 thinking_budget_tokens），
+    連它認得、會轉成 Ollama `think:false` 的 reasoning_effort 也一起拿掉，重送的請求完全沒關思考
+    （2026-09-30，jt-doc-tools 同一天踩到：翻譯從幾分鐘變成 400 分鐘）。
+    拿掉的欄位依（網址, 模型）記住，之後的請求一開始就不送。
+    """
+    if status not in (400, 422):
+        return False
+    low = (text or "").lower()
+    present = [k for k in _REASONING_OFF_KEYS if k in body]
+    named = [k for k in present if k in low]
+    if "enable_thinking" in low and "chat_template_kwargs" in present and "chat_template_kwargs" not in named:
+        named.append("chat_template_kwargs")
+    if not present or not (named or any(k in low for k in _REASONING_OFF_KEYS)):
+        return False
+    drop = named or present
+    for k in drop:
+        body.pop(k, None)
+    if url:
+        key = (url, str(body.get("model") or ""))
+        _REJECTED_CONTROLS[key] = (time.monotonic(), _rejected_controls(*key) | set(drop))
+    return True
+
+
+def _cut_off_while_thinking(thinking_chars: int, max_tokens: Any) -> AIError:
+    """模型把產出額度全用在思考上（finish_reason=length、答案 0 字）—— 講清楚是怎麼回事。
+
+    以前報成「（空回應）」，看起來像模型壞了或我們沒收到東西；其實是額度被思考吃光。
+    """
+    limit = f"（{int(max_tokens)} tokens）" if max_tokens else ""
+    return AIError(
+        f"模型把產出額度{limit}全用在思考上：思考 {thinking_chars} 字、答案 0 字"
+        "（finish_reason=length）。請在推論伺服器關閉思考模式（例如 llama.cpp 啟動時加 "
+        "--reasoning-budget 0），或改用不帶思考的模型。"
+    )
+
+
+def _answer_or_explain(data: dict[str, Any], *, max_tokens: Any) -> str:
+    """非串流回覆取出答案；答案是空的而且是被額度切在思考裡，就丟出說明清楚的錯誤。"""
+    msg = data.get("message") or {}
+    finish = data.get("done_reason")
+    if not msg:
+        choice = (data.get("choices") or [{}])[0]
+        msg = choice.get("message") or {}
+        finish = choice.get("finish_reason")
+    content = str(msg.get("content") or "")
+    if not content.strip() and finish == "length":
+        thinking = str(msg.get("reasoning_content") or msg.get("reasoning")
+                       or msg.get("thinking") or "")
+        raise _cut_off_while_thinking(len(thinking), max_tokens)
+    return content
 
 
 def embedding_body(cfg: Any, provider: str, text_in: str) -> dict[str, Any]:
@@ -230,7 +582,8 @@ async def embed(session: AsyncSession, text_in: str) -> list[float]:
     cfg = await get_llm_config(session)
     if not cfg.enabled:
         raise AINotConfigured("LLM is disabled")
-    url = embedding_url(cfg.url, cfg.provider)
+    # 嵌入模型可以在另一台（issue #33）；留空就沿用對話模型那個位址
+    url = embedding_url(getattr(cfg, "embedding_base_url", None) or cfg.url, cfg.provider)
     body = embedding_body(cfg, cfg.provider, text_in)
     try:
         resp = await safe_request(
@@ -239,14 +592,14 @@ async def embed(session: AsyncSession, text_in: str) -> list[float]:
             json=body, timeout=cfg.timeout,
         )
     except UnsafeOutboundURL as exc:
-        raise AIError(f"SSRF guard: {exc}") from exc
+        raise AIBlocked(f"SSRF guard: {exc}") from exc
     except httpx.HTTPError as exc:
-        raise AIError(f"transport: {exc.__class__.__name__}") from exc
+        raise AIUnreachable(f"transport: {transport_detail(exc)}") from exc
     if resp.status_code != 200:
-        raise AIError(f"{provider_label(cfg.provider)} {resp.status_code}: {resp.text[:200]}")
+        raise AIUpstream(f"{provider_label(cfg.provider)} {resp.status_code}: {resp.text[:200]}")
     vec = extract_embedding(resp.json(), cfg.provider)
     if not vec:
-        raise AIError(f"{provider_label(cfg.provider)} returned no embedding")
+        raise AIUpstream(f"{provider_label(cfg.provider)} returned no embedding")
     expected_dim = get_settings().embedding_dim
     if len(vec) != expected_dim:
         raise AIError(
@@ -460,6 +813,7 @@ _LANG_MAP = {
     "zh-CN": "Simplified Chinese (简体中文)",
     "en-US": "English",
     "en": "English",
+    "ja-JP": "Japanese（日本語。です・ます調）",
     "ja": "Japanese (日本語)",
 }
 
@@ -471,6 +825,37 @@ def _lang_instruction(locale: str | None) -> str:
         # 未知 locale → 不強制；讓 LLM 跟著使用者輸入的語言
         return "Respond in the same language as the user's most recent message."
     return f"Always respond to the user in {name}, regardless of the language of tool outputs."
+
+
+async def user_locale(session: AsyncSession, user: Any) -> str | None:
+    """那個人的介面語言 —— 所有會把文字丟給 LLM 的功能都該用這一支。
+
+    為什麼集中在這裡：語言判斷曾經散在各個進入點，做法還各自不同 —— 調查視窗是
+    `lang.startswith("zh")` 的二分法（日文使用者會拿到英文），鑑識卡與規則異動解讀
+    則是提示詞寫死中文（**英文使用者也拿到中文**）。加日文時這三處全都沒有跟上，
+    而且不會報錯，只是答案語言不對。一個來源就不會各走各的。
+    """
+    from app.models.user import UserPreference
+
+    uid = getattr(user, "id", None)
+    if uid is None:
+        return None
+    return (await session.execute(
+        select(UserPreference.locale).where(UserPreference.user_id == uid)
+    )).scalar_one_or_none()
+
+
+async def answer_language(session: AsyncSession, user: Any) -> str:
+    """給 raw_chat 用的提示詞片段：要模型用這個人的介面語言回答。
+
+    提示詞本體維持中文（那是我們寫給模型看的指示），**回答的語言**由這一行決定。
+    模型對「用 X 語言回答」的遵從度比把整段提示詞翻成 X 高得多，也不必維護五份提示詞。
+    """
+    name = _LANG_MAP.get(await user_locale(session, user) or "", None) or _LANG_MAP["zh-TW"]
+    return (
+        f"\n\n**回答一律使用 {name}**，不論上面的證據與欄位是什麼語言；"
+        "專有名詞（主機名稱、欄位名、指令）保持原文。\n"
+    )
 
 
 # 模型偶爾會把工具呼叫當成「文字」吐出來（而非結構化 tool_calls）——即使是支援工具呼叫的
@@ -630,19 +1015,16 @@ async def chat(
             "stream": False,
             # 低溫度：減少模型亂插字（如把 192.168 寫成「19 kiếm 168」之類的跨語言錯字）
             "options": _chat_options(cfg),
+            **chat_thinking_off(cfg, cfg.provider, cfg.chat_model),
         }
         try:
-            resp = await safe_request(
-                "POST", url,
-                headers=auth_headers(cfg.provider, cfg.api_key),
-                json=body, timeout=cfg.timeout,
-            )
+            resp = await _post_chat(url, body, auth_headers(cfg.provider, cfg.api_key), cfg.timeout)
         except UnsafeOutboundURL as exc:
-            raise AIError(f"SSRF guard: {exc}") from exc
+            raise AIBlocked(f"SSRF guard: {exc}") from exc
         except httpx.HTTPError as exc:
-            raise AIError(f"transport: {exc.__class__.__name__}") from exc
+            raise AIUnreachable(f"transport: {transport_detail(exc)}") from exc
         if resp.status_code != 200:
-            raise AIError(f"{provider_label(cfg.provider)} chat {resp.status_code}: {resp.text[:200]}")
+            raise AIUpstream(f"{provider_label(cfg.provider)} chat {resp.status_code}: {resp.text[:200]}")
         data = resp.json()
 
         msg = extract_reply(data, cfg.provider)
@@ -651,7 +1033,7 @@ async def chat(
         tool_calls = msg.get("tool_calls") or []
         if not tool_calls:
             # 後援：模型偶發把工具呼叫寫成文字（而非結構化 tool_calls）→ 還原執行
-            inline = _inline_tool_calls(msg.get("content") or "", _allowed)
+            inline = _with_call_ids(_inline_tool_calls(msg.get("content") or "", _allowed), cfg.provider)
             if inline:
                 msg["tool_calls"] = inline
                 msg["content"] = ""
@@ -659,7 +1041,12 @@ async def chat(
             elif _looks_like_tool_leak(msg.get("content") or ""):
                 return {"answer": _tool_leak_message(locale), "messages": convo, **_meta()}
             else:
-                return {"answer": msg.get("content") or "", "messages": convo, **_meta()}
+                content = msg.get("content") or ""
+                if not content.strip():
+                    content = (await _force_final_answer(cfg, convo)
+                               or _empty_answer_message(locale, None))
+                return {"answer": _annotate_unverified(content, convo, locale),
+                        "messages": convo, **_meta()}
 
         # 異動類工具不直接執行 → 回傳待確認動作，等使用者按「確認」
         pending = _pending_mutations(tool_calls)
@@ -671,7 +1058,86 @@ async def chat(
 
     # 用完 max_iterations 還在叫工具 → 最後不給工具再叫一次，逼它用現有資訊作答
     answer = await _force_final_answer(cfg, convo)
-    return {"answer": answer, "messages": convo, **_meta()}
+    return {"answer": _annotate_unverified(answer, convo, locale),
+            "messages": convo, **_meta()}
+
+
+# 看起來像位址的點分四段（含抄錯的 999）。抄錯的那種不是合法 IPv4，但照樣會被當事實讀。
+_DOTTED_QUAD = re.compile(r"\b\d{1,4}(?:\.\d{1,4}){3}\b")
+
+
+def _is_netmask(text: str) -> bool:
+    """255.255.255.0 這種是常識不是查來的資料；0.0.0.0 同理。標它們只會製造雜訊。"""
+    try:
+        parts = [int(x) for x in text.split(".")]
+    except ValueError:
+        return False
+    if any(p > 255 for p in parts):
+        return False
+    bits = "".join(f"{p:08b}" for p in parts)
+    # 連續的 1 之後全是 0（含全 0 與全 1）
+    return bits == "0" * 32 or bits.rstrip("0").count("0") == 0
+
+
+def unverified_ips(answer: str, sources: Iterable[str]) -> list[str]:
+    """答案裡出現、但任何來源（工具結果／使用者的話）都沒有的位址。
+
+    模型只負責敘述，事實必須來自查詢。提示詞已經寫了「逐字照抄」，量化過的小模型還是會
+    把位址抄錯、甚至整個編出來（GitHub issue #34），而那種答案看起來跟正確答案一模一樣。
+    """
+    seen: set[str] = set()
+    for src in sources:
+        seen.update(_DOTTED_QUAD.findall(src or ""))
+    out: list[str] = []
+    for token in _DOTTED_QUAD.findall(answer or ""):
+        if token in seen or token in out or _is_netmask(token):
+            continue
+        out.append(token)
+    return out
+
+
+_UNVERIFIED_WARN = {
+    "zh": "⚠️ 下列位址不在這次的查詢結果裡，可能是模型自行產生或抄錯的，請不要直接採信：{ips}",
+    "ja": "⚠️ 次のアドレスは今回の照会結果に含まれていません。モデルが生成または書き間違えた可能性があります：{ips}",
+    "en": ("⚠️ These addresses do not appear in any tool result from this turn and may have "
+           "been invented or mistyped by the model — do not rely on them: {ips}"),
+}
+
+
+def _annotate_unverified(answer: str, convo: list[dict[str, Any]], locale: str | None) -> str:
+    """在答案後面加一行警告，**不改寫模型的字**。
+
+    改寫會讓人以為模型答對了；標出來才看得出哪幾個不能用。
+    """
+    if not answer:
+        return answer
+    sources = [str(m.get("content") or "") for m in convo
+               if m.get("role") in ("tool", "user")]
+    bad = unverified_ips(answer, sources)
+    if not bad:
+        return answer
+    loc = (locale or "zh-TW").lower()
+    key = "en" if loc.startswith("en") else ("ja" if loc.startswith("ja") else "zh")
+    return answer + "\n\n" + _UNVERIFIED_WARN[key].format(ips="、".join(bad)
+                                                           if key != "en" else ", ".join(bad))
+
+
+def _empty_answer_message(locale: str, done_reason: str | None) -> str:
+    """模型什麼都沒產出時，說清楚可能的原因與下一步 —— 空白訊息無法行動。"""
+    why_zh = {
+        "length": "回答被輸出長度上限截斷",
+        "load": "模型正在載入",
+    }.get(done_reason or "", "模型沒有產生任何文字（可能只輸出了思考內容，或超出上下文長度）")
+    why_en = {
+        "length": "the answer hit the output length limit",
+        "load": "the model was still loading",
+    }.get(done_reason or "", "the model produced no text (it may have emitted only "
+                             "thinking, or exceeded the context length)")
+    if locale.startswith("en"):
+        return (f"No answer was produced — {why_en}. Try a narrower question, or raise "
+                "num_ctx / the output limit under Admin → LLM/AI.")
+    return (f"這次沒有得到回答 —— {why_zh}。可以把問題問得更小一點，"
+            "或到「管理 → LLM / AI」調高 num_ctx 與輸出上限。")
 
 
 async def _force_final_answer(cfg: Any, convo: list[dict[str, Any]]) -> str:
@@ -687,12 +1153,10 @@ async def _force_final_answer(cfg: Any, convo: list[dict[str, Any]]) -> str:
         ),
     }
     body = {"model": cfg.chat_model, "messages": [*convo, nudge],
-            "stream": False, "options": _chat_options(cfg)}
+            "stream": False, "options": _chat_options(cfg),
+            **chat_thinking_off(cfg, cfg.provider, cfg.chat_model)}
     try:
-        resp = await safe_request(
-            "POST", url, headers=auth_headers(cfg.provider, cfg.api_key),
-            json=body, timeout=cfg.timeout,
-        )
+        resp = await _post_chat(url, body, auth_headers(cfg.provider, cfg.api_key), cfg.timeout)
         if resp.status_code == 200:
             msg = extract_reply(resp.json(), cfg.provider)
             content = msg.get("content")
@@ -792,8 +1256,11 @@ def _build_chat_context(
                 "For unrelated questions (general coding, world knowledge, chit-chat), "
                 "politely decline and suggest a dedicated general-purpose LLM platform "
                 "such as Open WebUI or opencode instead. "
-                "NEVER invent, guess, or extend IP data — only report exactly what "
-                "tools return. When the user wants several or consecutive free IPs, "
+                "NEVER invent, guess, or extend data — only report exactly what "
+                "tools return. If a tool returns no results (empty lists, zero counts, "
+                "found=false), say plainly that none were found; NEVER fabricate example "
+                "IPs, MACs, hostnames or subnets to illustrate an answer. "
+                "When the user wants several or consecutive free IPs, "
                 "call find_free_ips with the right count/consecutive ONCE; report only "
                 "the IPs it returns, and if it returns fewer than requested, say so "
                 "instead of making up more. "
@@ -863,12 +1330,24 @@ async def _run_tool_calls(session: AsyncSession, user: Any, tool_calls: list[dic
             except IPAMToolError as exc:
                 tool_result = {"error": str(exc)}
             except Exception as exc:
-                tool_result = {"error": f"tool failed: {exc.__class__.__name__}"}
+                # 工具結果會隨 trace_messages 回到畫面。只給類別名稱＝把「為什麼壞了」丟掉（#34 時刻意
+                # 保留原文）；但原文整段給任何登入帳號看，資料庫錯誤會帶出 SQL 與參數（CodeQL #11，
+                # 2026-10-01）。折衷：管理員保留第一行（SQLAlchemy 的 [SQL: …]／[parameters: …] 在後面
+                # 幾行），一般帳號只給類別名稱；完整原文一律寫進日誌。
+                log.warning("AI tool %s failed", name, exc_info=exc)
+                first = str(exc).strip().splitlines()[0][:300] if str(exc).strip() else ""
+                show = first if bool(getattr(user, "is_admin", False)) else ""
+                tool_result = {"error": f"tool failed: {exc.__class__.__name__}" + (f": {show}" if show else "")}
         blob = json.dumps(tool_result, ensure_ascii=False, default=str)
         # 防止單一工具回傳過大撐爆上下文 → 模型變慢甚至 ReadTimeout
         if len(blob) > _TOOL_RESULT_CAP:
             blob = blob[:_TOOL_RESULT_CAP] + " …[truncated; 結果過多，請縮小範圍或加篩選條件]"
-        out.append({"role": "tool", "name": name, "content": blob})
+        msg: dict[str, Any] = {"role": "tool", "name": name, "content": blob}
+        # OpenAI 相容：工具結果要用 tool_call_id 對回那一個呼叫，缺了嚴格的服務會拒絕整個請求。
+        # Ollama 的呼叫沒有 id，就不要憑空生一個。
+        if call.get("id"):
+            msg["tool_call_id"] = call["id"]
+        out.append(msg)
     return out
 
 
@@ -895,8 +1374,9 @@ async def chat_stream(
     """
     from app.services.system_config import get_llm_config
     cfg = await get_llm_config(session)
+    admin = bool(getattr(user, "is_admin", False))
     if not cfg.enabled:
-        yield {"type": "error", "detail": "LLM is disabled"}
+        yield {"type": "error", **ai_error_event(None, admin=admin, code="ai_disabled")}
         return
 
     from app.mcp.tools import allowed_tool_names
@@ -909,47 +1389,54 @@ async def chat_stream(
         return {"model": cfg.chat_model, "elapsed_ms": int((time.monotonic() - started) * 1000)}
 
     for _ in range(max_iterations):
-        body = {
-            "model": cfg.chat_model,
-            "messages": convo,
-            "tools": ollama_tools,
-            "stream": True,
-            "options": _chat_options(cfg),
-        }
+        # chat_body 依服務類型組主體（options 是 Ollama 專屬，送給 OpenAI 端點會被拒絕）
+        body = {**chat_body(cfg, cfg.provider, messages=convo, tools=ollama_tools), "stream": True}
         content_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
+        tool_buf = _ToolCallBuffer()
+        done_reason: str | None = None
+        # 思考內容不是答案，但**使用者需要知道它在動**：只吐 thinking 的那段時間，
+        # 畫面上原本什麼都沒有，看起來就像當機（實測 gemma4 可以想十幾秒）。
+        thinking_chars = 0
+        thinking_reported = -1
         try:
-            async with safe_stream(
-                "POST", url,
-                headers=auth_headers(cfg.provider, cfg.api_key),
-                json=body, timeout=cfg.timeout,
-            ) as resp:
+            async with _chat_stream(url, body, auth_headers(cfg.provider, cfg.api_key), cfg.timeout) as resp:
                 if resp.status_code != 200:
                     detail = (await resp.aread()).decode("utf-8", "replace")[:200]
-                    yield {"type": "error", "detail": f"{provider_label(cfg.provider)} chat {resp.status_code}: {detail}"}
+                    yield {"type": "error", **ai_error_event(
+                        None, admin=admin, code="ai_upstream_error",
+                        reason=f"{provider_label(cfg.provider)} chat {resp.status_code}: {detail}")}
                     return
                 async for line in resp.aiter_lines():
-                    if not line.strip():
+                    chunk = _stream_payload(line)
+                    if chunk is None:
                         continue
-                    try:
-                        chunk = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    m = chunk.get("message") or {}
-                    piece = m.get("content")
-                    if piece:
-                        content_parts.append(piece)
-                        yield {"type": "token", "text": piece}
-                    tcs = m.get("tool_calls")
-                    if tcs:
-                        tool_calls.extend(tcs)
-                    if chunk.get("done"):
+                    d = _stream_delta(chunk)
+                    if d.error:
+                        yield {"type": "error", **ai_error_event(
+                            None, admin=admin, code="ai_upstream_error", reason=f"LLM: {d.error[:200]}")}
+                        return
+                    if d.thinking:
+                        thinking_chars += len(d.thinking)
+                        # 節流：每累積約 200 字回報一次，不要用事件洪水灌前端
+                        if thinking_chars - thinking_reported >= 200:
+                            thinking_reported = thinking_chars
+                            yield {"type": "thinking", "chars": thinking_chars}
+                    if d.content:
+                        content_parts.append(d.content)
+                        yield {"type": "token", "text": d.content}
+                    tool_buf.add(d.tool_calls)
+                    if d.done:
+                        done_reason = d.done_reason
                         break
+            tool_calls = tool_buf.calls()
         except UnsafeOutboundURL as exc:
-            yield {"type": "error", "detail": f"SSRF guard: {exc}"}
+            yield {"type": "error", **ai_error_event(exc, admin=admin, code="ai_ssrf_blocked",
+                                                     reason=f"SSRF guard: {exc}")}
             return
         except httpx.HTTPError as exc:
-            yield {"type": "error", "detail": f"transport: {exc.__class__.__name__}"}
+            yield {"type": "error", **ai_error_event(exc, admin=admin, code="ai_unreachable",
+                                                     reason=f"transport: {transport_detail(exc)}")}
             return
 
         full_content = "".join(content_parts)
@@ -961,7 +1448,7 @@ async def chat_stream(
         if not tool_calls:
             # 後援：模型偶發把工具呼叫寫成文字（而非結構化 tool_calls）→ 還原；
             # 後面的 tool_round 事件會叫前端清掉剛串流出去的呼叫文字。
-            inline = _inline_tool_calls(full_content, _allowed)
+            inline = _with_call_ids(_inline_tool_calls(full_content, _allowed), cfg.provider)
             if inline:
                 assistant_msg["tool_calls"] = inline
                 assistant_msg["content"] = ""
@@ -971,8 +1458,20 @@ async def chat_stream(
                 yield {"type": "done", "answer": _tool_leak_message(locale),
                        "trace_messages": convo, **_meta()}
                 return
+            elif not full_content.strip():
+                # 這輪沒有工具呼叫、content 也是空的。常見成因：模型只吐了 thinking
+                # （Ollama 會放在另一個欄位）、或撞到輸出／上下文長度上限。
+                # 直接把空字串當答案回去，前端只會顯示「(沒有回應)」，使用者無從判斷。
+                # → 再逼問一次；仍然空的話講清楚原因。
+                yield {"type": "tool_round"}
+                retry = await _force_final_answer(cfg, convo)
+                yield {"type": "done",
+                       "answer": retry or _empty_answer_message(locale, done_reason),
+                       "trace_messages": convo, **_meta()}
+                return
             else:
-                yield {"type": "done", "answer": full_content, "trace_messages": convo, **_meta()}
+                yield {"type": "done", "answer": _annotate_unverified(full_content, convo, locale),
+                       "trace_messages": convo, **_meta()}
                 return
 
         # 異動類工具：不直接執行，回傳待確認動作給前端，等使用者按「確認」
@@ -990,32 +1489,27 @@ async def chat_stream(
     # max_iterations 用完 → 不給工具，串流最後一次強制作答
     yield {"type": "tool_round"}
     final_parts: list[str] = []
-    body = {"model": cfg.chat_model, "messages": convo, "stream": True, "options": _chat_options(cfg)}
+    body = {**chat_body(cfg, cfg.provider, messages=convo, tools=[]), "stream": True}
     try:
-        async with safe_stream(
-            "POST", url, headers=auth_headers(cfg.provider, cfg.api_key),
-            json=body, timeout=cfg.timeout,
-        ) as resp:
+        async with _chat_stream(url, body, auth_headers(cfg.provider, cfg.api_key), cfg.timeout) as resp:
             if resp.status_code == 200:
                 async for line in resp.aiter_lines():
-                    if not line.strip():
+                    chunk = _stream_payload(line)
+                    if chunk is None:
                         continue
-                    try:
-                        chunk = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    piece = (chunk.get("message") or {}).get("content")
-                    if piece:
-                        final_parts.append(piece)
-                        yield {"type": "token", "text": piece}
-                    if chunk.get("done"):
+                    d = _stream_delta(chunk)
+                    if d.content:
+                        final_parts.append(d.content)
+                        yield {"type": "token", "text": d.content}
+                    if d.done:
                         break
     except (UnsafeOutboundURL, httpx.HTTPError):
         pass
     answer = "".join(final_parts) or "（查詢步驟過多仍未完成，請把問題拆小一點再試一次）"
     if final_parts:
         convo.append({"role": "assistant", "content": answer})
-    yield {"type": "done", "answer": answer, "trace_messages": convo, **_meta()}
+    yield {"type": "done", "answer": _annotate_unverified(answer, convo, locale),
+           "trace_messages": convo, **_meta()}
 
 
 # ─────────────────── 全表 reindex（admin 一次性） ───────────────────
@@ -1135,28 +1629,110 @@ async def raw_chat(session: AsyncSession, prompt: str, timeout: float | None = N
             return await _raw_chat_streamed(url, body, wait, on_chunk,
                                             auth_headers(cfg.provider, cfg.api_key),
                                             cfg.provider)
-        resp = await safe_request("POST", url, headers=auth_headers(cfg.provider, cfg.api_key),
-                                  json=body, timeout=wait)
-        if _rejected_think(resp):
-            body.pop("think", None)
-            resp = await safe_request("POST", url, headers=auth_headers(cfg.provider, cfg.api_key),
-                                      json=body, timeout=wait)
+        resp = await _post_dropping_rejected(url, body, auth_headers(cfg.provider, cfg.api_key), wait)
     except UnsafeOutboundURL as exc:
-        raise AIError(f"SSRF guard: {exc}") from exc
+        raise AIBlocked(f"SSRF guard: {exc}") from exc
     except httpx.ReadTimeout as exc:
-        raise AIError(
+        raise AITimeout(
             f"LLM 伺服器在 {int(wait)} 秒內沒有回覆完（模型太慢或資料量太大）"
         ) from exc
     except httpx.HTTPError as exc:
-        raise AIError(f"transport: {exc.__class__.__name__}") from exc
+        raise AIUnreachable(f"transport: {transport_detail(exc)}") from exc
     if resp.status_code != 200:
-        raise AIError(f"{provider_label(cfg.provider)} chat {resp.status_code}: {resp.text[:200]}")
+        raise AIUpstream(f"{provider_label(cfg.provider)} chat {resp.status_code}: {resp.text[:200]}")
     # 兩家結構不同：Ollama 是 message、OpenAI 是 choices[0].message
-    data = resp.json()
-    msg = data.get("message") or {}
-    if not msg:
-        msg = ((data.get("choices") or [{}])[0]).get("message") or {}
-    return str(msg.get("content") or "")
+    return _answer_or_explain(resp.json(), max_tokens=body.get("max_tokens")
+                              or (body.get("options") or {}).get("num_predict"))
+
+
+async def _post_dropping_rejected(url: str, body: dict[str, Any], headers: dict[str, str], wait: float) -> Any:
+    """非串流送出；被拒絕的「不要思考」欄位一個一個拿掉重送（每次只拿掉被點名的；最多試到欄位用完）。"""
+    resp = await safe_request("POST", url, headers=headers, json=body, timeout=wait)
+    for _ in range(len(_REASONING_OFF_KEYS) + 1):
+        if resp.status_code == 200 or not (
+                ("think" in body and _rejected_think(resp))
+                or _strip_rejected_controls(body, resp.status_code, getattr(resp, "text", ""), url)):
+            break
+        if "think" in body and _rejected_think(resp):
+            body.pop("think", None)
+        resp = await safe_request("POST", url, headers=headers, json=body, timeout=wait)
+    return resp
+
+
+#: 思考檢查的問題與產出上限：思考沒關的話，思考內容也算在額度裡，很快就會停 ——
+#: 不會為了一次檢查讓模型想好幾分鐘。
+_THINK_PROBE_PROMPT = "Reply with exactly one word: OK"
+_THINK_PROBE_TOKENS = 64
+_THINK_TAG = re.compile(r"<think>.*?(</think>|$)", re.S | re.I)
+
+
+async def probe_thinking(session: AsyncSession, model: str | None = None) -> dict[str, Any]:
+    """用 AI 巡檢／判讀同一套「關閉思考」參數問模型一句極短的話，看它照不照做。
+
+    伺服器或閘道沒照做時（LiteLLM 沒轉送、舊版 llama.cpp 忽略 reasoning_effort……），症狀只是
+    「很慢」或「答案被思考吃掉額度」，不會報錯 —— 設定頁要能當場問一次。
+    **回答是空的也算在思考**：有些閘道不把思考內容轉出來，額度被思考用光、正文是空的；只看
+    思考欄位的話會誤報成「不會先思考」（jt-doc-tools 實測 LiteLLM 的 ollama/）。
+    """
+    from app.services.system_config import get_llm_config
+    cfg = await get_llm_config(session)
+    model = model or cfg.chat_model
+    out: dict[str, Any] = {"model": model, "ok": False, "thinking": None, "reasoning_chars": 0,
+                           "think_tag": False, "empty_answer": False, "answer": "", "seconds": 0.0,
+                           "rejected_params": [], "error": None}
+    if not cfg.enabled:
+        out["error"] = "LLM is disabled"
+        return out
+    url = chat_url(cfg.url, cfg.provider)
+    body = json_chat_body(cfg, cfg.provider, prompt=_THINK_PROBE_PROMPT, stream=False, force_json=False,
+                          max_output_tokens=_THINK_PROBE_TOKENS, num_ctx=None, no_thinking=True, model=model)
+    sent_think = "think" in body
+    t0 = time.monotonic()
+    try:
+        resp = await _post_dropping_rejected(url, body, auth_headers(cfg.provider, cfg.api_key),
+                                             min(float(cfg.timeout or 60), 120.0))
+    except UnsafeOutboundURL as exc:
+        out["error"] = f"SSRF guard: {exc}"
+        return out
+    except httpx.HTTPError as exc:
+        out["error"] = f"transport: {transport_detail(exc)}"
+        return out
+    out["seconds"] = round(time.monotonic() - t0, 1)
+    rejected = sorted(_rejected_controls(url, model))
+    if sent_think and "think" not in body:
+        rejected.append("think")
+    out["rejected_params"] = rejected
+    if resp.status_code != 200:
+        out["error"] = f"{provider_label(cfg.provider)} chat {resp.status_code}: {(resp.text or '')[:200]}"
+        return out
+    data = resp.json() or {}
+    msg = data.get("message") or ((data.get("choices") or [{}])[0] or {}).get("message") or {}
+    content = str(msg.get("content") or "")
+    reasoning = str(msg.get("reasoning_content") or msg.get("reasoning") or msg.get("thinking") or "")
+    tag = bool(_THINK_TAG.search(content))
+    answer = _THINK_TAG.sub("", content).strip()
+    out.update(ok=True, reasoning_chars=len(reasoning), think_tag=tag, empty_answer=not answer,
+               answer=answer[:40], thinking=bool(reasoning or tag or not answer))
+    return out
+
+
+def interpret_model(cfg: Any) -> str:
+    """AI 判讀實際用的模型：有設判讀專用模型就用它，否則沿用對話模型。"""
+    return getattr(cfg, "ai_interpret_model", None) or cfg.chat_model
+
+
+async def interpret_chat(session: AsyncSession, prompt: str, **kw: Any) -> tuple[str, str]:
+    """AI 判讀（未授權 IP 判讀／IP 調查／防火牆規則異動解讀）共用的單次對話。
+
+    三個功能共用一個「判讀模型」設定，所以模型與上下文長度統一在這裡決定 —— 各自呼叫
+    raw_chat 的話，下一個新加的判讀功能很容易又忘了帶、安靜地用回對話模型。
+    回傳 (內容, 模型名)：判讀出自哪個模型是品質的一部分，畫面要顯示真的那個。
+    """
+    from app.services.system_config import get_llm_config
+    cfg = await get_llm_config(session)
+    text = await raw_chat(session, prompt, model=getattr(cfg, "ai_interpret_model", None),
+                          num_ctx=getattr(cfg, "ai_interpret_num_ctx", None), **kw)
+    return text, interpret_model(cfg)
 
 
 def _rejected_think(resp: Any) -> bool:
@@ -1174,6 +1750,13 @@ async def _raw_chat_streamed(
 ) -> str:
     """串流版：邊收邊回報，最後把整段內容拼回來給呼叫端解析。"""
     try:
+        for _ in range(len(_REASONING_OFF_KEYS)):
+            try:
+                return await _stream_once(url, body, wait, on_chunk, headers, provider)
+            except _Rejected as exc:
+                # 自架服務或閘道不認某個「不要思考」的欄位：只拿掉被點名的再來，而不是整批失敗
+                if not _strip_rejected_controls(body, exc.status, exc.text, url):
+                    raise
         return await _stream_once(url, body, wait, on_chunk, headers, provider)
     except AIError as exc:
         # 舊版 Ollama 不認 `think`：拿掉重來一次，而不是整批失敗
@@ -1181,6 +1764,15 @@ async def _raw_chat_streamed(
             raise
         body.pop("think", None)
         return await _stream_once(url, body, wait, on_chunk, headers, provider)
+
+
+class _Rejected(AIError):
+    """串流請求被伺服器以非 200 拒絕（保留狀態碼與原文，好判斷要不要換個請求再送）。"""
+
+    def __init__(self, message: str, status: int, text: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.text = text
 
 
 async def _stream_once(
@@ -1194,30 +1786,33 @@ async def _stream_once(
                            headers=headers or {"Content-Type": "application/json"},
                            json=body, timeout=wait) as resp:
         if resp.status_code != 200:
-            detail = (await resp.aread()).decode("utf-8", "replace")[:200]
-            raise AIError(f"{provider_label(provider)} chat {resp.status_code}: {detail}")
+            full = (await resp.aread()).decode("utf-8", "replace")
+            raise _Rejected(f"{provider_label(provider)} chat {resp.status_code}: {full[:200]}",
+                            resp.status_code, full)
+        thinking_chars = 0
+        done_reason: str | None = None
         async for line in resp.aiter_lines():
-            if not line.strip():
+            data = _stream_payload(line)
+            if data is None:
                 continue
-            try:
-                data = json.loads(line)
-            except ValueError:
-                continue          # Ollama 偶爾夾非 JSON 行；跳過即可
-            # 串流每一行的結構兩家不同（Ollama: message；OpenAI: choices[0].delta）。
-            # 這支輔助函式拿不到 cfg，也不需要 —— 兩種都試，取到就用。
-            msg = data.get("message") or {}
-            if not msg:
-                ch = (data.get("choices") or [{}])[0]
-                msg = ch.get("delta") or ch.get("message") or {}
+            # 兩種格式（Ollama 逐行 JSON／OpenAI SSE）都由 _stream_payload／_stream_delta 處理，
+            # 這支輔助函式拿不到 cfg，也不需要。
+            d = _stream_delta(data)
+            if d.error:
+                raise AIUpstream(f"LLM: {d.error[:200]}")
             # 會思考的模型（gemma4 等）先吐一大段 thinking，content 要等到最後才出現。
             # 只看 content 的話，畫面會停住好幾分鐘完全沒有動靜 —— 實際上模型正在想。
-            thinking = str(msg.get("thinking") or "")
-            if thinking:
-                await on_chunk(thinking, "thinking")
-            piece = str(msg.get("content") or "")
-            if piece:
-                parts.append(piece)
-                await on_chunk(piece, "content")
-            if data.get("error"):
-                raise AIError(f"LLM: {str(data['error'])[:200]}")
-    return "".join(parts)
+            if d.thinking:
+                thinking_chars += len(d.thinking)
+                await on_chunk(d.thinking, "thinking")
+            if d.content:
+                parts.append(d.content)
+                await on_chunk(d.content, "content")
+            if d.done:
+                done_reason = d.done_reason
+                break
+    out = "".join(parts)
+    if not out.strip() and done_reason == "length":
+        raise _cut_off_while_thinking(
+            thinking_chars, body.get("max_tokens") or (body.get("options") or {}).get("num_predict"))
+    return out

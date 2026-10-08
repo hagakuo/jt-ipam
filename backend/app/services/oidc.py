@@ -28,7 +28,7 @@ from jwt import PyJWK
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.models.user import User
 
 
@@ -81,7 +81,7 @@ async def discover(cfg: Any) -> OIDCDiscovery:
     except UnsafeOutboundURL as exc:
         raise OIDCError(f"SSRF guard rejected URL: {exc}") from exc
     except httpx.HTTPError as exc:
-        raise OIDCError(f"transport: {exc.__class__.__name__}") from exc
+        raise OIDCError(f"transport: {transport_detail(exc)}") from exc
     if resp.status_code != 200:
         raise OIDCError(f"OIDC discovery {resp.status_code}: {resp.text[:200]}")
     info = OIDCDiscovery.from_dict(resp.json())
@@ -268,7 +268,14 @@ async def upsert_user_from_oidc(
     else:
         user.email = email or user.email
         user.display_name = display_name or user.display_name
-        user.is_admin = is_admin
+        # 只有設定過管理員群組對應時才由 IdP 決定（見 services/auth.py 的說明）——
+        # 沒設定就寫 False 等於把「沒有設定」當成「不是管理員」，會把本機開的權限
+        # 在下次登入時安靜地關掉。
+        from app.services.auth import _would_orphan_admins
+        if cfg.admin_groups and not (
+            user.is_admin and not is_admin and await _would_orphan_admins(session, user)
+        ):
+            user.is_admin = is_admin
 
     user.last_login_at = datetime.now(UTC)
     user.last_login_ip = actor_ip

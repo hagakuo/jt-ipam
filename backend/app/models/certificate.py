@@ -48,6 +48,11 @@ class Certificate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         Integer, server_default=text("86400"), nullable=False)
     last_fetch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_fetch_error: Mapped[str | None] = mapped_column(Text)
+    #: 到期前幾天開始通知。`None`＝沿用全域預設。
+    #:
+    #: 每張憑證的更新流程長短差很多：手動申請的商業憑證要提前一個月準備，
+    #: 自動續簽的提前七天就夠。同一個門檻套在所有憑證上，不是太吵就是太晚。
+    expiry_warn_days: Mapped[int | None] = mapped_column(Integer)
 
 
 class CertVersion(Base, UUIDPrimaryKeyMixin):

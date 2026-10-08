@@ -61,7 +61,7 @@ async def _ensure_local(name: str | None) -> int:
         if existing is None:
             mine = _own_addresses()
             adopted = (await session.execute(
-                select(ScanAgent).where(ScanAgent.last_source_ip.in_(mine))
+                select(ScanAgent).where(ScanAgent.last_source_ip.in_(mine))  # bounded: this host's own addresses
                 .order_by(ScanAgent.created_at)
             )).scalars().first()
             if adopted is not None:

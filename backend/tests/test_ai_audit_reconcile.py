@@ -104,3 +104,29 @@ async def test_regrouped_ips_do_not_multiply(db_session):
     assert len(rows) == 2, f"換分組不該讓筆數翻倍，實得 {len(rows)}"
     covered = {ip for r in rows for ip in (r.evidence or {}).get("ips", [])}
     assert covered == {"192.168.1.97", "192.168.1.46", "192.168.1.129", "192.168.1.54"}
+
+
+@pytest.mark.anyio
+async def test_a_partial_run_does_not_delete_what_it_never_looked_at(db_session):
+    """有批次失敗時，不可以刪掉「這次沒再出現」的發現。
+
+    巡檢是分批送給模型的。只要有一批失敗（逾時、模型回不成 JSON…），那一批的資料
+    這次**根本沒有被檢查過** —— 它裡面的問題自然不會出現在結果裡。若照常對齊，
+    那些發現會被當成「已經解決」而刪除，畫面上看起來就像問題自己好了。
+
+    所以部分失敗時只做新增與更新，不做刪除；寧可留著一筆可能已修好的，
+    也不要讓一個還在的問題安靜消失。
+    """
+    old_run, new_run = uuid.uuid4(), uuid.uuid4()
+    stale = _item("exposure", ["10.0.0.1"], "沒被這輪檢查到的")
+    await _existing(db_session, old_run, [stale])
+
+    kept = await reconcile_findings(db_session, new_run,
+                                    [_item("stale", ["10.0.0.9"], "這輪找到的")],
+                                    partial=True)
+    await db_session.flush()
+    titles = {r.title for r in (await db_session.execute(
+        select(AIFinding).where(AIFinding.status == "open"))).scalars().all()}
+    assert "沒被這輪檢查到的" in titles, "把沒檢查過的發現當成已解決刪掉了"
+    assert "這輪找到的" in titles
+    assert kept == 1, "回傳值仍然是「這次實際看到的筆數」"

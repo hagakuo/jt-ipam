@@ -17,6 +17,7 @@ from app.api.phpipam.helpers import (
     subnet_to_phpipam,
 )
 from app.core.db import get_session
+from app.core.ui_error import detail_of
 from app.models.address import IPAddress
 from app.models.subnet import Subnet
 from app.models.user import User
@@ -202,7 +203,7 @@ async def create_subnet(
     try:
         await assert_no_overlap(session, cidr=cidr, vrf_id=vrf_id)
     except SubnetOverlap as exc:
-        raise HTTPException(409, detail=str(exc)) from exc
+        raise HTTPException(409, detail=detail_of(exc, "subnet_overlap")) from exc
 
     master_id = await compute_master_subnet(session, cidr=cidr, vrf_id=vrf_id)
     sub = Subnet(

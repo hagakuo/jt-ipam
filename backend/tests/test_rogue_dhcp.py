@@ -122,3 +122,26 @@ def test_probe_catalogue_exposes_dhcp_for_the_agent_ceiling():
     from app.core.scan_probes import VALID_PROBES, normalize_probes
     assert "dhcp" in VALID_PROBES
     assert normalize_probes(["icmp", "dhcp"]) == ["icmp", "dhcp"]
+
+
+async def test_list_tags_use_the_same_window_as_the_detector(db_session):
+    """清單的紅色「非法 DHCP」標記以前沒有時間界線：私接的路由器拔掉一個月了還是紅的，
+    異常偵測卻早就不報了（2026-09-26 稽核）。兩邊用同一個時間窗。"""
+    from types import SimpleNamespace
+
+    from app.api.v1.endpoints.addresses import _enrich_special_flags
+    from app.services.anomaly import ROGUE_DHCP_WINDOW_DAYS
+
+    sub = await _subnet(db_session, "198.51.100.0/24")
+    old_ip = IPAddress(subnet_id=sub.id, ip="198.51.100.2")
+    new_ip = IPAddress(subnet_id=sub.id, ip="198.51.100.3")
+    db_session.add_all([old_ip, new_ip])
+    long_ago = datetime.now(UTC) - timedelta(days=ROGUE_DHCP_WINDOW_DAYS + 1)
+    db_session.add(DHCPSighting(subnet_id=sub.id, server_ip="198.51.100.2",
+                                first_seen_at=long_ago, last_seen_at=long_ago))
+    db_session.add(_sighting(sub.id, "198.51.100.3"))
+    await db_session.flush()
+    items = [SimpleNamespace(), SimpleNamespace()]
+    await _enrich_special_flags(db_session, items, [old_ip, new_ip])
+    assert items[0].dhcp_observed_at is None
+    assert items[1].dhcp_observed_at is not None

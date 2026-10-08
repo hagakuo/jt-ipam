@@ -139,7 +139,7 @@ const PICKER = computed(() => [
   { key: "mapping", label: t("settings.system.graylog_tbl_mapping") },
   { key: "enabled", label: t("common.status") },
 ]);
-const { visibleKeys, setVisible, reset } = useColumnPrefs(
+const { visibleKeys, setVisible, reset, order, setOrder, orderColumns } = useColumnPrefs(
   "graylog_dsv_sources", ["name", "mapping", "enabled"], ["name", "mapping", "enabled"]);
 const { query, filtered } = useTableQuickFilter(dsvSources);
 const allCols = computed<DataTableColumns<DsvSource>>(() => autoSort([
@@ -154,7 +154,7 @@ const allCols = computed<DataTableColumns<DsvSource>>(() => autoSort([
       onClick: (e: MouseEvent) => { e.stopPropagation(); openDetail(r.id); } },
       { icon: () => h(NIcon, null, () => h(InfoIcon)), default: () => t("settings.system.graylog_detail") }) },
 ]));
-const cols = computed(() => allCols.value.filter((c: any) => c.key === "_" || visibleKeys.value.includes(String(c.key))));
+const cols = computed(() => orderColumns(allCols.value.filter((c: any) => c.key === "_" || visibleKeys.value.includes(String(c.key)))));
 function rowProps(row: DsvSource) {
   return {
     style: "cursor: pointer",
@@ -309,7 +309,8 @@ onMounted(() => { void load(); });
           <n-button :loading="loading" @click="load">
             <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("common.refresh") }}
           </n-button>
-          <ColumnPicker :all="PICKER" :visible="visibleKeys" @update:visible="setVisible" @reset="reset" />
+          <ColumnPicker :all="PICKER" :visible="visibleKeys" @update:visible="setVisible" @reset="reset"
+                        :order="order" @update:order="setOrder" />
         </n-space>
         <n-data-table
           :columns="cols" :data="filtered" :loading="loading" :bordered="false"
@@ -497,6 +498,11 @@ onMounted(() => { void load(); });
 .gd-tbl td { padding: 5px 8px; border: 1px solid rgba(128,128,128,.18); vertical-align: top; }
 /* 左欄（欄位名）淡底，跟右欄（值）做區分 */
 .gd-tbl td:first-child { width: 200px; opacity: .85; white-space: nowrap; background: rgba(128,128,128,.07); font-weight: 500; }
+@media (max-width: 640px) {
+  .gd-tbl td:first-child { width: 34%; white-space: normal; }
+  .gd-tbl td { word-break: break-word; }
+  .gd-tbl code { word-break: break-all; }
+}
 code { background: rgba(128,128,128,.14); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 /* 教學區的值點一下即複製 */
 .guide-body code { cursor: pointer; transition: background .12s ease; }

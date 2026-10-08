@@ -215,7 +215,8 @@ async function delDom(r: VLANDomain) {
   catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
 
-const { visibleKeys: vlanVisible, setVisible: setVlanVisible, reset: resetVlan } = useColumnPrefs(
+const { visibleKeys: vlanVisible, setVisible: setVlanVisible, reset: resetVlan,
+  order: vlanOrder, setOrder: setVlanOrder, orderColumns: orderVlanCols } = useColumnPrefs(
   "vlans",
   ["number", "name", "domain_id", "devices", "ports", "ips", "customer", "description", "actions"],
   ["number", "name", "domain_id", "devices", "ports", "ips", "customer", "section", "description", "actions"],
@@ -232,7 +233,8 @@ const vlanPickerItems = [
   { key: "description", label: t("cols.description") },
   { key: "actions", label: t("cols.actions") },
 ];
-const { visibleKeys: domVisible, setVisible: setDomVisible, reset: resetDom } = useColumnPrefs(
+const { visibleKeys: domVisible, setVisible: setDomVisible, reset: resetDom,
+  order: domOrder, setOrder: setDomOrder, orderColumns: orderDomCols } = useColumnPrefs(
   "vlan_domains",
   ["name", "description", "actions"],
   ["name", "description", "actions"],
@@ -313,7 +315,7 @@ const allVlanCols = computed<DataTableColumns<VLAN>>(() => [
   },
 ]);
 const vlanCols = computed<DataTableColumns<VLAN>>(() =>
-  allVlanCols.value.filter((c: any) => c.type === "selection" || vlanVisible.value.includes(c.key)),
+  orderVlanCols(allVlanCols.value.filter((c: any) => c.type === "selection" || vlanVisible.value.includes(c.key))),
 );
 const allDomCols = computed<DataTableColumns<VLANDomain>>(() => [
   { type: "selection" },
@@ -333,7 +335,7 @@ const allDomCols = computed<DataTableColumns<VLANDomain>>(() => [
   },
 ]);
 const domCols = computed<DataTableColumns<VLANDomain>>(() =>
-  allDomCols.value.filter((c: any) => c.type === "selection" || domVisible.value.includes(c.key)),
+  orderDomCols(allDomCols.value.filter((c: any) => c.type === "selection" || domVisible.value.includes(c.key))),
 );
 
 watch([customerFilter, sectionFilter], () => { void refresh(); });
@@ -372,7 +374,8 @@ onMounted(() => {
           <n-select v-model:value="customerFilter" :options="customerOptions"
                     clearable filterable :placeholder="t('vlans.filter_unit')" style="width: 180px" />
           <ColumnPicker :all="vlanPickerItems" :visible="vlanVisible"
-                        @update:visible="setVlanVisible" @reset="resetVlan" />
+                        @update:visible="setVlanVisible" @reset="resetVlan"
+                        :order="vlanOrder" @update:order="setVlanOrder" />
           <ExportButton :columns="vlanCols" :rows="vlans" filename="vlans" :title="t('nav.vlans')" />
         </n-space>
         <n-space v-if="vlanChecked.length" align="center" style="margin-bottom: 8px; padding: 8px 12px; background: rgba(127,127,127,0.08); border-radius: 6px;">
@@ -406,7 +409,8 @@ onMounted(() => {
             {{ t("common.create") }}
           </n-button>
           <ColumnPicker :all="domPickerItems" :visible="domVisible"
-                        @update:visible="setDomVisible" @reset="resetDom" />
+                        @update:visible="setDomVisible" @reset="resetDom"
+                        :order="domOrder" @update:order="setDomOrder" />
         </n-space>
         <n-space v-if="domChecked.length" align="center" style="margin-bottom: 8px; padding: 8px 12px; background: rgba(127,127,127,0.08); border-radius: 6px;">
           <span>{{ t("common.selected_n", { n: domChecked.length }) }}</span>
@@ -506,7 +510,7 @@ onMounted(() => {
              style="width: 520px">
       <n-spin :show="devicesLoading">
         <n-empty v-if="!devicesLoading && !deviceList.length" :description="t('common.no_data')" />
-        <n-table v-else :bordered="false" size="small">
+        <n-table v-else v-col-resize :bordered="false" size="small">
           <thead>
             <tr><th>{{ t("addresses.hostname") }}</th><th>IP</th><th>{{ t("addresses.source") }}</th></tr>
           </thead>

@@ -3,10 +3,11 @@
  */
 import { apiClient } from "@/api/client";
 import type { Paginated } from "@/api/admin";
+import type { MissingPage, MissingQuery } from "@/composables/useRemoteMissing";
 
 // 整合同步/測試可能要打外部 API、跑數百筆 ingest，遠遠超過全域 15s 預設。
 // 給長時操作 5 分鐘空間。
-const LONG_OP_TIMEOUT_MS = 300_000;
+export const LONG_OP_TIMEOUT_MS = 300_000;
 
 // 是否存在重疊網段（同 IP 可能跨子網路多筆）→ 用來提醒未設 scope 的整合可能標錯筆。
 export async function getSubnetOverlapExists(): Promise<boolean> {
@@ -95,6 +96,10 @@ export interface LibreNMSInstance {
   use_for_status: boolean;
   auto_add_devices: boolean;
   auto_create_ips: boolean;
+  /** 依 ARP 表自動建立 IP（#48，預設關） */
+  auto_create_from_arp?: boolean;
+  arp_create_require_fdb?: boolean;
+  arp_create_skip_dhcp?: boolean;
   sync_interval_seconds: number;
   last_sync_at: string | null;
   last_error: string | null;
@@ -418,6 +423,9 @@ export interface WazuhAgent {
   ip: string | null;
   status: string | null;
   os_platform: string | null;
+  /** 顯示用：產品名稱（os.name）優先，沒有時退回平台＋版本 */
+  os?: string | null;
+  os_name?: string | null;
   agent_version: string | null;
   last_keep_alive: string | null;
   jt_ipam_address_id: string | null;
@@ -427,6 +435,16 @@ export interface MissingAgent {
   ip_address_id: string;
   ip: string | null;
   hostname: string | null;
+  // 所屬範圍（依區段／子網路／單位篩選用）
+  subnet_id?: string | null;
+  subnet_cidr?: string | null;
+  section_id?: string | null;
+  section_name?: string | null;
+  customer_id?: string | null;
+  customer_name?: string | null;
+  // 設備類型欄（掃描代理判讀出的類型與型號）
+  device_kind?: string | null;
+  device_model?: string | null;
 }
 
 export async function listWazuh(
@@ -481,8 +499,10 @@ export async function listWazuhAgents(
   return data;
 }
 
-export async function listMissingAgents(): Promise<MissingAgent[]> {
-  const { data } = await apiClient.get<MissingAgent[]>("/api/v1/wazuh/missing-agents");
+/** 帶 page ＝ 伺服器端分頁：篩選、排序、篩選選項都由後端算（見 useRemoteMissing）。
+ *  API 不帶 page 仍回整份清單（相容舊的呼叫端），畫面已不再使用。 */
+export async function listMissingAgentsPage(params: MissingQuery): Promise<MissingPage<MissingAgent>> {
+  const { data } = await apiClient.get<MissingPage<MissingAgent>>("/api/v1/wazuh/missing-agents", { params });
   return data;
 }
 

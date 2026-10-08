@@ -2,9 +2,14 @@
 # jt-ipam scan agent one-line installer (systemd, no Docker).
 #
 # Usage:
-#   sudo JT_IPAM_URL=https://192.0.2.10 JT_IPAM_AGENT_KEY=<key> ./jt-ipam-agent-installer.sh
+#   sudo JT_IPAM_URL=https://ipam.example.com JT_IPAM_AGENT_KEY=<key> ./jt-ipam-agent-installer.sh
 # Optional:
 #   JT_IPAM_INTERVAL=300   JT_IPAM_INSECURE=1   (set 1 for self-signed server cert)
+#   JT_IPAM_DHCPD_CONF=... JT_IPAM_DHCPD_LEASES=...  (only on an isc-dhcp-server host whose files are
+#   not in the usual places; used when an "ISC DHCP" source in jt-ipam points at this agent)
+#   Console relay is switched on and configured in the jt-ipam web UI; nothing to pass here. Optional
+#   local limits for the host owner: JT_IPAM_RELAY=0 (refuse all relaying), JT_IPAM_RELAY_PORTS=22,...,
+#   JT_IPAM_RELAY_MAX=2, JT_IPAM_RELAY_CIDRS=<cidr,...>. Re-running keeps the ones already in the env file.
 #
 # Re-running this installer re-downloads the latest agent and overwrites the old one.
 # The agent also auto-updates itself when the server has a newer version.
@@ -14,10 +19,20 @@ DEST=/opt/jt-ipam-agent
 SVC=jt-ipam-scan-agent
 ENVFILE=/etc/jt-ipam-agent.env
 
-: "${JT_IPAM_URL:?JT_IPAM_URL is required, e.g. https://192.0.2.10}"
+: "${JT_IPAM_URL:?JT_IPAM_URL is required, e.g. https://ipam.example.com}"
 : "${JT_IPAM_AGENT_KEY:?JT_IPAM_AGENT_KEY is required (get it when creating an agent in jt-ipam)}"
 JT_IPAM_INTERVAL="${JT_IPAM_INTERVAL:-300}"
 JT_IPAM_INSECURE="${JT_IPAM_INSECURE:-}"
+JT_IPAM_DHCPD_CONF="${JT_IPAM_DHCPD_CONF:-}"
+JT_IPAM_DHCPD_LEASES="${JT_IPAM_DHCPD_LEASES:-}"
+# Local relay limits: passed in, or kept from the existing env file (a re-install must not silently drop
+# a limit the host owner set)
+for _v in JT_IPAM_RELAY JT_IPAM_RELAY_PORTS JT_IPAM_RELAY_MAX JT_IPAM_RELAY_CIDRS; do
+  if [[ -z "${!_v:-}" && -f "$ENVFILE" ]]; then
+    _old="$(grep -E "^${_v}=" "$ENVFILE" | tail -1 | cut -d= -f2- || true)"
+    [[ -n "$_old" ]] && printf -v "$_v" '%s' "$_old"
+  fi
+done
 
 if [[ $EUID -ne 0 ]]; then echo "Please run as root / sudo" >&2; exit 1; fi
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
@@ -67,6 +82,12 @@ JT_IPAM_AGENT_KEY=${JT_IPAM_AGENT_KEY}
 JT_IPAM_INTERVAL=${JT_IPAM_INTERVAL}
 JT_IPAM_INSECURE=${JT_IPAM_INSECURE}
 EOF
+# isc-dhcp-server's files in non-default places only (the agent finds /etc/dhcp/dhcpd.conf etc. itself)
+if [[ -n "$JT_IPAM_DHCPD_CONF" ]]; then echo "JT_IPAM_DHCPD_CONF=${JT_IPAM_DHCPD_CONF}" >> "$ENVFILE"; fi
+if [[ -n "$JT_IPAM_DHCPD_LEASES" ]]; then echo "JT_IPAM_DHCPD_LEASES=${JT_IPAM_DHCPD_LEASES}" >> "$ENVFILE"; fi
+for _v in JT_IPAM_RELAY JT_IPAM_RELAY_PORTS JT_IPAM_RELAY_MAX JT_IPAM_RELAY_CIDRS; do
+  if [[ -n "${!_v:-}" ]]; then echo "${_v}=${!_v}" >> "$ENVFILE"; fi
+done
 
 echo "==> Creating systemd service ${SVC}"
 cat > "/etc/systemd/system/${SVC}.service" <<EOF

@@ -21,9 +21,11 @@ from pydantic import Field
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser
+from app.api.v1.dependencies import CurrentUser, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.sqlin import in_values
+from app.core.ui_error import detail_of, ui_detail
 from app.models.address import IPAddress
 from app.models.ip_change_log import IPChangeLog
 from app.models.subnet import Subnet
@@ -36,6 +38,7 @@ from app.schemas.address import (
 )
 from app.schemas.base import Paginated, StrictModel
 from app.schemas.ip_change_log import IPChangeLogRead
+from app.services import ip_lifecycle
 from app.services.address import (
     IPAlreadyExists,
     IPNotInSubnet,
@@ -101,10 +104,14 @@ async def _enrich_special_flags(
         return
     subnet_ids = list({r.subnet_id for r in rows})
     gw_map = dict((await session.execute(
-        select(Subnet.id, Subnet.gateway).where(Subnet.id.in_(subnet_ids))
+        select(Subnet.id, Subnet.gateway).where(in_values(Subnet.id, subnet_ids))
     )).all())
     ranges: list[tuple[int, int]] = []
-    for s, e in (await session.execute(select(DHCPPoolRange.start_ip, DHCPPoolRange.end_ip))).all():
+    # 手動定義的 DHCP 集區（子網路內的位址範圍，issue #40）跟整合同步回來的一起算
+    from app.services.ip_ranges import manual_dhcp_pools
+    manual = [(p.start_ip, p.end_ip) for p in await manual_dhcp_pools(session, subnet_ids)]
+    for s, e in [*(await session.execute(select(DHCPPoolRange.start_ip, DHCPPoolRange.end_ip))).all(),
+                 *manual]:
         try:
             ranges.append((int(_ip.ip_address(str(s))), int(_ip.ip_address(str(e)))))
         except ValueError:
@@ -117,10 +124,15 @@ async def _enrich_special_flags(
                 fw_ips.add(h)
     # 掃描代理實際觀測到「這個位址在回應 DHCP」的時間。設定與實測是兩件事：
     # 標記了不代表真的在發，沒標記也不代表沒有在發 —— 兩個都要看得到。
+    # 只看異常偵測同一個時間窗內的：以前沒有界線，私接的路由器拔掉一個月了清單上還是紅的
+    from datetime import UTC, datetime, timedelta
+
+    from app.services.anomaly import ROGUE_DHCP_WINDOW_DAYS
+    observed_since = datetime.now(UTC) - timedelta(days=ROGUE_DHCP_WINDOW_DAYS)
     observed: dict[tuple[Any, str], Any] = {}
     for sub_id, srv_ip, seen in (await session.execute(
         select(DHCPSighting.subnet_id, DHCPSighting.server_ip, DHCPSighting.last_seen_at)
-        .where(DHCPSighting.subnet_id.in_(subnet_ids))
+        .where(in_values(DHCPSighting.subnet_id, subnet_ids), DHCPSighting.last_seen_at >= observed_since)
     )).all():
         key = (sub_id, str(srv_ip))
         if key not in observed or seen > observed[key]:
@@ -131,7 +143,7 @@ async def _enrich_special_flags(
     from app.models.dhcp import DHCPReservation
     resv: dict[Any, dict[str, Any]] = {}
     for rr in (await session.execute(
-        select(DHCPReservation).where(DHCPReservation.ip_address_id.in_([r.id for r in rows]))
+        select(DHCPReservation).where(in_values(DHCPReservation.ip_address_id, [r.id for r in rows]))
     )).scalars().all():
         resv.setdefault(rr.ip_address_id, {
             "mac": rr.mac, "hostname": rr.hostname, "description": rr.description,
@@ -204,8 +216,8 @@ async def list_addresses(
                 return Paginated[IPAddressRead](
                     items=[], total=0, page=page, page_size=page_size,
                 )
-            stmt = stmt.where(IPAddress.subnet_id.in_(vis_subnets))
-            count_stmt = count_stmt.where(IPAddress.subnet_id.in_(vis_subnets))
+            stmt = stmt.where(in_values(IPAddress.subnet_id, vis_subnets))
+            count_stmt = count_stmt.where(in_values(IPAddress.subnet_id, vis_subnets))
 
     if q:
         if exact:
@@ -237,6 +249,7 @@ async def list_addresses(
         "state": IPAddress.state, "owner": IPAddress.owner,
         "switch_port": IPAddress.switch_port, "note": IPAddress.note,
         "discovery_source": IPAddress.discovery_source,
+        "device_kind": IPAddress.device_kind,
     }
     sort_col = _SORT_COLS.get(sort or "", IPAddress.ip)
     stmt = stmt.order_by(sort_col.desc() if order == "desc" else sort_col.asc())
@@ -266,7 +279,7 @@ async def list_addresses(
     if scan_ids:
         scan_map = dict(
             (await session.execute(  # type: ignore[arg-type]
-                select(Subnet.id, Subnet.scan_enabled).where(Subnet.id.in_(scan_ids))
+                select(Subnet.id, Subnet.scan_enabled).where(in_values(Subnet.id, scan_ids))
             )).all()
         )
     # 批次帶上關聯裝置名稱（清單「裝置」欄用）
@@ -276,7 +289,7 @@ async def list_addresses(
         from app.models.device import Device
         dev_map = dict(
             (await session.execute(
-                select(Device.id, Device.name).where(Device.id.in_(dev_ids))
+                select(Device.id, Device.name).where(in_values(Device.id, dev_ids))
             )).all()
         )
     for it, r in zip(items, rows, strict=False):
@@ -293,6 +306,26 @@ async def list_addresses(
 
 
 # 注意：此路由必須宣告在 /{address_id} 之前，否則 "export.csv" 會被當成 address_id（UUID 驗證 422）
+@router.get("/unmanaged")
+async def list_unmanaged(
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    subnet_id: uuid.UUID = Query(...),
+) -> list[dict[str, Any]]:
+    """這個子網路裡沒有 IP 記錄、但最近看得到在用的位址（掃描代理目擊＋LibreNMS ARP）：指示計的「未納管」格子。
+
+    權限跟 IP 清單一樣（子網路的讀取權限；沒有就回 404，不洩漏存在性）。
+    """
+    await _require_subnet_perm(session, user, subnet_id, "read")
+    from app.services.unmanaged import for_subnet
+    rows = await for_subnet(session, subnet_id)
+    macs = [r["mac"] for r in rows if r.get("mac")]
+    vendors = await vendor_map(session, macs) if macs else {}
+    for r in rows:
+        r["vendor"] = vendors.get(mac_prefix(r["mac"]) or "") if r.get("mac") else None
+    return rows
+
+
 @router.get("/export.csv")
 async def export_csv(
     user: CurrentUser,
@@ -343,6 +376,274 @@ async def _effective_probes_for(session: AsyncSession, obj: IPAddress) -> list[s
     return effective_probes(list(sub.scan_method or []), list(obj.excluded_probes or []), agent_enabled)
 
 
+@router.get("/{address_id}/firewall", dependencies=[Depends(require_global_read)])
+async def get_address_firewall(
+    address_id: uuid.UUID,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """這個 IP 被哪些防火牆規則／NAT／別名管到（反向查詢）。
+
+    權限雙閘：IP 本身要可讀（物件級），且防火牆規則屬**全域基礎設施資料**，
+    依 RBAC 分類需 require_global_read —— 部門帳號看得到自己的 IP，
+    但規則內容不屬於它的可見範圍。
+    """
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "read")
+    from app.services.fw_lookup import rules_touching_ip
+    return await rules_touching_ip(session, str(obj.ip))
+
+
+class SiblingIP(StrictModel):
+    """同主機名稱、尚未關聯裝置的另一筆 IP —— **候選，不是結論。**"""
+
+    id: uuid.UUID
+    ip: str
+    mac: str | None = None
+    mac_vendor: str | None = None
+    #: MAC 與本 IP 相同 → 幾乎可以確定是同一張網卡
+    same_mac: bool = False
+
+
+class DeviceSuggestion(StrictModel):
+    """「這個 IP 應該屬於哪一台裝置」的建議。**只是建議，不會自己動手。**"""
+
+    suggested_name: str | None = None
+    existing_device_id: uuid.UUID | None = None
+    existing_device_name: str | None = None
+    #: 為什麼認為是這一台：name / fqdn / ip / mac
+    match_reason: str | None = None
+    #: 用同一個主機名稱、尚未關聯裝置的其他 IP。
+    #:
+    #: ⚠️ **同主機名稱不等於同一台機器。** DHCP 把位址回收給別台之後，IP 記錄上的舊
+    #: 主機名稱還留著 —— 實機上一台筆電的名字散在九筆 IP 上，其中有 Proxmox 的 VM
+    #: 和一顆 ESP32。所以這裡回的是**候選與它們的證據**（MAC、廠商），由人決定要掛哪些，
+    #: 而不是給一個「全部掛上」的開關。
+    siblings: list[SiblingIP] = Field(default_factory=list)
+    #: 這個使用者能不能建立裝置（建立裝置是管理員限定）
+    can_create: bool = False
+
+
+class DeviceSuggestionApply(StrictModel):
+    """套用建議。二擇一：關聯到既有裝置，或建立一台新的。"""
+
+    device_id: uuid.UUID | None = None
+    create_name: str | None = Field(default=None, max_length=200)
+    #: 要一併關聯的其他 IP —— **由使用者逐筆勾選**，不是一個「全部」開關
+    link_ip_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+def _first_label(hostname: str | None) -> str | None:
+    """`laptop-07.local` → `laptop-07`。裝置名稱慣例用第一段。"""
+    h = (hostname or "").strip()
+    return h.split(".")[0] or None if h else None
+
+
+async def _sibling_rows(
+    session: AsyncSession, *, user: User, hostname: str, exclude: uuid.UUID,
+) -> list[Any]:
+    """同主機名稱、尚未關聯裝置、且**這個使用者能寫**的其他 IP。
+
+    可見性一定要推進 SQL：先取再過濾會讓數量算在使用者看不到的資料上。
+    """
+    q = (
+        select(IPAddress.id, IPAddress.ip, IPAddress.mac)
+        .join(Subnet, IPAddress.subnet_id == Subnet.id)
+        .where(
+            func.lower(IPAddress.hostname) == hostname.strip().lower(),
+            IPAddress.device_id.is_(None),
+            IPAddress.id != exclude,
+            Subnet.archived_at.is_(None),
+        )
+    )
+    vis = await visible_ids(session, user=user, object_type="subnet", required="write")
+    if vis is not None:
+        if not vis:
+            return []
+        q = q.where(in_values(IPAddress.subnet_id, vis))
+    return list((await session.execute(q.limit(50))).all())
+
+
+@router.get("/{address_id}/device-suggestion", response_model=DeviceSuggestion)
+async def device_suggestion(
+    address_id: uuid.UUID,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> DeviceSuggestion:
+    """這個 IP 看起來屬於哪一台裝置 —— 或者該建立哪一台。
+
+    **只回建議，不會建立也不會關聯任何東西。** DHCP 的筆電會散在十幾個 IP 上，
+    每一筆都手動建裝置、手動關聯是純粹的苦工；但要不要建立仍然是人決定。
+    """
+    from app.models.device import Device
+    from app.models.physical import DevicePort
+
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "read")
+
+    out = DeviceSuggestion(can_create=bool(user.is_admin))
+    if obj.device_id is not None:
+        return out                      # 已經有裝置就沒什麼好建議的
+
+    hostname = (obj.hostname or "").strip()
+    ip_host = str(obj.ip).split("/")[0]
+    out.suggested_name = _first_label(hostname)
+
+    # ── 先找既有裝置：名稱 / FQDN / 主要 IP / 連接埠 MAC
+    dev: tuple[uuid.UUID, str] | None = None
+    reason: str | None = None
+    if hostname:
+        row = (await session.execute(
+            select(Device.id, Device.name).where(
+                or_(func.lower(Device.name) == hostname.lower(),
+                    func.lower(Device.name) == (out.suggested_name or "").lower(),
+                    func.lower(Device.fqdn) == hostname.lower())
+            ).limit(2)
+        )).all()
+        # 對到多台就不猜 —— 這與 ip_device_link 的規則一致
+        if len(row) == 1:
+            dev, reason = (row[0][0], row[0][1]), "name"
+    if dev is None and obj.mac:
+        row = (await session.execute(
+            select(DevicePort.device_id, Device.name)
+            .join(Device, Device.id == DevicePort.device_id)
+            .where(func.lower(DevicePort.mac_address) == str(obj.mac).lower())
+            .limit(2)
+        )).all()
+        if len(row) == 1:
+            dev, reason = (row[0][0], row[0][1]), "mac"
+    if dev is None:
+        # 精確比對位址本身。用字串前綴比對會把 10.0.0.1 命中成 10.0.0.10／10.0.0.100 ——
+        # 掛錯的裝置關聯比沒有關聯更難發現。
+        row = (await session.execute(
+            select(Device.id, Device.name)
+            .join(IPAddress, IPAddress.id == Device.primary_ip_id)
+            .where(func.host(IPAddress.ip) == ip_host).limit(2)
+        )).all()
+        if len(row) == 1:
+            dev, reason = (row[0][0], row[0][1]), "ip"
+
+    if dev is not None:
+        out.existing_device_id, out.existing_device_name = dev
+        out.match_reason = reason
+    if hostname:
+        my_mac = str(obj.mac).lower() if obj.mac else None
+        for sid, sip, smac in await _sibling_rows(
+            session, user=user, hostname=hostname, exclude=obj.id,
+        ):
+            mac = str(smac) if smac else None
+            out.siblings.append(SiblingIP(
+                id=sid, ip=str(sip).split("/")[0], mac=mac,
+                mac_vendor=await vendor_for_mac(session, smac),
+                same_mac=bool(my_mac and mac and mac.lower() == my_mac),
+            ))
+    return out
+
+
+@router.post("/{address_id}/device-suggestion/apply", response_model=IPAddressRead)
+async def apply_device_suggestion(
+    address_id: uuid.UUID,
+    payload: DeviceSuggestionApply,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> IPAddressRead:
+    """把建議套用下去：關聯到既有裝置，或建立一台再關聯。"""
+    from app.models.device import Device
+
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "write")
+
+    if bool(payload.device_id) == bool(payload.create_name):
+        raise HTTPException(status_code=400,
+                            detail=ui_detail("addr_device_pick_one",
+                                            "請二擇一：關聯到既有裝置，或建立一台新的"))
+
+    if payload.create_name:
+        # 建立裝置是管理員限定（與 POST /devices 同一條線）
+        if not user.is_admin:
+            raise HTTPException(status_code=403, detail=ui_detail("addr_device_create_admin_only", "只有管理員能建立裝置"))
+        name = payload.create_name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail=ui_detail("addr_device_name_empty", "裝置名稱不可為空"))
+        hostname = (obj.hostname or "").strip()
+        device = Device(name=name, type="other",
+                        fqdn=hostname if "." in hostname else None)
+        session.add(device)
+        await session.flush()
+        await append_audit(
+            session,
+            actor_user_id=str(user.id),
+            actor_ip=request.client.host if request.client else None,
+            actor_user_agent=request.headers.get("user-agent"),
+            object_type="device", object_id=str(device.id), action="create",
+            diff={"name": name, "from_ip": str(obj.ip)},
+            request_id=getattr(request.state, "request_id", None),
+        )
+    else:
+        device = await session.get(Device, payload.device_id)
+        if device is None:
+            raise HTTPException(status_code=404, detail="Device not found")
+
+    linked = 0
+    if obj.device_id is None:
+        await log_change(
+            session, ip=obj, event_type="edited", field="device_id",
+            old=None, new=str(device.id), source="user", actor_user_id=user.id,
+            note="applied device suggestion",
+        )
+        obj.device_id = device.id
+        linked += 1
+    if payload.create_name:
+        # 剛從 IP 建出來的裝置：照這筆 IP 的作業系統證據先判斷類型（以前一律寫死 other）
+        from app.services.device_type_auto import refresh_auto_types
+        await session.flush()
+        await refresh_auto_types(session, [device.id])
+
+    if payload.link_ip_ids and (obj.hostname or "").strip():
+        # 客戶端送來的 id 不能直接相信：只接受「這個使用者能寫、且確實同主機名稱、
+        # 且還沒關聯」的那一批 —— 以伺服器自己算出來的集合為準。
+        allowed = {
+            row[0] for row in await _sibling_rows(
+                session, user=user, hostname=obj.hostname or "", exclude=obj.id,
+            )
+        }
+        for sid in payload.link_ip_ids:
+            if sid not in allowed:
+                continue
+            sib = await session.get(IPAddress, sid)
+            if sib is None or sib.device_id is not None:
+                continue
+            await log_change(
+                session, ip=sib, event_type="edited", field="device_id",
+                old=None, new=str(device.id), source="user", actor_user_id=user.id,
+                note="applied device suggestion (same hostname)",
+            )
+            sib.device_id = device.id
+            linked += 1
+
+    await append_audit(
+        session,
+        actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="ip_address", object_id=str(obj.id), action="update",
+        diff={"device_id": str(device.id), "linked_ips": linked},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    await session.refresh(obj)
+    out = IPAddressRead.model_validate(obj)
+    out.mac_vendor = await vendor_for_mac(session, obj.mac)
+    return out
+
+
 @router.get("/{address_id}", response_model=IPAddressRead)
 async def get_address(
     address_id: uuid.UUID,
@@ -355,6 +656,12 @@ async def get_address(
     await _require_subnet_perm(session, user, obj.subnet_id, "read")
     out = IPAddressRead.model_validate(obj)
     out.mac_vendor = await vendor_for_mac(session, obj.mac)
+    # 虛擬化對應：IP 或 MAC 命中 VM 網卡 → 標示為虛擬機（顯示用，不寫回資料）
+    from app.services.fw_lookup import vm_match_for
+    out.virt_vm = await vm_match_for(session, ip=str(obj.ip).split("/")[0],
+                                     macs=[str(obj.mac)] if obj.mac else None)
+    from app.services.system_config import get_liveness_config
+    out.liveness_rule = await get_liveness_config(session)
     # SSH 連線管理：是否可對此 IP 開終端機（依權限算好給前端顯示按鈕）
     from app.services.permission import can_use_rdp, can_use_sftp, can_use_ssh, can_use_vnc
     out.ssh_available = await can_use_ssh(session, user=user, ip=obj)
@@ -362,6 +669,16 @@ async def get_address(
     out.rdp_available = await can_use_rdp(session, user=user, ip=obj)
     out.vnc_available = await can_use_vnc(session, user=user, ip=obj)
     await _fill_pve_console(session, obj, out, user)
+    from app.services.permission import can_use_rustdesk
+    from app.services.rustdesk import elsewhere_on_device
+    from app.services.rustdesk import for_address as rustdesk_for_address
+    out.rustdesk = await rustdesk_for_address(session, obj.id)
+    if out.rustdesk is None:
+        out.rustdesk_elsewhere = await elsewhere_on_device(session, obj, user=user)
+    if out.rustdesk is not None and not await can_use_rustdesk(session, user=user, ip=obj):
+        out.rustdesk["connect_uri"] = None
+        out.rustdesk["web_available"] = False
+        out.rustdesk["file_available"] = False
     # 算出此 IP 實際會被執行的探測（子網路要跑 − IP 略過 ∩ 代理能力）給詳細資料頁顯示
     out.effective_probes = await _effective_probes_for(session, obj)
     # OS 依來源優先序（scanner/librenms/wazuh）解析有效值 + 來源
@@ -371,14 +688,56 @@ async def get_address(
     return out
 
 
+@router.post("/{address_id}/rustdesk/local-open", status_code=204)
+async def rustdesk_local_open(
+    address_id: uuid.UUID,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Response:
+    """使用者按「用本機的 RustDesk 客戶端軟體開啟」時記一筆稽核（使用者 2026-10-05）。
+
+    rustdesk:// 網址交給使用者電腦上的客戶端，連線在客戶端與對方之間、jt-ipam 看不到；至少記下誰、什麼時候、
+    對哪個 IP（哪個 RustDesk ID）開了 —— 「調查」的遠端連線記錄以前只列得出網頁連線。
+    權限與 IP 詳細資料給 connect_uri 的條件相同（can_use_rustdesk）；網址本身照舊由詳細資料提供，這裡不回傳。"""
+    from app.core.rate_limit import limit_per_ip
+    from app.services import rustdesk as rustdesk_svc
+    from app.services.permission import can_use_rustdesk
+
+    await limit_per_ip(request, name="rustdesk")
+    ip = await session.get(IPAddress, address_id)
+    if ip is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    if not await can_use_rustdesk(session, user=user, ip=ip):
+        raise HTTPException(status_code=403, detail=ui_detail(
+            "rd_not_permitted", "沒有權限，或這個 IP 沒有開啟 RustDesk 連線"))
+    row = await rustdesk_svc.matched_peer(session, ip.id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=ui_detail("rd_no_peer", "這個 IP 沒有對應到 RustDesk 裝置"))
+    peer, srv = row
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="ip", object_id=str(ip.id), action="rustdesk.local_client_open",
+        diff={"ip": str(ip.ip).split("/")[0], "peer_id": peer.rustdesk_id, "server": srv.name},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return Response(status_code=204)
+
+
 @router.get("/{address_id}/relations")
 async def get_address_relations(
     address_id: uuid.UUID,
     user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    """IP 的上下關係鏈：區段 → 子網路 → 位址 → 裝置 → 機櫃 → 機房。
-    每個節點 {type,id,label,sub}；缺的環節省略。前端橫向串成關係圖。"""
+    """IP 的上下關係鏈：機房 → 機櫃 →（主機 → 虛擬機 →）裝置 → 位址 → 子網路 → 區段。
+    每個節點 {type,id,label,sub}；缺的環節省略。前端橫向串成關係圖。
+
+    方向跟裝置頁、儀表板一致：實體在左、邏輯在右。下面由 IP 往外接比較好寫，
+    所以最後整條反轉 —— 以前沒有反轉，IP 頁跟另外兩處左右顛倒（使用者回報）。"""
     from app.models.device import Device
     from app.models.location import Location, Rack
     from app.models.section import Section
@@ -436,7 +795,7 @@ async def get_address_relations(
             names = {n.lower() for n in (obj.hostname, device_name) if n}
             if names:
                 vm = (await session.execute(
-                    select(VirtualMachine).where(func.lower(VirtualMachine.name).in_(names)).limit(1)
+                    select(VirtualMachine).where(func.lower(VirtualMachine.name).in_(names)).limit(1)  # bounded: hostname variants of one IP
                 )).scalar_one_or_none()
         # 只連「同單位」的 VM：IP 所屬單位（取自子網路）與 VM 叢集所屬單位都有設定且不同 → 不連
         if vm is not None and subnet is not None and subnet.customer_id is not None:
@@ -486,36 +845,59 @@ async def get_address_relations(
         chain.append({"type": "vm", "id": str(vm.id), "label": vm.name, "sub": None,
                       "platform": None})
         await _append_pve_node(vm, skip_id=obj.device_id)
-    return {"chain": chain}
+    return {"chain": chain[::-1]}
 
 
-@router.get("/{address_id}/history", response_model=list[IPChangeLogRead])
+@router.get("/{address_id}/history")
 async def get_address_history(
     address_id: uuid.UUID,
     user: CurrentUser,
     session: Annotated[AsyncSession, Depends(get_session)],
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-) -> list[IPChangeLogRead]:
-    """單一 IP 的異動記錄（feature B），時間倒序；offset 分頁（前端「載入更多」）。"""
+    event_type: str | None = Query(None),
+    source: str | None = Query(None),
+) -> dict[str, Any]:
+    """單一 IP 的異動記錄（時間倒序）。
+
+    回傳帶 **總數與可用篩選值**，不只是一頁資料：實機單一 IP 最多有 1,838 筆，
+    只回一個陣列的話使用者無從得知自己看到的是全部還是冰山一角（與清單靜默截斷同一類問題）。
+    """
     obj = await session.get(IPAddress, address_id)
     if obj is None:
         raise HTTPException(status_code=404, detail="Address not found")
     await _require_subnet_perm(session, user, obj.subnet_id, "read")
 
-    rows = list((await session.execute(
-        select(IPChangeLog)
+    base = select(IPChangeLog).where(IPChangeLog.ip_id == address_id)
+    if event_type:
+        base = base.where(IPChangeLog.event_type == event_type)
+    if source:
+        base = base.where(IPChangeLog.source == source)
+
+    total = int(await session.scalar(
+        select(func.count()).select_from(base.subquery())) or 0)
+
+    # 篩選選項（含筆數）一律以「未篩選」為母體算，否則選了之後其他選項就消失了
+    facet_rows = (await session.execute(
+        select(IPChangeLog.event_type, IPChangeLog.source, func.count())
         .where(IPChangeLog.ip_id == address_id)
-        .order_by(IPChangeLog.created_at.desc())
-        .offset(offset)
-        .limit(limit)
+        .group_by(IPChangeLog.event_type, IPChangeLog.source)
+    )).all()
+    ev_counts: dict[str, int] = {}
+    src_counts: dict[str, int] = {}
+    for ev, src, c in facet_rows:
+        ev_counts[ev] = ev_counts.get(ev, 0) + int(c)
+        src_counts[src] = src_counts.get(src, 0) + int(c)
+
+    rows = list((await session.execute(
+        base.order_by(IPChangeLog.created_at.desc()).offset(offset).limit(limit)
     )).scalars().all())
 
     actor_ids = list({r.actor_user_id for r in rows if r.actor_user_id is not None})
     name_map: dict[uuid.UUID, str] = {}
     if actor_ids:
         for uid, uname in (await session.execute(
-            select(User.id, User.username).where(User.id.in_(actor_ids))
+            select(User.id, User.username).where(User.id.in_(actor_ids))  # bounded: actors on one page
         )).all():
             name_map[uid] = uname
 
@@ -524,7 +906,13 @@ async def get_address_history(
         m = IPChangeLogRead.model_validate(r)
         m.actor_username = name_map.get(r.actor_user_id) if r.actor_user_id else None
         out.append(m)
-    return out
+    return {
+        "items": out,
+        "total": total,          # 目前篩選條件下的總數
+        "returned": len(out),
+        "event_types": [{"value": k, "count": v} for k, v in sorted(ev_counts.items())],
+        "sources": [{"value": k, "count": v} for k, v in sorted(src_counts.items())],
+    }
 
 
 @router.get("/{address_id}/switch-port")
@@ -624,6 +1012,19 @@ async def create_address(
 ) -> IPAddressRead:
     subnet = await _require_subnet_perm(session, user, payload.subnet_id, "write")
 
+    # 冷卻期守門：這個位址剛被釋放，外面的 DNS 快取／防火牆規則可能還指著它。
+    # 擋下來而不是安靜放行 —— 管理員判斷沒問題可以先解除冷卻再建立。
+    cd = await ip_lifecycle.cooldown_for(session, subnet_id=payload.subnet_id, ip=payload.ip)
+    if cd is not None:
+        raise HTTPException(status_code=409, detail=ui_detail(
+            "ip_in_cooldown",
+            "此位址剛被釋放，仍在冷卻期內（外部的 DNS 快取、防火牆規則可能"
+            "還指著它）。確定要現在使用，請先解除冷卻。",
+            ip=payload.ip,
+            until=cd.until.isoformat() if cd.until else "",
+            previous_hostname=cd.previous_hostname or "",
+        ))
+
     try:
         obj = await create_ip(
             session,
@@ -635,9 +1036,9 @@ async def create_address(
             state=payload.state,
         )
     except IPNotInSubnet as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=detail_of(exc, "ip_not_in_subnet")) from exc
     except IPAlreadyExists as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=detail_of(exc, "ip_already_exists")) from exc
 
     # 應用後續欄位
     try:
@@ -645,7 +1046,7 @@ async def create_address(
             session, object_type="ip", payload=payload.custom_fields
         )
     except CustomFieldError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=detail_of(exc, "custom_field_error")) from exc
     obj.owner = payload.owner
     obj.device_id = payload.device_id
     obj.switch_port = payload.switch_port
@@ -693,7 +1094,7 @@ async def allocate_first_free_address(
             state=payload.state,
         )
     except SubnetFull as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=detail_of(exc, "subnet_full")) from exc
 
     await append_audit(
         session,
@@ -746,7 +1147,7 @@ async def update_address(
                 session, object_type="ip", payload=changes["custom_fields"]
             ) or None
         except CustomFieldError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=detail_of(exc, "custom_field_error")) from exc
 
     # feature A：hostname 不直接設，改走 observation + 優先序解析
     _UNSET = object()
@@ -754,6 +1155,30 @@ async def update_address(
     pin_changed = "hostname_source_pin" in changes
     if pin_changed and not changes["hostname_source_pin"]:
         changes["hostname_source_pin"] = None  # "" → 取消 pin
+    # 表單每次都會把目前顯示的主機名稱、MAC、固定來源一起送出 —— 值沒變就不是使用者的編輯。
+    # 以前照單全收：只改了說明，當時顯示的 DNS 名稱就被凍結成「手動」、MAC 來源被標成手動
+    # （之後換機器的新 MAC 永遠寫不進來）。2026-09-26
+    def _hn(v: Any) -> str | None:
+        return (str(v or "")).strip() or None
+
+    def _mac(v: Any) -> str:
+        return "".join(ch for ch in str(v or "").lower() if ch in "0123456789abcdef")
+
+    prev_hostname, prev_pin, prev_mac = obj.hostname, obj.hostname_source_pin, obj.mac
+    if hostname_change is not _UNSET and _hn(hostname_change) == _hn(prev_hostname):
+        hostname_change = _UNSET
+    pin_explicit = pin_changed and (changes["hostname_source_pin"] or None) != (prev_pin or None)
+    mac_edited = "mac" in changes and _mac(changes["mac"]) != _mac(prev_mac)
+    if "mac" in changes and not mac_edited:
+        changes.pop("mac")
+    if "jump_host_id" in changes or "console_agent_id" in changes:
+        from app.services.console_route import EgressError, normalize_egress
+        parent = await session.get(Subnet, obj.subnet_id) if obj.subnet_id else None
+        try:
+            await normalize_egress(session, changes,
+                                   scan_agent_id=parent.scan_agent_id if parent is not None else None)
+        except EgressError as exc:
+            raise HTTPException(status_code=422, detail=ui_detail(exc.code, str(exc), **exc.params)) from exc
 
     for key, value in changes.items():
         setattr(obj, key, value)
@@ -761,7 +1186,7 @@ async def update_address(
     # MAC 與 hostname 同屬「多來源優先序」欄位：人工編輯的 MAC 要標記 mac_source="manual"
     # （ARP 優先序中 manual rank 最高），否則下一次掃描/ARP 同步會用 scanner 等來源把它蓋掉。
     # 清空 MAC 時一併清掉來源。
-    if "mac" in changes:
+    if mac_edited:
         if obj.mac:
             obj.mac_source = "manual"
         else:
@@ -797,7 +1222,16 @@ async def update_address(
             session, ip=obj, source="manual",
             hostname=hostname_change, actor_user_id=str(user.id),
         )
-    elif pin_changed:
+        # 使用者明確輸入了新名稱，全域順序卻讓別的來源蓋過它（例如手動排在 DNS 之後）：
+        # 以前存完馬上被蓋回去、畫面沒有任何提示。沒另外指定固定來源時，就固定用手動 ——
+        # 輸入的會生效，表單上的「固定主機名稱來源」也看得出為什麼。
+        typed = _hn(hostname_change)
+        if typed and _hn(obj.hostname) != typed and not pin_explicit:
+            obj.hostname_source_pin = "manual"
+            await recompute_effective(session, ip=obj, source="manual", actor_user_id=str(user.id))
+    elif pin_explicit:
+        # 只有固定來源真的改了才重算：表單每次都會帶 hostname_source_pin（沒改也帶），
+        # 以前一律重算 → 沒有任何來源觀測的 IP（舊資料、匯入）存一次表單主機名稱就被清空
         await recompute_effective(
             session, ip=obj, source="manual", actor_user_id=str(user.id),
         )
@@ -837,7 +1271,19 @@ async def delete_address(
     if obj is None:
         raise HTTPException(status_code=404, detail="Address not found")
     await _require_subnet_perm(session, user, obj.subnet_id, "admin")
+    await _delete_ip(session, obj, user=user, request=request, bulk=False)
+    await session.commit()
 
+
+async def _delete_ip(session: AsyncSession, obj: IPAddress, *, user: Any, request: Request,
+                     bulk: bool) -> None:
+    """刪除一筆 IP 的完整步驟：稽核、異動記錄、冷卻期、刪除。單筆與批次刪除共用 ——
+    以前批次刪除只寫稽核就刪，沒有進冷卻期、異動記錄也沒有「已刪除」（2026-09-28）。
+    不 commit，交易邊界由呼叫端決定。"""
+    diff: dict[str, Any] = {"before": {"ip": str(obj.ip), "subnet_id": str(obj.subnet_id),
+                                       "hostname": obj.hostname}}
+    if bulk:
+        diff["bulk"] = True
     await append_audit(
         session,
         actor_user_id=str(user.id),
@@ -846,15 +1292,67 @@ async def delete_address(
         object_type="ip_address",
         object_id=str(obj.id),
         action="delete",
-        diff={"before": {"ip": str(obj.ip), "subnet_id": str(obj.subnet_id), "hostname": obj.hostname}},
+        diff=diff,
         request_id=getattr(request.state, "request_id", None),
     )
     # feature B：刪除前記一筆（ip_id 之後會被 SET NULL，但 ip_text 快照保留）
     await log_change(session, ip=obj, event_type="deleted",
                      source="manual", actor_user_id=str(user.id),
                      old=str(obj.ip))
+    # 釋放 → 進冷卻期。外面還有 DNS 快取／防火牆規則／ACL 指著這個位址，
+    # 立刻配給別人會造成最難查的那種故障（見 services/ip_lifecycle）。
+    await ip_lifecycle.start_cooldown(session, ip=obj, actor_user_id=user.id,
+                                      reason="deleted")
     await session.delete(obj)
+
+
+class CooldownClearIn(StrictModel):
+    reason: Annotated[str | None, Field(max_length=500)] = None
+
+
+@router.get("/cooldowns/{subnet_id}")
+async def list_cooldowns(
+    subnet_id: uuid.UUID,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """這個子網路裡仍在冷卻期的位址（剛釋放、暫時不配發）。"""
+    await _require_subnet_perm(session, user, subnet_id, "read")
+    rows = await ip_lifecycle.active_cooldowns(session, subnet_id)
+    return {"items": [{
+        "ip": ip,
+        "released_at": r.released_at.isoformat() if r.released_at else None,
+        "until": r.until.isoformat() if r.until else None,
+        "previous_hostname": r.previous_hostname,
+        "previous_mac": r.previous_mac,
+        "reason": r.reason,
+    } for ip, r in sorted(rows.items())], "count": len(rows)}
+
+
+@router.post("/cooldowns/{subnet_id}/{ip}/clear")
+async def clear_cooldown(
+    subnet_id: uuid.UUID, ip: str, payload: CooldownClearIn,
+    user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """提前解除冷卻。**紀錄不刪**，留下誰／何時／為什麼。"""
+    await _require_subnet_perm(session, user, subnet_id, "admin")
+    row = await ip_lifecycle.clear_cooldown(
+        session, subnet_id=subnet_id, ip=ip,
+        actor_user_id=user.id, reason=payload.reason,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not in cooldown")
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="ip_address", object_id=None, action="cooldown_clear",
+        diff={"subnet_id": str(subnet_id), "ip": ip, "reason": payload.reason or ""},
+        request_id=getattr(request.state, "request_id", None),
+    )
     await session.commit()
+    return {"ok": True, "ip": ip}
 
 
 class BulkDeletePayload(StrictModel):
@@ -876,9 +1374,6 @@ async def bulk_delete(
 
     deleted = 0
     errors: list[dict[str, str]] = []
-    actor_ip = request.client.host if request.client else None
-    actor_ua = request.headers.get("user-agent")
-    request_id = getattr(request.state, "request_id", None)
 
     for aid in payload.ids:
         obj = await session.get(IPAddress, aid)
@@ -890,19 +1385,7 @@ async def bulk_delete(
         except HTTPException:
             errors.append({"id": str(aid), "error": "no_permission"})
             continue
-        await append_audit(
-            session,
-            actor_user_id=str(user.id),
-            actor_ip=actor_ip,
-            actor_user_agent=actor_ua,
-            object_type="ip_address",
-            object_id=str(obj.id),
-            action="delete",
-            diff={"before": {"ip": str(obj.ip), "subnet_id": str(obj.subnet_id),
-                              "hostname": obj.hostname}, "bulk": True},
-            request_id=request_id,
-        )
-        await session.delete(obj)
+        await _delete_ip(session, obj, user=user, request=request, bulk=True)
         deleted += 1
 
     await session.commit()
@@ -984,6 +1467,7 @@ async def notify_stale(
 ) -> dict[str, Any]:
     """對選定的失聯 IP 發提醒：在通知中心推一則摘要給所有管理者。"""
     from app.services.notification import push_notification
+    from app.services.system_config import get_notification_matrix
 
     await _require_subnet_perm(session, user, payload.subnet_id, "read")
     n = len(payload.ids)
@@ -999,6 +1483,12 @@ async def notify_stale(
     title = f"失聯 IP 提醒：{cidr}"
     body = f"子網路 {cidr} 有 {n} 個 IP 失聯超過 {payload.days} 天（由 {user.username} 提出）。"
     _gp = {"cidr": cidr, "n": n, "days": payload.days, "user": user.username}
+    # 通知發送設定裡可以關掉（`ip.stale`）。原本是直接推 —— 收得到卻關不掉。
+    ch = (await get_notification_matrix(session)).get(
+        "ip.stale", {"in_app": True, "email": False})
+    if not ch.get("in_app"):
+        return 0
+
     for admin in admins:
         await push_notification(
             session,
@@ -1148,12 +1638,29 @@ async def uptime_batch_endpoint(
 
     # 先縮到可見子網路，再取這些 IP —— 與清單端點同一套規則
     vis = await visible_ids(session, user=user, object_type="subnet", required="read")
-    stmt = select(IPAddress.id).where(IPAddress.id.in_(payload.ip_ids))
+    stmt = select(IPAddress.id).where(in_values(IPAddress.id, payload.ip_ids))
     if vis is not None:
         if not vis:
             return {"items": []}
-        stmt = stmt.where(IPAddress.subnet_id.in_(vis))
+        stmt = stmt.where(in_values(IPAddress.subnet_id, vis))
     allowed = set((await session.execute(stmt)).scalars().all())
     ordered = [i for i in payload.ip_ids if i in allowed]   # 保留使用者排的順序
 
     return {"items": await uptime_batch(session, ordered, days=payload.days)}
+
+
+@router.get("/{address_id}/console-route")
+async def address_console_route(
+    address_id: uuid.UUID,
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """主控台會走哪條路（直連／跳板／掃描代理）、設定在哪裡、現在走不走得通 —— 連線表單顯示用。"""
+    obj = await session.get(IPAddress, address_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Address not found")
+    await _require_subnet_perm(session, user, obj.subnet_id, "read")
+    from app.services.console_route import describe_route
+    out = await describe_route(session, obj)
+    out["subnet_id"] = str(obj.subnet_id) if obj.subnet_id else None   # 「變更」連結到子網路頁用
+    return out

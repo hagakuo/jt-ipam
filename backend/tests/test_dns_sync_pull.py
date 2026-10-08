@@ -50,14 +50,14 @@ async def test_multiple_a_records_pick_stable_name(db_session, monkeypatch):
     db_session.add(server)
     await db_session.flush()
 
-    # 同一 IP 兩筆 A：meet3 / meet3-turn → 套用字母序最小 = meet3
+    # 同一 IP 兩筆 A：old / old-host → 套用字母序最小 = old
     _patch(monkeypatch, [
-        DNSRecordOp(name="meet3-turn", type="A", value="10.10.0.5"),
-        DNSRecordOp(name="meet3", type="A", value="10.10.0.5"),
+        DNSRecordOp(name="old-host", type="A", value="10.10.0.5"),
+        DNSRecordOp(name="old", type="A", value="10.10.0.5"),
     ])
     await dns_sync.pull_server(db_session, server)
     await db_session.refresh(ipa)
-    assert ipa.hostname == "meet3"
+    assert ipa.hostname == "old"
 
 
 async def test_name_does_not_flap_on_record_order(db_session, monkeypatch):

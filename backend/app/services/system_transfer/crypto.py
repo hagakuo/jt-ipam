@@ -17,6 +17,8 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
+from app.core.ui_error import UiError
+
 FORMAT = "jt-ipam-system-export"
 FORMAT_VERSION = 1
 
@@ -29,7 +31,7 @@ _SALT_LEN = 16
 _NONCE_LEN = 12
 
 
-class TransferCryptoError(Exception):
+class TransferCryptoError(UiError):
     """密碼錯誤或封套損毀（呼叫端應轉成可讀的 400，而非 500）。"""
 
 
@@ -59,7 +61,7 @@ def seal(
     `metadata` 會原樣併進封套頂層（format/app_version/schema_version/scope/exported_at…）。
     """
     if not passphrase:
-        raise TransferCryptoError("匯出密碼不可為空")
+        raise TransferCryptoError("匯出密碼不可為空", code="xfer_passphrase_empty")
     salt = rng.token_bytes(_SALT_LEN)
     nonce = rng.token_bytes(_NONCE_LEN)
     key = _derive_key(passphrase, salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P)
@@ -80,10 +82,54 @@ def seal(
     return env
 
 
+def write_sealed(
+    out: Any,
+    raw_gzip: bytes,
+    passphrase: str,
+    *,
+    metadata: dict[str, Any],
+    rng: Any,
+) -> int:
+    """seal() 的串流版：`raw_gzip` 是已經 gzip 過的 inner JSON（exporter.export_compressed），
+    直接把封套寫進 `out`（二進位檔案物件），回傳寫了幾個位元組。
+
+    與 seal() 產生同一種檔案（json.loads 讀回來的封套欄位一樣）；差別是不組出整份封套字串 ——
+    payload 的 base64 一段一段寫，大型匯出不會為了 base64 與 JSON 字串再多吃幾倍記憶體。
+    """
+    if not passphrase:
+        raise TransferCryptoError("匯出密碼不可為空", code="xfer_passphrase_empty")
+    salt = rng.token_bytes(_SALT_LEN)
+    nonce = rng.token_bytes(_NONCE_LEN)
+    key = _derive_key(passphrase, salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P)
+    ct = AESGCM(key).encrypt(nonce, raw_gzip, None)
+    env: dict[str, Any] = dict(metadata)
+    env.update(
+        {
+            "format": FORMAT,
+            "format_version": FORMAT_VERSION,
+            "encrypted": True,
+            "cipher": "AES-256-GCM",
+            "kdf": {"algo": "scrypt", "salt": _b64e(salt), "n": _SCRYPT_N, "r": _SCRYPT_R, "p": _SCRYPT_P},
+            "nonce": _b64e(nonce),
+            "payload": "",
+        }
+    )
+    head = json.dumps(env, ensure_ascii=False)
+    marker = '"payload": ""'
+    cut = head.rindex(marker) + len(marker) - 1            # 停在結尾那個引號之前
+    written = out.write(head[:cut].encode("utf-8"))
+    step = 3 * 1024 * 1024                                  # 3 的倍數：分段 base64 接起來與一次編碼相同
+    view = memoryview(ct)
+    for i in range(0, len(ct), step):
+        written += out.write(base64.b64encode(view[i:i + step]))
+    written += out.write(head[cut:].encode("utf-8"))
+    return written
+
+
 def read_metadata(env: dict[str, Any]) -> dict[str, Any]:
     """不需密碼即可讀取的頂層 metadata（前端 analyze 顯示來源版本／範圍用）。"""
     if not isinstance(env, dict) or env.get("format") != FORMAT:
-        raise TransferCryptoError("這不是有效的 jt-ipam 系統匯出檔")
+        raise TransferCryptoError("這不是有效的 jt-ipam 系統匯出檔", code="xfer_not_export_file")
     return {
         "format_version": env.get("format_version"),
         "app_version": env.get("app_version"),
@@ -97,10 +143,11 @@ def read_metadata(env: dict[str, Any]) -> dict[str, Any]:
 def open_envelope(env: dict[str, Any], passphrase: str) -> dict[str, Any]:
     """驗證封套、以密碼解密並解壓，回 inner dict。密碼錯 → TransferCryptoError。"""
     if not isinstance(env, dict) or env.get("format") != FORMAT:
-        raise TransferCryptoError("這不是有效的 jt-ipam 系統匯出檔")
+        raise TransferCryptoError("這不是有效的 jt-ipam 系統匯出檔", code="xfer_not_export_file")
     fv = env.get("format_version")
     if not isinstance(fv, int) or fv > FORMAT_VERSION:
-        raise TransferCryptoError(f"匯出檔格式版本 {fv} 較新，此實例無法解析（請升級後再匯入）")
+        raise TransferCryptoError(f"匯出檔格式版本 {fv} 較新，此實例無法解析（請升級後再匯入）",
+                                  code="xfer_format_newer", version=fv)
     kdf = env.get("kdf") or {}
     try:
         salt = _b64d(str(kdf["salt"]))
@@ -110,16 +157,16 @@ def open_envelope(env: dict[str, Any], passphrase: str) -> dict[str, Any]:
         r = int(kdf.get("r", _SCRYPT_R))
         p = int(kdf.get("p", _SCRYPT_P))
     except (KeyError, ValueError, TypeError) as exc:
-        raise TransferCryptoError("匯出檔封套損毀或欄位缺失") from exc
+        raise TransferCryptoError("匯出檔封套損毀或欄位缺失", code="xfer_envelope_broken") from exc
     key = _derive_key(passphrase, salt, n=n, r=r, p=p)
     try:
         raw = AESGCM(key).decrypt(nonce, ct, None)
     except InvalidTag as exc:
-        raise TransferCryptoError("密碼錯誤或檔案已損毀") from exc
+        raise TransferCryptoError("密碼錯誤或檔案已損毀", code="xfer_bad_passphrase") from exc
     try:
         inner = json.loads(gzip.decompress(raw).decode("utf-8"))
     except (OSError, ValueError) as exc:
-        raise TransferCryptoError("匯出檔內容無法解壓／解析") from exc
+        raise TransferCryptoError("匯出檔內容無法解壓／解析", code="xfer_unreadable") from exc
     if not isinstance(inner, dict):
-        raise TransferCryptoError("匯出檔內容格式不正確")
+        raise TransferCryptoError("匯出檔內容格式不正確", code="xfer_bad_content")
     return inner

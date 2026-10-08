@@ -20,12 +20,25 @@ from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.rate_limit import limit_per_ip
+from app.core.ui_error import detail_of, ui_detail
 from app.schemas.base import StrictModel
 from app.services import ai as ai_service
 from app.services import ai_chat_store, system_config
 from app.services.ai_guard import AIInputRejected, screen_user_messages
 
 router = APIRouter(prefix="/ai", tags=["ai"])
+
+
+def _ai_http_error(exc: Exception, user: Any) -> HTTPException:
+    """模型那一端失敗：管理員拿到帶原因的訊息（診斷用）；一般帳號只拿到代碼。
+
+    以前任何登入帳號都看得到原文：內部 LLM 主機名稱、出站防護規則、上游回應片段
+    （CodeQL 判讀，2026-10-01；HTTPException 的 detail 不在 CodeQL 的模型裡，所以沒被標出來）。
+    """
+    if bool(getattr(user, "is_admin", False)):
+        return HTTPException(status_code=502, detail=detail_of(exc, "ai_error"))
+    ev = ai_service.ai_error_event(exc, admin=False)
+    return HTTPException(status_code=502, detail=ui_detail(ev["code"], ev["detail"]))
 
 
 @router.get("/semantic-search")
@@ -38,9 +51,9 @@ async def semantic_search(
     try:
         return await ai_service.semantic_search(session, user=user, query=q, limit=limit)
     except ai_service.AINotConfigured as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=detail_of(exc, "ai_not_configured")) from exc
     except ai_service.AIError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise _ai_http_error(exc, user) from exc
 
 
 class ChatMessage(StrictModel):
@@ -105,9 +118,9 @@ async def chat(
             page_context=payload.context.model_dump() if payload.context else None,
         )
     except ai_service.AINotConfigured as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=detail_of(exc, "ai_not_configured")) from exc
     except ai_service.AIError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise _ai_http_error(exc, user) from exc
     await append_audit(
         session,
         actor_user_id=str(user.id),
@@ -154,7 +167,7 @@ async def chat_confirm(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    """執行使用者在 AI 對話中按下「確認」的異動動作（白名單工具；權限仍由工具本身把關）。"""
+    """執行使用者在 AI 對話中按下「確認」的異動動作（允許清單工具；權限仍由工具本身把關）。"""
     await limit_per_ip(request, name="ai")
     from app.mcp.tools import MUTATING_TOOLS, TOOLS, IPAMToolError, summarize_action
     if payload.tool not in MUTATING_TOOLS or payload.tool not in TOOLS:
@@ -163,7 +176,7 @@ async def chat_confirm(
         result = await TOOLS[payload.tool]["fn"](session, user=user, **payload.args)
     except IPAMToolError as exc:
         await session.rollback()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=detail_of(exc, "ai_tool_error")) from exc
     except TypeError as exc:
         await session.rollback()
         raise HTTPException(status_code=400, detail=f"bad arguments: {exc}") from exc
@@ -229,7 +242,10 @@ async def chat_stream(
                     ev = {**ev, "conversation_id": str(conv.id)}
                 yield f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
         except Exception as exc:
-            yield f'data: {json.dumps({"type": "error", "detail": f"stream failed: {exc.__class__.__name__}"})}\n\n'
+            from app.services.ai import ai_error_event
+            ev = {"type": "error", **ai_error_event(exc, admin=bool(user.is_admin), code="ai_failed",
+                                                    reason=f"stream failed: {exc.__class__.__name__}")}
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
             return
         # 串流正常結束才寫 audit（與非串流 chat 對齊）
         await append_audit(
@@ -266,6 +282,28 @@ async def embedding_check(
     return await ai_service.probe_embedding(session)
 
 
+@router.get("/thinking-check", dependencies=[Depends(require_admin)])
+async def thinking_check(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """對話模型，以及另外指定的巡檢／判讀模型，照不照「關閉思考」的參數做。
+
+    AI 巡檢與判讀一律送這組參數；伺服器或閘道沒照做時只會「很慢」或答案被思考吃掉，
+    不會報錯 —— 這支把它問出來（見 ai_service.probe_thinking）。同一個模型只問一次。
+    """
+    from app.services.system_config import get_llm_config
+    cfg = await get_llm_config(session)
+    roles: list[tuple[str, str]] = []
+    for role, model in (("chat", cfg.chat_model), ("audit", getattr(cfg, "ai_audit_model", None)),
+                        ("interpret", getattr(cfg, "ai_interpret_model", None))):
+        if model and model not in {m for _, m in roles}:
+            roles.append((role, model))
+    results = []
+    for role, model in roles:
+        results.append({"role": role, **await ai_service.probe_thinking(session, model)})
+    return {"results": results}
+
+
 @router.post("/reindex", dependencies=[Depends(require_admin)])
 async def reindex(
     user: CurrentUser,
@@ -275,7 +313,7 @@ async def reindex(
     try:
         stats = await ai_service.reindex_all(session)
     except ai_service.AINotConfigured as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=detail_of(exc, "ai_not_configured")) from exc
     await append_audit(
         session,
         actor_user_id=str(user.id),
@@ -368,7 +406,7 @@ async def list_all_conversations(
     if uids:
         from sqlalchemy import select
         for uid, uname in (await session.execute(
-            select(User.id, User.username).where(User.id.in_(uids))
+            select(User.id, User.username).where(User.id.in_(uids))  # bounded: users on one page
         )).all():
             unames[str(uid)] = uname
     items = []
@@ -439,27 +477,36 @@ async def model_info(
     session: Annotated[AsyncSession, Depends(get_session)],
     model: str | None = None,
 ) -> dict[str, Any]:
-    """回傳 Ollama 模型的參數摘要（給 chat badge tooltip 顯示「名稱與參數」）。"""
+    """回傳模型摘要與服務類型（給對話泡泡的標籤與 tooltip）。
+
+    `provider` 一定要回：泡泡以前寫死「本地 Ollama」，接 OpenAI 相容服務也一樣
+    （GitHub issue #37）。參數量／量化／上下文長度只有 Ollama 的 `/api/show` 給得出來，
+    OpenAI 相容服務沒有這支端點 —— 別去打它，只回名稱與服務類型。
+    """
     import httpx as _httpx
 
-    from app.core.safe_http import UnsafeOutboundURL, safe_request
-    from app.services.system_config import get_llm_config
-    cfg = await get_llm_config(session)
+    from app.core import safe_http
+    from app.services import system_config
+    cfg = await system_config.get_llm_config(session)
     name = model or cfg.chat_model
+    provider = getattr(cfg, "provider", "ollama") or "ollama"
+    if provider != "ollama":
+        return {"model": name, "provider": provider}
     url = f"{cfg.url.rstrip('/')}/api/show"
     try:
-        resp = await safe_request("POST", url, headers={"Content-Type": "application/json"},
-                                  json={"name": name}, timeout=10.0)
-    except (UnsafeOutboundURL, _httpx.HTTPError) as exc:
-        return {"model": name, "error": exc.__class__.__name__}
+        resp = await safe_http.safe_request("POST", url, headers={"Content-Type": "application/json"},
+                                            json={"name": name}, timeout=10.0)
+    except (safe_http.UnsafeOutboundURL, _httpx.HTTPError) as exc:
+        return {"model": name, "provider": provider, "error": exc.__class__.__name__}
     if resp.status_code != 200:
-        return {"model": name, "error": f"HTTP {resp.status_code}"}
+        return {"model": name, "provider": provider, "error": f"HTTP {resp.status_code}"}
     data = resp.json() or {}
     det = data.get("details") or {}
     mi = data.get("model_info") or {}
     ctx = next((v for k, v in mi.items() if isinstance(k, str) and k.endswith(".context_length")), None)
     return {
         "model": name,
+        "provider": provider,
         "family": det.get("family"),
         "parameter_size": det.get("parameter_size"),
         "quantization": det.get("quantization_level"),

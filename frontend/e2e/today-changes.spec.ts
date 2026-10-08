@@ -77,6 +77,9 @@ test("登入失敗時，伺服器故障與密碼錯誤要說不同的話", async
 test("異常偵測的說明要涵蓋全部偵測類別", async ({ page }) => {
   // 新增偵測類別時最容易忘記的就是這句話 —— 它停在四條規則，實際上已經有九類，
   // 使用者會以為系統只做那四件事（真實瀏覽器巡檢抓到）。
+  // 這句說明只在還沒有結果時出現；進頁面會先載入上次的結果（2026-10-01），所以這裡讓它「沒有上次結果」
+  await page.route("**/api/v1/anomalies/last", (route) =>
+    route.fulfill({ json: { report: null, at: null, trigger: null } }));
   await page.goto("/anomaly");
   await page.waitForTimeout(1200);
   const body = await page.locator("body").innerText();

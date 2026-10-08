@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.ui_error import detail_of, ui_detail
 from app.models.system_setting import SystemSetting
 from app.schemas.base import StrictModel
 from app.services import ldap_auth
@@ -121,7 +122,7 @@ async def ldap_test_conn(
     try:
         return await ldap_auth.test_connection(cfg)
     except ldap_auth.LDAPNotConfigured as exc:
-        raise HTTPException(503, detail=str(exc)) from exc
+        raise HTTPException(503, detail=detail_of(exc, "ldap_not_configured")) from exc
     except ldap_auth.LDAPAuthError as exc:
         raise HTTPException(502, detail=f"LDAP error: {exc}") from exc
 
@@ -143,9 +144,10 @@ async def ldap_test_auth(
     try:
         info = await ldap_auth.authenticate(cfg, account, payload.password)
     except ldap_auth.LDAPInvalidCredentials as exc:
-        raise HTTPException(401, detail=f"帳號或密碼錯誤 / 找不到使用者：{exc}") from exc
+        raise HTTPException(401, detail=ui_detail("ldap_bad_credentials", f"帳號或密碼錯誤／找不到使用者：{exc}",
+                                 reason=str(exc)[:200])) from exc
     except ldap_auth.LDAPNotConfigured as exc:
-        raise HTTPException(503, detail=str(exc)) from exc
+        raise HTTPException(503, detail=detail_of(exc, "ldap_not_configured")) from exc
     except ldap_auth.LDAPAuthError as exc:
         raise HTTPException(502, detail=f"LDAP error: {exc}") from exc
     return {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // =============================================================================
-// i18n compile gate — scan every message in zh-TW.json / en-US.json with the
+// i18n compile gate — scan every message in each locale file with the
 // vue-i18n message compiler. A literal @ (linked-message), { } (interpolation)
 // or | (plural) in a message compiles fine in dev (warning only) but THROWS a
 // SyntaxError in the production build, blanking the surrounding render.
@@ -36,9 +36,11 @@ if (!compile) {
   process.exit(0);
 }
 
+const LOCALES = ["zh-TW", "en-US", "ja-JP"];
+
 let total = 0;
 let bad = 0;
-for (const loc of ["zh-TW", "en-US"]) {
+for (const loc of LOCALES) {
   const obj = JSON.parse(readFileSync(join(root, `src/i18n/${loc}.json`), "utf-8"));
   const walk = (o, prefix) => {
     for (const [k, v] of Object.entries(o)) {
@@ -72,7 +74,7 @@ if (bad) {
 // Only literal keys are checked; t(`a.${b}`) and t("a." + b) are skipped.
 // ---------------------------------------------------------------------------
 const dicts = {};
-for (const loc of ["zh-TW", "en-US"]) {
+for (const loc of LOCALES) {
   dicts[loc] = JSON.parse(readFileSync(join(root, `src/i18n/${loc}.json`), "utf-8"));
 }
 const hasKey = (d, key) => {
@@ -116,3 +118,30 @@ if (missing) {
   console.error("[check-i18n] FAILED: a missing key renders as the key itself on screen");
   process.exit(1);
 }
+
+// ---------------------------------------------------------------------------
+// Locale parity gate — a key missing from one locale does not error: vue-i18n
+// falls back to en-US, so the page renders half-translated and nobody notices.
+// Every locale must carry exactly the same key set.
+// ---------------------------------------------------------------------------
+const keysOf = (o, prefix = "") => {
+  const out = new Set();
+  for (const [k, v] of Object.entries(o)) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === "object") for (const x of keysOf(v, key)) out.add(x);
+    else out.add(key);
+  }
+  return out;
+};
+const base = keysOf(dicts[LOCALES[0]]);
+let parity = 0;
+for (const loc of LOCALES.slice(1)) {
+  const here = keysOf(dicts[loc]);
+  for (const k of base) if (!here.has(k)) { parity++; console.error(`  ${loc}: missing ${k}`); }
+  for (const k of here) if (!base.has(k)) { parity++; console.error(`  ${loc}: extra ${k}`); }
+}
+if (parity) {
+  console.error(`[check-i18n] FAILED: ${parity} key(s) out of sync between locales`);
+  process.exit(1);
+}
+console.log(`[check-i18n] ${LOCALES.length} locales, ${base.size} keys each — in sync`);

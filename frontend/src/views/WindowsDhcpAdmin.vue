@@ -30,7 +30,7 @@ const { t } = useI18n();
 const msg = useMessage();
 
 const COLS = ["name", "host", "enabled", "sync_flags", "last_sync_at", "last_error", "actions"];
-const { visibleKeys: vis, setVisible: setVis, reset: resetVis } = useColumnPrefs(
+const { visibleKeys: vis, setVisible: setVis, reset: resetVis, order, setOrder, orderColumns } = useColumnPrefs(
   "windows_dhcp", COLS, COLS,
 );
 const picker = computed(() => [
@@ -186,7 +186,7 @@ const allCols = computed<DataTableColumns<WindowsDhcpServer>>(() => autoSort([
   },
 ]));
 const cols = computed<DataTableColumns<WindowsDhcpServer>>(() =>
-  allCols.value.filter((c: any) => vis.value.includes(c.key)),
+  orderColumns(allCols.value.filter((c: any) => vis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); void loadSubnetOptions(); });
@@ -215,7 +215,8 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         <template #icon><n-icon><PlusIcon /></n-icon></template>
         {{ t("common.create") }}
       </n-button>
-      <ColumnPicker :all="picker" :visible="vis" @update:visible="setVis" @reset="resetVis" />
+      <ColumnPicker :all="picker" :visible="vis" @update:visible="setVis" @reset="resetVis"
+                    :order="order" @update:order="setOrder" />
     </n-space>
 
     <n-data-table :columns="cols" :data="rows" :loading="loading" :bordered="false" :scroll-x="1126" />

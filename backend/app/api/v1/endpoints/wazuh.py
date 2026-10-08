@@ -7,7 +7,7 @@ CRUD WazuhInstance + 同步 + agents 列表 + missing-agent 偵測（A09 提供
 from __future__ import annotations
 
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
@@ -16,9 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.ui_error import detail_of
+from app.models.address import IPAddress
 from app.models.wazuh import WazuhAgent, WazuhInstance
 from app.schemas.base import Paginated
 from app.schemas.wazuh import (
+    MissingAgentPage,
     MissingAgentRow,
     WazuhAgentRead,
     WazuhInstanceCreate,
@@ -144,6 +147,9 @@ async def delete_instance(
     ).scalar_one_or_none()
     if inst is None:
         raise HTTPException(404, detail="instance not found")
+    # 它寫進共用表的主機名稱／租約／固定分配／NAT／VPN 通道一併收回（沒有外鍵會跟著刪）
+    from app.services.integration_cleanup import forget_instance
+    await forget_instance(session, source="wazuh", source_id=inst.id)
     await session.delete(inst)
     await append_audit(
         session,
@@ -172,7 +178,7 @@ async def test_instance(
     try:
         info = await wazuh_service.healthcheck(inst)
     except wazuh_service.WazuhError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "wazuh_error")) from exc
     return {"ok": True, "info": info}
 
 
@@ -257,13 +263,47 @@ async def list_agents(
     return {"items": rows, "total": total, "page": offset // limit + 1, "page_size": limit}
 
 
-@router.get("/missing-agents", response_model=list[MissingAgentRow])
+@router.get("/missing-agents", response_model=list[MissingAgentRow] | MissingAgentPage)
 async def missing_agents(
     session: Annotated[AsyncSession, Depends(get_session)],
     instance_id: uuid.UUID | None = None,
     hostnamed_only: bool = True,
+    page: Annotated[int | None, Query(ge=1)] = None,
+    page_size: Annotated[int, Query(ge=1, le=100_000)] = 100,
+    section_id: uuid.UUID | None = None,
+    subnet_id: uuid.UUID | None = None,
+    customer_id: uuid.UUID | None = None,
+    status_filter: Annotated[str | None, Query(alias="status", max_length=16)] = None,
+    q: Annotated[str | None, Query(max_length=128)] = None,
+    sort: Annotated[Literal["ip", "hostname", "subnet", "section", "customer", "status", "device_kind"],
+                    Query()] = "ip",
+    order: Annotated[Literal["asc", "desc"], Query()] = "asc",
 ) -> Any:
-    """應裝 Wazuh agent 卻沒有 active 對映的 IP 清單（hostnamed_only=True 預設只看有設 hostname 的）。"""
-    return await wazuh_service.find_missing_agents(
+    """應裝 Wazuh agent 卻沒有 active 對映的 IP 清單（hostnamed_only=True 預設只看有設 hostname 的）。
+
+    每筆帶所屬子網路／區段／單位，畫面據此篩選（與 OCS 整合頁共用 annotate_scope）。
+    整合設了「限定子網路範圍」就只列範圍內的（見 agent_scope.expected_subnets）。
+    """
+    from app.services.agent_scope import annotate_scope, expected_subnets
+    if instance_id is not None:
+        one = await session.get(WazuhInstance, instance_id)
+        insts = [one] if one is not None else []
+    else:
+        insts = list((await session.execute(
+            select(WazuhInstance).where(WazuhInstance.enabled.is_(True)))).scalars().all())
+    if page is not None:
+        # 伺服器端分頁與篩選（大站台 5 萬筆缺口時，整份一次回傳要幾十 MB）
+        from app.services.agent_scope import missing_page
+        active = select(WazuhAgent.jt_ipam_address_id).where(
+            WazuhAgent.status == "active", WazuhAgent.jt_ipam_address_id.is_not(None))
+        if instance_id is not None:
+            active = active.where(WazuhAgent.instance_id == instance_id)
+        return await missing_page(
+            session, missing=IPAddress.id.not_in(active), subnet_ids=expected_subnets(insts),
+            hostnamed_only=hostnamed_only, page=page, page_size=page_size, section_id=section_id,
+            subnet_id=subnet_id, customer_id=customer_id, status=status_filter, q=q, sort=sort, order=order,
+            cache_key=("wazuh", instance_id), version_tables=(WazuhAgent,))
+    return await annotate_scope(session, await wazuh_service.find_missing_agents(
         session, instance_id=instance_id, hostnamed_only=hostnamed_only,
-    )
+        subnet_ids=expected_subnets(insts),
+    ))

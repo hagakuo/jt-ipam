@@ -20,6 +20,20 @@ from app.core.audit import append_audit
 from app.core.db import get_session
 from app.services.investigate import collect_dossier
 
+
+def _narrative_error(exc: BaseException, user: Any) -> dict[str, Any]:
+    """判讀失敗時給畫面看的原因：`{"code", "params", "detail"}`。
+
+    一般帳號只拿到代碼（前端照語系翻譯）；管理員另外附原因 —— 以前任何登入帳號都看得到
+    內部 LLM 主機名稱與上游回應片段（CodeQL #15／#16，2026-10-01）。見 services/ai.ai_error_event。
+    """
+    from app.services.ai import AIError, ai_error_event
+    admin = bool(getattr(user, "is_admin", False))
+    if isinstance(exc, (AIError, TimeoutError)):
+        return ai_error_event(exc, admin=admin)
+    # 其他未預期的例外：原文可能帶出內部資訊，只寫日誌（管理員也只看類別名稱）
+    return ai_error_event(exc, admin=admin, code="ai_failed", reason=type(exc).__name__)
+
 router = APIRouter(prefix="/investigate", tags=["investigate"])
 
 NARRATIVE_TIMEOUT = 120.0
@@ -41,7 +55,9 @@ def _prompt(dossier: dict[str, Any], lang: str) -> str:
         "1. 只根據下列資料推論，資料裡沒有的不要自己補\n"
         "2. 先講最值得注意的一點，再講其餘\n"
         "3. **特別指出彼此矛盾的線索**（例如各來源回報的主機名稱不同、"
-        "監控說離線但剛剛還有 ARP、Wazuh agent 已失聯卻仍掛在這個位址）\n"
+        "監控說離線但剛剛還有 ARP、Wazuh agent 已失聯卻仍掛在這個位址）。"
+        "`conflicts` 是系統以固定規則算出的矛盾清單；主機名稱只差在大小寫、結尾的點，"
+        "或短名稱等於某個 FQDN 的第一段，是同一個名字，不算矛盾\n"
         "4. 不確定就直說不確定，不要用肯定語氣講沒把握的事\n"
         "5. 不要重複列出原始資料，那些畫面上已經有了\n"
     ) if zh else (
@@ -51,11 +67,13 @@ def _prompt(dossier: dict[str, Any], lang: str) -> str:
         "2. Lead with the single most notable point\n"
         "3. **Call out contradictions between clues** (sources disagreeing on hostname, "
         "monitoring saying offline while ARP just saw it, a disconnected agent still "
-        "claiming the address)\n"
+        "claiming the address). `conflicts` is the list the system computed with fixed rules; "
+        "hostnames that differ only in letter case, a trailing dot, or a short name matching "
+        "the first label of an FQDN are the same name, not a contradiction\n"
         "4. Say plainly when something is uncertain\n"
         "5. Do not restate the raw data; it is already on screen\n"
     )
-    from app.services.investigate import infer_role_hints
+    from app.services.investigate import infer_role_hints, prompt_view
 
     hints = infer_role_hints(dossier)
     # 沒有訊號時，連提都不要提 —— 說「見下方角色訊號」卻沒有那個區塊，只是雜訊。
@@ -73,8 +91,10 @@ def _prompt(dossier: dict[str, Any], lang: str) -> str:
         )
         label = "角色訊號（這些樣態對這台是正常的）" if zh else "Role signals (normal for this host)"
         hint_block = rule6 + f"\n{label}:\n" + "\n".join(f"- {h}" for h in hints) + "\n"
+    # 送的是精簡版（每個清單有上限、拿掉空值與內部識別碼）：檔案加強後大了好幾倍，
+    # 超過模型的 num_ctx 不會報錯，只會被靜靜截斷（services/investigate.prompt_view）
     return (f"{rules}{hint_block}\n---\n"
-            f"{json.dumps(dossier, ensure_ascii=False, default=str)}\n")
+            f"{json.dumps(prompt_view(dossier), ensure_ascii=False, default=str)}\n")
 
 
 @router.get("")
@@ -97,20 +117,28 @@ async def investigate(
         raise HTTPException(422, detail="not an IP address") from None
 
     dossier = await collect_dossier(session, user=user, ip=ip.strip())
-    out: dict[str, Any] = {"dossier": dossier, "narrative": None, "narrative_error": None}
+    out: dict[str, Any] = {"dossier": dossier, "narrative": None, "narrative_error": None,
+                           "model": None}
     if not dossier.get("found") or not narrative:
         return out
 
     # 模型不可用不該讓整個功能失效 —— 事實已經在手上了，敘述是加分項
     try:
-        from app.services.ai import raw_chat
-        out["narrative"] = (await raw_chat(
-            session, _prompt(dossier, lang),
+        from app.services.ai import answer_language, interpret_chat
+        # `lang` 之前只做 zh / 非 zh 的二分，日文使用者會拿到英文。語言指示改由
+        # answer_language 產生（與 AI 對話、鑑識卡、規則異動解讀同一個來源）。
+        # 模型走「AI 判讀」設定（沒設＝對話模型）
+        text, out["model"] = await interpret_chat(
+            session, _prompt(dossier, lang) + await answer_language(session, user),
             timeout=NARRATIVE_TIMEOUT, max_output_tokens=NARRATIVE_MAX_TOKENS,
             no_thinking=True,
-        )).strip() or None
+        )
+        out["narrative"] = text.strip() or None
     except Exception as exc:
-        out["narrative_error"] = str(exc)[:300]
+        err = _narrative_error(exc, user)
+        out["narrative_error"] = err["detail"]
+        out["narrative_error_code"] = err["code"]
+        out["narrative_error_params"] = err["params"]
 
     await append_audit(
         session,
@@ -163,7 +191,9 @@ async def narrative_stream(
     )
     await session.commit()
 
-    prompt = _prompt(dossier, lang)
+    from app.services.ai import answer_language
+
+    prompt = _prompt(dossier, lang) + await answer_language(session, user)
 
     async def gen() -> Any:
         started = time.monotonic()
@@ -176,8 +206,8 @@ async def narrative_stream(
 
         import asyncio
 
-        from app.services.ai import raw_chat
-        task = asyncio.create_task(raw_chat(
+        from app.services.ai import interpret_chat
+        task = asyncio.create_task(interpret_chat(
             session, prompt, timeout=NARRATIVE_TIMEOUT,
             max_output_tokens=NARRATIVE_MAX_TOKENS, no_thinking=True, on_chunk=on_chunk))
         try:
@@ -187,15 +217,15 @@ async def narrative_stream(
                 if task.done():
                     break
                 await asyncio.sleep(0.15)
-            text = (await task) or ""
+            text, model = await task
             yield ("data: " + _json.dumps(
-                {"type": "done", "text": text.strip(),
+                {"type": "done", "text": (text or "").strip(), "model": model,
                  "elapsed": round(time.monotonic() - started, 1)},
                 ensure_ascii=False) + "\n\n")
         except Exception as exc:
             # 模型不可用不該讓整個功能失效 —— 事實已經在畫面上了，判讀是加分項
             yield ("data: " + _json.dumps(
-                {"type": "error", "detail": str(exc)[:300]}, ensure_ascii=False) + "\n\n")
+                {"type": "error", **_narrative_error(exc, user)}, ensure_ascii=False) + "\n\n")
 
     return StreamingResponse(
         gen(), media_type="text/event-stream",

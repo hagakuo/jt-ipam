@@ -1,4 +1,6 @@
+import type { ServerMessage } from "@/utils/wsError";
 import { apiClient } from "@/api/client";
+import { LONG_OP_TIMEOUT_MS } from "@/api/integrations";
 
 export interface GraylogDsv { enabled: boolean; fmt: string; path: string; token: string; }
 export async function getGraylogDsv(): Promise<GraylogDsv> {
@@ -137,6 +139,7 @@ export interface LLMConfig {
   /** 金鑰只回「有沒有設」，本身不回傳到瀏覽器。 */
   api_key_set?: boolean;
   embedding_model: string;
+  embedding_base_url: string;
   chat_model: string;
   timeout: number;
   num_ctx?: number | null;
@@ -144,8 +147,16 @@ export interface LLMConfig {
   mcp_api_key_set: boolean;
   ai_audit_enabled: boolean;
   ai_audit_times: string[];
+  ai_audit_frequency: string;
+  ai_audit_weekdays: number[];
+  ai_audit_month_day: number;
   ai_audit_model: string | null;
   ai_audit_num_ctx: number | null;
+  // AI 判讀（未授權 IP 判讀／IP 調查／防火牆規則異動解讀）；null＝沿用對話模型
+  ai_interpret_model: string | null;
+  ai_interpret_num_ctx: number | null;
+  // AI 對話允許模型先思考（false＝每一輪都送關閉思考的參數）
+  chat_thinking: boolean;
   server_timezone: string;
 }
 
@@ -155,14 +166,21 @@ export interface LLMConfigPatch {
   url?: string;
   api_key?: string;
   embedding_model?: string;
+  embedding_base_url?: string;
   chat_model?: string;
   timeout?: number;
   num_ctx?: number | null;
   mcp_external_enabled?: boolean;
   ai_audit_enabled?: boolean;
   ai_audit_times?: string[];
+  ai_audit_frequency?: string;
+  ai_audit_weekdays?: number[];
+  ai_audit_month_day?: number;
   ai_audit_model?: string;
   ai_audit_num_ctx?: number;
+  ai_interpret_model?: string;
+  ai_interpret_num_ctx?: number;
+  chat_thinking?: boolean;
 }
 
 export async function getLLMConfig(): Promise<LLMConfig> {
@@ -194,8 +212,15 @@ export interface OllamaModel {
   parameter_size: string | null;
 }
 
-export async function listOllamaModels(): Promise<{ models: OllamaModel[]; error?: string }> {
-  const { data } = await apiClient.get<{ models: OllamaModel[]; error?: string }>(
+/** `error_detail` 是結構化訊息（代碼＋參數），句子由前端組；`error` 是舊欄位的退路。 */
+export interface OllamaModelsResult {
+  models: OllamaModel[];
+  error?: string;
+  error_detail?: ServerMessage;
+}
+
+export async function listOllamaModels(): Promise<OllamaModelsResult> {
+  const { data } = await apiClient.get<OllamaModelsResult>(
     "/api/v1/system/llm/models",
   );
   return data;
@@ -203,6 +228,8 @@ export async function listOllamaModels(): Promise<{ models: OllamaModel[]; error
 
 export interface VersionInfo {
   current: string;
+  /** SPDX 授權識別字（來自後端；與 pyproject / package.json / LICENSE 綁在一起） */
+  license?: string;
   python: string;
   packages: Record<string, string | null>;
   frontend?: Record<string, string | null>;
@@ -213,8 +240,52 @@ export interface VersionInfo {
     node: string | null;
     postgres: string | null;
     /** 選用的作業系統相依：功能存在但主機不一定裝了對應執行檔 */
-    optional_tools?: Record<string, { present: boolean; package: string; used_by: string }>;
+    optional_tools?: Record<string, {
+      present: boolean; package: string; used_by: string; fallback?: boolean; version?: string | null;
+      /** 要管理員自己設定才會有（GeoIP 的 MaxMind 帳號）：沒設定不算缺少 */
+      opt_in?: boolean;
+    }>;
+    /** 必要相依（guacd）：沒裝或沒在跑，對應功能就不能正常運作 */
+    required_tools?: Record<string, {
+      present: boolean; running: boolean; version: string | null; package: string; used_by: string;
+      protocols?: Record<string, boolean>; address?: string; error?: string;
+    }>;
   };
+  /** Recog 指紋資料庫（選用；探測用） */
+  recog?: RecogStatus | null;
+}
+
+/** Recog 指紋資料庫（rapid7/recog）：安裝／升級時下載，之後每週自動檢查新版 */
+export interface RecogStatus {
+  installed: boolean;
+  release: string | null;
+  databases: number;
+  fingerprints: number;
+  skipped: number;
+  updated_at: string | null;
+  checked_at: string | null;
+  last_ok_at: string | null;
+  latest: string | null;
+  error: string | null;
+  project_url: string;
+  license: string;
+}
+/** Recog 頁：每個指紋檔（例如 http_servers.xml）與它的筆數 */
+export interface RecogDbRow { key: string; protocol: string | null; database_type: string | null; fingerprints: number }
+export async function getRecogStatus(): Promise<RecogStatus & { database_list: RecogDbRow[] }> {
+  const { data } = await apiClient.get("/api/v1/system/recog/status");
+  return data;
+}
+export interface RecogUpdateResult {
+  result: { status: "up_to_date" | "updated" | "error"; release?: string | null; previous?: string | null;
+            latest?: string; fingerprints?: number; error?: string };
+  status: RecogStatus;
+}
+/** 立即檢查新版（有就下載安裝）；下載＋匯入要十幾秒，用長逾時 */
+export async function updateRecog(): Promise<RecogUpdateResult> {
+  const { data } = await apiClient.post<RecogUpdateResult>("/api/v1/system/recog/update", null,
+    { timeout: LONG_OP_TIMEOUT_MS });
+  return data;
 }
 
 export interface LatestVersion {
@@ -235,18 +306,63 @@ export async function checkLatestVersion(): Promise<LatestVersion> {
   return data;
 }
 
-// 連線管理資安設定（目前：RDP 控制端貼上文字到被控端）
-export interface ConsoleSecurity { rdp_clipboard_paste: boolean }
+// 連線管理資安設定（RDP 控制端貼上文字到被控端、RDP 連線引擎）
+export type RdpEngine = "aardwolf" | "freerdp" | "guacd";
+/** VNC／SSH 主控台的引擎：builtin＝一路以來的實作；guacd＝jt-ipam-guacd 服務 */
+export type ConsoleEngine = "builtin" | "guacd";
+export interface ConsoleSecurity {
+  rdp_clipboard_paste: boolean;
+  rdp_engine: RdpEngine;
+  // 唯讀：這台機器實際上能不能用 FreeRDP 引擎，缺什麼、怎麼裝（由後端算）
+  freerdp_available?: boolean;
+  /** aardwolf（預設引擎與 VNC 主控台）有沒有裝起來，以及伺服器的 Python 版本（issue #39） */
+  aardwolf_available?: boolean;
+  python_version?: string;
+  freerdp_missing?: string[];
+  freerdp_install_cmd?: string;
+  vnc_engine?: ConsoleEngine;
+  ssh_engine?: ConsoleEngine;
+  /** 唯讀：guacd 服務有沒有在跑、哪些協定的外掛載得到（由後端實際連一次問出來） */
+  guacd_available?: boolean;
+  guacd_protocols?: Record<string, boolean>;
+  guacd_address?: string;
+  guacd_error?: string;
+  guacd_install_cmd?: string;
+  /** SFTP 單檔上下傳上限（MB），預設 100 */
+  sftp_max_file_mb?: number;
+  /** 允許主控台經由掃描代理中繼（issue #24 階段二，預設關） */
+  console_relay?: boolean;
+}
+/** PUT 只送得改的欄位；可用性是伺服器算出來的事實，送回去會被擋（422）。 */
+export type ConsoleSecurityPatch = Pick<ConsoleSecurity, "rdp_clipboard_paste" | "rdp_engine">
+  & Partial<Pick<ConsoleSecurity, "vnc_engine" | "ssh_engine" | "sftp_max_file_mb" | "console_relay">>;
+
+/** SFTP 傳輸路徑測試的票證（管理者限定）；ws_path 刻意跟 SFTP 是同一條路徑 */
+export interface SftpProbeTicket { ticket: string; ws_path: string; up_bytes: number; down_bytes: number; ttl: number }
+export async function requestSftpProbeTicket(): Promise<SftpProbeTicket> {
+  const { data } = await apiClient.post<SftpProbeTicket>("/api/v1/system/sftp-probe/ticket");
+  return data;
+}
 export async function getConsoleSecurity(): Promise<ConsoleSecurity> {
   const { data } = await apiClient.get<ConsoleSecurity>("/api/v1/system/console-security");
   return data;
 }
-export async function setConsoleSecurity(p: ConsoleSecurity): Promise<ConsoleSecurity> {
+export async function setConsoleSecurity(p: ConsoleSecurityPatch): Promise<ConsoleSecurity> {
   const { data } = await apiClient.put<ConsoleSecurity>("/api/v1/system/console-security", p);
   return data;
 }
 
 // 介面顯示設定（系統層；目前：異動記錄淡化天數）
+export interface DevicePortFilter { filter_pseudo: boolean; ignore_patterns: string[] }
+export async function getDevicePortFilter(): Promise<DevicePortFilter> {
+  const { data } = await apiClient.get<DevicePortFilter>("/api/v1/system/device-port-filter");
+  return data;
+}
+export async function setDevicePortFilter(p: DevicePortFilter): Promise<DevicePortFilter> {
+  const { data } = await apiClient.put<DevicePortFilter>("/api/v1/system/device-port-filter", p);
+  return data;
+}
+
 export interface UiDisplay { change_log_dim_days: number }
 export async function getUiDisplay(): Promise<UiDisplay> {
   const { data } = await apiClient.get<UiDisplay>("/api/v1/system/ui-display");
@@ -344,6 +460,28 @@ export interface EmbeddingCheck {
 export async function checkEmbedding(): Promise<EmbeddingCheck> {
   const { data } = await apiClient.get<EmbeddingCheck>("/api/v1/ai/embedding-check");
   return data;
+}
+
+/** 思考檢查：用 AI 巡檢／判讀同一套「關閉思考」參數問一句極短的話，看模型照不照做 */
+export interface ThinkingCheck {
+  role: "chat" | "audit" | "interpret";
+  model: string;
+  ok: boolean;
+  thinking: boolean | null;
+  reasoning_chars: number;
+  think_tag: boolean;
+  empty_answer: boolean;
+  answer: string;
+  seconds: number;
+  rejected_params: string[];
+  error: string | null;
+}
+
+export async function checkThinking(): Promise<ThinkingCheck[]> {
+  // 最多三個模型、每個最多等 2 分鐘（後端上限），比全域預設的逾時長得多
+  const { data } = await apiClient.get<{ results: ThinkingCheck[] }>("/api/v1/ai/thinking-check",
+    { timeout: LONG_OP_TIMEOUT_MS * 2 });
+  return data.results;
 }
 
 export interface ReindexResult {

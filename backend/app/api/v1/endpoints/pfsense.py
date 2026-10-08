@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.ui_error import detail_of
 from app.models.pfsense import PfSenseFirewall, PfSenseSyncedAlias
 from app.schemas.base import StrictModel
 from app.services import pfsense as svc
@@ -46,6 +47,8 @@ class PfSenseRead(StrictModel):
     sync_rules: bool
     expose_dsv: bool
     scope_subnet_ids: list[uuid.UUID] | None = None
+    # DHCP 有、IPAM 沒有的位址是否自動建立（預設關閉；風險見 models 註解）
+    auto_create_ips: bool | None = None
     description: str | None = None
     alias_count: int = 0
     rule_count: int = 0
@@ -69,6 +72,8 @@ class PfSenseCreate(StrictModel):
     sync_rules: bool = False
     expose_dsv: bool = False
     scope_subnet_ids: list[uuid.UUID] | None = None
+    # DHCP 有、IPAM 沒有的位址是否自動建立（預設關閉；風險見 models 註解）
+    auto_create_ips: bool | None = None
     description: str | None = None
 
 
@@ -86,6 +91,8 @@ class PfSenseUpdate(StrictModel):
     sync_rules: bool | None = None
     expose_dsv: bool | None = None
     scope_subnet_ids: list[uuid.UUID] | None = None
+    # DHCP 有、IPAM 沒有的位址是否自動建立（預設關閉；風險見 models 註解）
+    auto_create_ips: bool | None = None
     description: str | None = None
 
 
@@ -136,6 +143,7 @@ async def create_firewall(
         sync_dhcp=payload.sync_dhcp, sync_dhcp_ranges=payload.sync_dhcp_ranges,
         sync_arp=payload.sync_arp, sync_aliases=payload.sync_aliases,
         scope_subnet_ids=payload.scope_subnet_ids, description=payload.description,
+        auto_create_ips=bool(payload.auto_create_ips),
     )
     session.add(fw)
     await append_audit(
@@ -194,13 +202,9 @@ async def delete_firewall(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> None:
     fw = await _get_or_404(session, fw_id)
-    # dhcp_pool_ranges 已無外鍵 cascade → 自行清掉這台寫的列（不碰其他來源）
-    from sqlalchemy import delete as _delete
-
-    from app.models.dhcp import DHCPPoolRange
-    await session.execute(_delete(DHCPPoolRange).where(
-        DHCPPoolRange.source_type == "pfsense", DHCPPoolRange.source_id == fw_id,
-    ))
+    # 它寫進共用表的發放範圍／主機名稱／租約／固定分配／NAT／VPN 通道一併收回（沒有外鍵會跟著刪）
+    from app.services.integration_cleanup import forget_instance
+    await forget_instance(session, source="pfsense", source_id=fw.id)
     await session.delete(fw)
     await append_audit(
         session, actor_user_id=str(user.id),
@@ -220,24 +224,34 @@ async def test_firewall(
     try:
         info = await svc.test_connection(fw)
     except svc.PfSenseError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "pfsense_error")) from exc
     return {"ok": True, "version": info}
 
 
 @router.post("/{fw_id}/sync")
 async def sync_firewall(
-    fw_id: uuid.UUID, session: Annotated[AsyncSession, Depends(get_session)],
+    fw_id: uuid.UUID, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     fw = await _get_or_404(session, fw_id)
     try:
         counts = await svc.sync_instance(session, fw)
+        # 手動觸發的同步要留紀錄（其他整合本來就有記，這裡漏了）
+        await append_audit(
+            session, actor_user_id=str(user.id),
+            actor_ip=request.client.host if request.client else None,
+            actor_user_agent=request.headers.get("user-agent"),
+            object_type="pfsense_firewall", object_id=str(fw.id), action="sync",
+            diff=counts if isinstance(counts, dict) else {"result": str(counts)[:500]},
+            request_id=getattr(request.state, "request_id", None),
+        )
         await session.commit()
     except Exception as exc:  # 失敗寫 last_error 後回 502
         await session.rollback()
         fw = await _get_or_404(session, fw_id)
         fw.last_error = str(exc)[:500]
         await session.commit()
-        raise HTTPException(502, detail=str(exc)[:300]) from exc
+        raise HTTPException(502, detail=detail_of(exc, "pfsense_error")) from exc
     return {"ok": True, "counts": counts}
 
 
@@ -259,7 +273,7 @@ async def get_nat(
     try:
         return await svc.fetch_nat(fw)
     except svc.PfSenseError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "pfsense_error")) from exc
 
 
 @view_router.get("/{fw_id}/aliases")

@@ -8,6 +8,7 @@ import IPAddressEditModal from "@/components/IPAddressEditModal.vue";
 import UptimeBar from "@/components/UptimeBar.vue";
 import { useScanProbes, probeLabel } from "@/api/scanProbes";
 import type { IPAddress } from "@/types";
+import { openInNewTab } from "@/utils/openInNewTab";
 
 const route = useRoute();
 const router = useRouter();
@@ -23,13 +24,13 @@ function sshHref(): string {
 }
 function openSftp() {
   if (!addr.value) return;
-  window.open(router.resolve({ name: "sftp-console",
-                              params: { id: addr.value.id } }).href, "_blank");
+  openInNewTab(router.resolve({ name: "sftp-console",
+                              params: { id: addr.value.id } }).href);
 }
 // 主按鈕 → 新分頁；下拉 → 新視窗（彈出）
 function openSsh() {
   if (!addr.value) return;
-  window.open(sshHref(), "_blank");
+  openInNewTab(sshHref());
 }
 function openSshPopout() {
   if (!addr.value) return;
@@ -41,7 +42,7 @@ function rdpHref(): string {
 }
 function openRdp() {
   if (!addr.value) return;
-  window.open(rdpHref(), "_blank");
+  openInNewTab(rdpHref());
 }
 function openRdpPopout() {
   if (!addr.value) return;
@@ -53,7 +54,7 @@ function vncHref(): string {
 }
 function openVnc() {
   if (!addr.value) return;
-  window.open(vncHref(), "_blank");
+  openInNewTab(vncHref());
 }
 function openVncPopout() {
   if (!addr.value) return;
@@ -64,7 +65,7 @@ function novncHref(): string {
 }
 function openNovnc() {
   if (!addr.value) return;
-  window.open(novncHref(), "_blank");
+  openInNewTab(novncHref());
 }
 function openNovncPopout() {
   if (!addr.value) return;
@@ -75,11 +76,22 @@ function bmcHref(): string {
 }
 function openBmc() {
   if (!addr.value) return;
-  window.open(bmcHref(), "_blank");
+  openInNewTab(bmcHref());
 }
 function openBmcPopout() {
   if (!addr.value) return;
   window.open(bmcHref(), `bmc-${addr.value.id}`, "width=1040,height=680");
+}
+
+// 相容 RustDesk 的網頁連線：新分頁（與其他主控台一樣）
+function openRustDesk() {
+  if (!addr.value) return;
+  openInNewTab(router.resolve({ name: "rustdesk-console", params: { id: addr.value.id } }).href);
+}
+// 檔案傳輸（附錄 J.6）：另一條連線，也是新分頁
+function openRustDeskFiles() {
+  if (!addr.value) return;
+  openInNewTab(router.resolve({ name: "rustdesk-files", params: { id: addr.value.id } }).href);
 }
 
 // 把探測 key 轉成顯示 label（比不到目錄就直接顯示 key）
@@ -132,6 +144,8 @@ watch(() => route.params.id, (id) => { if (id) load(String(id)); });
         @novnc-popout="openNovncPopout"
         @bmc-open="openBmc"
         @bmc-popout="openBmcPopout"
+        @rustdesk-open="openRustDesk"
+        @rustdesk-files-open="openRustDeskFiles"
       />
 
       <!-- 存活狀況長條圖：由 effective_status 的轉換記錄重建每日狀態 -->

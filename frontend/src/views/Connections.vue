@@ -8,7 +8,7 @@ import {
   NSelect, NTooltip, useMessage, type DataTableColumns,
 } from "naive-ui";
 import { listConnectionTargets } from "@/api/rdp";
-import { TerminalIcon, DisplayIcon, VncIcon, NoVncIcon, OpenNewWindowIcon, RefreshIcon, SearchIcon } from "@/icons";
+import { TerminalIcon, DisplayIcon, VncIcon, NoVncIcon, OpenNewWindowIcon, RefreshIcon, SearchIcon, RustDeskIcon } from "@/icons";
 import { autoSort } from "@/composables/useTableSort";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { useTablePagination } from "@/composables/useTablePagination";
@@ -22,8 +22,10 @@ import OsCell from "@/components/OsCell.vue";
 import { renderIcon } from "@/icons";
 import type { IPAddress } from "@/types";
 import { apiErrMsg } from "@/api/client";
+import { openInNewTab } from "@/utils/openInNewTab";
+import { deviceKindColumn } from "@/utils/deviceKindCell";
 
-const { t } = useI18n();
+const { t, te } = useI18n();
 const router = useRouter();
 const msg = useMessage();
 const links = useEntityLinks(router);
@@ -37,7 +39,7 @@ const { query, filtered } = useTableQuickFilter(rows);
 // 工具列篩選：連線類型（SSH / RDP）＋ OS
 const typeFilter = ref<string | null>(null);
 const osFilter = ref<string | null>(null);
-const typeOptions = [{ label: "SSH", value: "ssh" }, { label: "RDP (Beta)", value: "rdp" }, { label: "VNC (Beta)", value: "vnc" }, { label: "noVNC/xterm (PVE)", value: "novnc" }, { label: "BMC SOL (Beta)", value: "bmc" }];
+const typeOptions = [{ label: "SSH", value: "ssh" }, { label: "RDP", value: "rdp" }, { label: "VNC", value: "vnc" }, { label: "noVNC/xterm (PVE)", value: "novnc" }, { label: "BMC SOL (Beta)", value: "bmc" }, { label: "RustDesk", value: "rustdesk" }];
 const osOptions = computed(() => {
   const seen = new Map<string, string>();
   for (const r of rows.value) {
@@ -54,6 +56,7 @@ const displayRows = computed(() =>
     if (typeFilter.value === "vnc" && !r.vnc_available) return false;
     if (typeFilter.value === "novnc" && !r.novnc_available) return false;
     if (typeFilter.value === "bmc" && !r.bmc_available) return false;
+    if (typeFilter.value === "rustdesk" && !r.rustdesk_web_available) return false;
     return true;
   }));
 
@@ -63,7 +66,8 @@ const elWidth = ref(99999);
 // 門檻隨「列中最多連線種類」放大：一列有越多種連線（SSH/RDP/VNC），帶文字按鈕越寬，需要更多容器寬度
 const compact = computed(() => {
   const mp = Math.max(1, ...rows.value.map((r) =>
-    (r.ssh_available ? 1 : 0) + (r.rdp_available ? 1 : 0) + (r.vnc_available ? 1 : 0) + (r.novnc_available ? 1 : 0) + (r.bmc_available ? 1 : 0)));
+    (r.ssh_available ? 1 : 0) + (r.rdp_available ? 1 : 0) + (r.vnc_available ? 1 : 0) + (r.novnc_available ? 1 : 0) + (r.bmc_available ? 1 : 0)
+    + (r.rustdesk_web_available ? 1 : 0)));
   return elWidth.value < 740 + mp * 115;
 });
 let ro: ResizeObserver | null = null;
@@ -71,7 +75,7 @@ let ro: ResizeObserver | null = null;
 function sshHref(row: IPAddress) {
   return router.resolve({ name: "ssh-console", params: { id: row.id } }).href;
 }
-function openTab(row: IPAddress) { window.open(sshHref(row), "_blank"); }
+function openTab(row: IPAddress) { openInNewTab(sshHref(row)); }
 function openWin(row: IPAddress) { window.open(sshHref(row), `ssh-${row.id}`, "width=960,height=640"); }
 const sshRowMenu = [{ label: t("ssh.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) }];
 function onRowMenu(key: string, row: IPAddress) { if (key === "popout") openWin(row); }
@@ -79,7 +83,7 @@ function onRowMenu(key: string, row: IPAddress) { if (key === "popout") openWin(
 function rdpHref(row: IPAddress) {
   return router.resolve({ name: "rdp-console", params: { id: row.id } }).href;
 }
-function openRdpTab(row: IPAddress) { window.open(rdpHref(row), "_blank"); }
+function openRdpTab(row: IPAddress) { openInNewTab(rdpHref(row)); }
 function openRdpWin(row: IPAddress) { window.open(rdpHref(row), `rdp-${row.id}`, "width=1320,height=900"); }
 const rdpRowMenu = [{ label: t("rdp.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) }];
 function onRdpRowMenu(key: string, row: IPAddress) { if (key === "popout") openRdpWin(row); }
@@ -87,7 +91,7 @@ function onRdpRowMenu(key: string, row: IPAddress) { if (key === "popout") openR
 function vncHref(row: IPAddress) {
   return router.resolve({ name: "vnc-console", params: { id: row.id } }).href;
 }
-function openVncTab(row: IPAddress) { window.open(vncHref(row), "_blank"); }
+function openVncTab(row: IPAddress) { openInNewTab(vncHref(row)); }
 function openVncWin(row: IPAddress) { window.open(vncHref(row), `vnc-${row.id}`, "width=1320,height=900"); }
 const vncRowMenu = [{ label: t("vnc.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) }];
 function onVncRowMenu(key: string, row: IPAddress) { if (key === "popout") openVncWin(row); }
@@ -95,7 +99,7 @@ function onVncRowMenu(key: string, row: IPAddress) { if (key === "popout") openV
 function novncHref(row: IPAddress) {
   return router.resolve({ name: "novnc-console", params: { id: row.id } }).href;
 }
-function openNovncTab(row: IPAddress) { window.open(novncHref(row), "_blank"); }
+function openNovncTab(row: IPAddress) { openInNewTab(novncHref(row)); }
 function openNovncWin(row: IPAddress) { window.open(novncHref(row), `novnc-${row.id}`, "width=1320,height=900"); }
 const novncRowMenu = [{ label: t("vnc.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) }];
 function onNovncRowMenu(key: string, row: IPAddress) { if (key === "popout") openNovncWin(row); }
@@ -103,10 +107,19 @@ function onNovncRowMenu(key: string, row: IPAddress) { if (key === "popout") ope
 function bmcHref(row: IPAddress) {
   return router.resolve({ name: "bmc-console", params: { id: row.id } }).href;
 }
-function openBmcTab(row: IPAddress) { window.open(bmcHref(row), "_blank"); }
+function openBmcTab(row: IPAddress) { openInNewTab(bmcHref(row)); }
 function openBmcWin(row: IPAddress) { window.open(bmcHref(row), `bmc-${row.id}`, "width=1040,height=680"); }
 const bmcRowMenu = [{ label: t("vnc.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) }];
 function onBmcRowMenu(key: string, row: IPAddress) { if (key === "popout") openBmcWin(row); }
+
+// 相容 RustDesk 的網頁連線（新分頁）
+function rustdeskHref(row: IPAddress) {
+  return router.resolve({ name: "rustdesk-console", params: { id: row.id } }).href;
+}
+function openRustDeskTab(row: IPAddress) { openInNewTab(rustdeskHref(row)); }
+function openRustDeskWin(row: IPAddress) { window.open(rustdeskHref(row), `rustdesk-${row.id}`, "width=1320,height=900"); }
+const rustdeskRowMenu = [{ label: t("vnc.open_popout"), key: "popout", icon: renderIcon(OpenNewWindowIcon) }];
+function onRustDeskRowMenu(key: string, row: IPAddress) { if (key === "popout") openRustDeskWin(row); }
 
 async function refresh() {
   loading.value = true;
@@ -125,20 +138,23 @@ onMounted(() => {
 });
 onBeforeUnmount(() => { ro?.disconnect(); ro = null; });
 
-const { visibleKeys, setVisible, reset, isVisible } = useColumnPrefs(
+const { visibleKeys, setVisible, reset, isVisible, order, setOrder, orderColumns } = useColumnPrefs(
   "connections",
-  ["ip", "hostname", "unit", "device", "os", "status", "actions"],
-  ["ip", "hostname", "unit", "device", "os", "status", "actions"],
+  // MAC 與廠商在選單裡有、卻沒列進全部欄位：勾了會被濾掉，從來顯示不出來（預設仍不顯示）
+  ["status", "ip", "hostname", "unit", "device", "device_kind", "os", "mac", "mac_vendor", "actions"],
+  ["status", "ip", "hostname", "unit", "device", "device_kind", "os", "actions"],
 );
+// 選單順序與表格欄位一致：拖拉排序以選單上看到的順序為準
 const pickerCols = [
+  { key: "status", label: t("connections.col_status") },
   { key: "ip", label: t("connections.col_ip") },
   { key: "hostname", label: t("connections.col_hostname") },
   { key: "unit", label: t("connections.col_unit") },
   { key: "device", label: t("connections.col_device") },
+  { key: "device_kind", label: t("cols.device_kind") },
   { key: "os", label: t("connections.col_os") },
   { key: "mac", label: t("connections.col_mac") },
   { key: "mac_vendor", label: t("connections.col_mac_vendor") },
-  { key: "status", label: t("connections.col_status") },
 ];
 
 const allColumns = computed<DataTableColumns<IPAddress>>(() => {
@@ -159,6 +175,8 @@ const allColumns = computed<DataTableColumns<IPAddress>>(() => {
       render: (r) => labelFor(r.customer_id) || "—" },
     { title: t("connections.col_device"), key: "device", sorter: "default",
       render: (r) => (r.device_id ? links.device(r.device_id, r.device_name) : "—") },
+    // 掃描代理判讀出的設備類型（與 IP 清單同一欄的樣子，滑過看型號）
+    deviceKindColumn(t, te) as any,
     { title: t("connections.col_os"), key: "os", sorter: "default", minWidth: 190,
       render: (r) => h(OsCell, { family: r.os_family, guess: r.os_guess, source: r.os_source }) },
     { title: t("connections.col_mac"), key: "mac", sorter: "default", width: 150,
@@ -213,13 +231,16 @@ const allColumns = computed<DataTableColumns<IPAddress>>(() => {
             }, "SOL"),
           ]));
         }
+        if (r.rustdesk_web_available)
+          groups.push(grp("rustdesk", RustDeskIcon, "RustDesk", t("rustdesk.web_connect"), () => openRustDeskTab(r),
+                          rustdeskRowMenu, (k) => onRustDeskRowMenu(k, r)));
         return h("div", { style: "display:flex;gap:6px;flex-wrap:nowrap" }, groups);
       },
     },
   ];
 });
 const columns = computed(() =>
-  autoSort(allColumns.value.filter((c) => isVisible((c as any).key))));
+  autoSort(orderColumns(allColumns.value.filter((c) => isVisible((c as any).key)))));
 </script>
 
 <template>
@@ -244,7 +265,8 @@ const columns = computed(() =>
                 :consistent-menu-width="false"
                 :placeholder="t('connections.filter_os')" style="width: 170px" />
       <ColumnPicker :all="pickerCols" :visible="visibleKeys"
-                    @update:visible="setVisible" @reset="reset" />
+                    @update:visible="setVisible" @reset="reset"
+                    :order="order" @update:order="setOrder" />
       <ExportButton :columns="allColumns" :rows="displayRows" filename="ssh-connections"
                     :title="t('nav.connections')" />
       <n-button size="small" @click="refresh">

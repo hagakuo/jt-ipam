@@ -16,6 +16,8 @@ import pytest
 from app.mcp.tools import ADMIN_TOOLS, TOOLS
 from app.services import ai_audit as aa
 
+from tests.route_walk import iter_routes
+
 
 def test_valid_output_is_parsed():
     out = aa.parse_findings(
@@ -153,8 +155,8 @@ def _route_deps(path: str, method: str) -> set[str]:
     annotations` 會讓型別註記變成字串，靠文字比對會誤判（這個專案的 RBAC 稽核踩過）。
     """
     from app.main import app
-    for r in app.routes:
-        if getattr(r, "path", None) == path and method in getattr(r, "methods", set()):
+    for full_path, r in iter_routes(app):
+        if full_path == path and method in (getattr(r, "methods", None) or set()):
             out: set[str] = set()
             stack = [r.dependant]
             while stack:
@@ -1010,3 +1012,59 @@ def test_snapshot_gives_the_model_names_not_uuids():
     import inspect
     src = inspect.getsource(aa._collect)
     assert '"id": str(i)' not in src, "裝置/子網路不應該再把 UUID 送給模型"
+
+
+# ─────────────────── 用語替換不可以跨詞誤轉；欄位原名要加註該語言的名稱（2026-09-28 使用者回報） ───────────────────
+
+@pytest.mark.parametrize(("raw", "want"), [
+    ("備份網路區段內存在個人行動裝置", "備份網路區段內存在個人行動裝置"),   # 內＋存在，不是「內存」
+    ("伺服器內存不足", "伺服器記憶體不足"),
+    ("生產環境中存在測試主機", "正式環境中存在測試主機"),
+    ("位於生產網路區段", "位於正式網路區段"),
+    ("未登錄於 IPAM 的主機", "未登錄於 IPAM 的主機"),                   # 台灣的「登錄」＝登記，不是登入
+    ("該 IP 所在線路", "該 IP 所在線路"),
+    ("裝置目前在線", "裝置目前上線"),
+])
+def test_zh_tw_fixup_respects_word_boundaries(raw, want) -> None:
+    assert aa.zh_tw_fixup(raw) == want
+
+
+def test_field_names_are_annotated_in_chinese() -> None:
+    raw = "state 為 active，但 last_seen_scanner 和 last_seen_librenms 均為 null"
+    assert aa.annotate_fields(raw, "zh-TW") == (
+        "狀態（state）為使用中（active），但最後出現（掃描代理，last_seen_scanner）"
+        "和最後出現（LibreNMS，last_seen_librenms）均為空值（null）")
+
+
+def test_already_annotated_fields_are_left_alone() -> None:
+    raw = "狀態（state）為使用中（active）"
+    assert aa.annotate_fields(raw, "zh-TW") == raw
+
+
+def test_words_inside_names_and_hosts_are_not_touched() -> None:
+    raw = "主機 active-dir01 與 gw-01.example.net 的 status 為 offline"
+    assert aa.annotate_fields(raw, "zh-TW") == "主機 active-dir01 與 gw-01.example.net 的實際狀態（status）為離線（offline）"
+
+
+def test_field_names_follow_the_output_language() -> None:
+    assert aa.annotate_fields("state が active", "ja-JP") == "状態（state）が使用中（active）"
+    # 英文本身就是英文字，只替沒有意義的欄位代碼（底線命名）加註
+    assert aa.annotate_fields("last_seen_scanner is null and the state is active", "en-US") == \
+        "last seen (scanner, last_seen_scanner) is null and the state is active"
+
+
+def test_parse_annotates_in_the_run_language() -> None:
+    raw = '{"findings":[{"severity":"low","category":"stale","title":"state 為 active",' \
+          '"detail":"last_seen_scanner 為 null","recommendation":null,"evidence":{"ips":[]}}]}'
+    out = aa._parse(raw, locale="zh-TW")
+    assert out[0]["title"] == "狀態（state）為使用中（active）"
+    assert out[0]["detail"] == "最後出現（掃描代理，last_seen_scanner）為空值（null）"
+
+
+def test_prompt_tells_the_model_the_on_screen_field_names() -> None:
+    """只給範例時模型會自己取名（把 status 也叫「狀態」，跟 state 撞名）。"""
+    zh = aa._language_instruction("zh-TW")
+    assert "status＝實際狀態" in zh
+    assert "last_seen_scanner＝最後出現（掃描代理）" in zh
+    assert "status = " not in aa._language_instruction("ja-JP")
+    assert "状態" in aa._language_instruction("ja-JP")

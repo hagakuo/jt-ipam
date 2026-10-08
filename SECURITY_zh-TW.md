@@ -1,13 +1,23 @@
 # 安全政策
 
-安全是 jt-ipam 的 day-one 需求。每個模組與每個 pull request 都會依據
-[`docs/SECURITY.md`](docs/SECURITY.md) 所記錄的 **OWASP Top 10:2025** 清單逐項檢核。
+安全是 jt-ipam 的 day-one 需求：每個模組與每個 pull request 都會依 **OWASP Top 10:2025**
+逐項檢核，而且每一版發布前都必須通過 OWASP ZAP 基準掃描且零新增發現。
 
-> 英文版見 [SECURITY.md](SECURITY.md)。
+> 英文版見 [SECURITY.md](SECURITY.md)；日文版見 [SECURITY_ja.md](SECURITY_ja.md)。
 
 ## 支援版本
 
-最新發布的 `0.5.x` 系列會收到安全修補。較舊的系列不再維護 — 請升級。
+| 版本 | 支援範圍 |
+|---|---|
+| `0.6.x`（目前） | 一般修正與安全修補 |
+| `0.5.x` | 僅安全修補 |
+| `0.4.x` 以前 | 不再維護，請升級 |
+
+自 `v0.6.8` 起每個版本都會打 tag（`vX.Y.Z`）。更早的版本沒有 tag；若您正在使用，
+建議升級而不是釘在那個版本上。
+
+由於發版頻繁，「支援」指的是該系列**最新的修補版**：修正會以新的修補版發布，
+不會回頭補進舊的修補版。
 
 ## 回報漏洞
 
@@ -36,9 +46,9 @@
 ### CSP `style-src 'unsafe-inline'`（ZAP 規則 10055 評為 *Medium*）
 
 - **為何無法移除：** 前端是 Vue 3 + Naive UI。Vue 的 `v-show`、動態 `:style` 綁定、Naive UI 浮動元件的定位都會
-  產生 inline `style="…"` **屬性**。CSP **無法**用 nonce 或 hash 放行 inline style *屬性*（nonce／hash 只對
-  `<style>` 區塊有效），而一旦加了 nonce，瀏覽器就會**忽略** `'unsafe-inline'` → 全站 `v-show`／`:style` 會壞。
-  這是 CSP 層級的先天限制，所有主流 Vue／React 元件庫（MUI、Angular Material…）皆然。
+  產生 inline `style="…"` **屬性**。CSP **無法**用 nonce 或 hash 放行 inline style *屬性*（nonce/hash 只對
+  `<style>` 區塊有效），而一旦加了 nonce，瀏覽器就會**忽略** `'unsafe-inline'` → 全站 `v-show`/`:style` 會壞。
+  這是 CSP 層級的先天限制，所有主流 Vue/React 元件庫（MUI、Angular Material…）皆然。
 - **為何實際風險低（補償控制）：**
   - `script-src 'self'`（script 無 `unsafe-inline`）→ 注入的 CSS **無法執行 JavaScript**。
   - `img-src 'self' data: blob:`、`connect-src 'self'` → 注入的 CSS **無法外洩資料**（常見的 attribute-selector
@@ -51,6 +61,6 @@
 ## 發版關卡
 
 每次發版前都會跑 ZAP 掃描（HTTP 及經對外反向代理），要求**沒有上述基準以外的任何發現**
-（`deploy/zap-baseline.conf`）—— 即零新增 High／Medium／Low。
+（`deploy/zap-baseline.conf`），即零新增 High/Medium/Low。
 
 若不確定某件事是否屬安全問題,請私下回報,我們會協助分級判斷。

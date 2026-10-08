@@ -32,7 +32,7 @@ class JtIpamPlugin:
     name: str
     version: str = "0.0.0"
     description: str | None = None
-    # 應用啟動時呼叫；可在此 include_router、註冊 GraphQL types、開排程等
+    # 應用啟動時呼叫；可在此 include_router、開排程等
     on_load: Callable[[FastAPI], None] | None = None
     # 應用關閉時呼叫
     on_shutdown: Callable[[FastAPI], None] | None = None

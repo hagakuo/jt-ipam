@@ -1,4 +1,4 @@
-"""FortiGate 整合 schemas（Beta）。"""
+"""FortiGate 整合 schemas。"""
 
 from __future__ import annotations
 

@@ -12,8 +12,9 @@ Phase 1：model + CRUD + Subnet 關聯欄位；agent 通訊協定 stub 留 Phase
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import ARRAY, Boolean, DateTime, LargeBinary, String, Text, text
+from sqlalchemy import ARRAY, Boolean, DateTime, Integer, LargeBinary, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -33,6 +34,11 @@ class ScanAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # 才講得出「沒有的話請自行安裝」—— 靠 last_source_ip 猜不準（NAT／多網卡）。
     is_local: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False,
                                            server_default=text("false"))
+    # 掃到一個 IPAM 沒登錄的位址時，要不要自動建一筆。**預設關閉**：
+    # 被自動收錄的位址從此不再出現在「未授權 IP」異常偵測裡（那道偵測看的正是
+    # 「掃得到、IPAM 沒有」），等於有人私接一台機器就會安靜地變成正式紀錄。
+    auto_create_ips: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False,
+                                                  server_default=text("false"))
 
     # AES-GCM 加密的 token（舊 pull 模型用）
     api_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
@@ -61,3 +67,20 @@ class ScanAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     tools: Mapped[list | None] = mapped_column(JSONB)
     # 「立刻執行一次」：admin 按鈕設此時間，代理下次 poll 取走（清空）後本輪所有探測強制到期立即跑
     force_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 最近一輪掃描的統計（代理回報）：{at, duration_s, interval_s, heavy_backlog, subnets:[{cidr, hosts,
+    #: alive, duration_s, truncated}]}。負載顯示與超載通知用。
+    last_cycle: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+    # ── 主控台中繼（issue #24 階段二，0175）──
+    #: 管理員允許這台代理中繼主控台（預設關）。另外還要系統開關；代理主機不必設定任何東西
+    #: （代理主機的擁有者可以用 JT_IPAM_RELAY=0 在本機否決）
+    relay_allowed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False,
+                                                server_default=text("false"))
+    #: 同時中繼的工作階段上限（交給代理；代理主機可以用 JT_IPAM_RELAY_MAX 再壓低）
+    relay_max_sessions: Mapped[int] = mapped_column(Integer, default=4, nullable=False,
+                                                    server_default=text("4"))
+    #: 允許中繼的埠（交給代理；代理主機可以用 JT_IPAM_RELAY_PORTS 再限縮）。格式 "22,3389,5900-5910"
+    relay_ports: Mapped[str] = mapped_column(String(200), default="22,3389,5900-5910", nullable=False,
+                                             server_default=text("'22,3389,5900-5910'"))
+    #: 代理回報的中繼能力：{enabled, ports:[本機限縮，空＝不限], max（本機上限，0＝不限）, pinned}（舊代理＝None）
+    relay_caps: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

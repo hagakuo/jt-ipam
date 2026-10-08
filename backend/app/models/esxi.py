@@ -24,6 +24,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -56,5 +57,11 @@ class ESXiInstance(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     # 限定子網路範圍：重疊網段下用來把 IP 比對縮到正確的子網路
     scope_subnet_ids: Mapped[list[Any] | None] = mapped_column(JSONB)
+    # 信任虛擬化回報的 IP：IPAM 沒有該筆位址時自動建立。**預設關閉** ——
+    # 自動收錄會讓那些位址不再出現在「未授權 IP」異常偵測裡（該偵測的判定是
+    # 「ARP 看得到、IPAM 沒有」），要不要放棄那道訊號應該由使用者明示。
+    auto_create_ips: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
 
     description: Mapped[str | None] = mapped_column(Text)

@@ -27,6 +27,8 @@ export interface IPChangeFilter {
   q?: string;
   ip_id?: string;
   subnet_id?: string;
+  section_id?: string;
+  customer_id?: string;
   event_type?: string;
   source?: string;
   since?: string;
@@ -35,15 +37,26 @@ export interface IPChangeFilter {
   page_size?: number;
 }
 
-// 單一 IP 的異動記錄 (詳細資料頁展開用)；offset 分頁（前端「載入更多」）
+export interface HistoryFacet { value: string; count: number }
+export interface AddressHistoryPage {
+  items: IPChangeLog[];
+  total: number;              // 目前篩選條件下的總數（非本頁筆數）
+  returned: number;
+  event_types: HistoryFacet[];
+  sources: HistoryFacet[];
+}
+
+// 單一 IP 的異動記錄（詳細資料頁展開用）。回傳帶總數與篩選選項 ——
+// 實機單一 IP 可達 1,800+ 筆，只回一頁陣列會讓人以為那就是全部。
 export async function getAddressHistory(
   addressId: string,
-  limit = 100,
-  offset = 0,
-): Promise<IPChangeLog[]> {
-  const { data } = await apiClient.get<IPChangeLog[]>(
+  opts: { limit?: number; offset?: number; event_type?: string; source?: string } = {},
+): Promise<AddressHistoryPage> {
+  const { data } = await apiClient.get<AddressHistoryPage>(
     `/api/v1/addresses/${addressId}/history`,
-    { params: { limit, offset } },
+    { params: { limit: opts.limit ?? 100, offset: opts.offset ?? 0,
+                event_type: opts.event_type || undefined,
+                source: opts.source || undefined } },
   );
   return data;
 }
@@ -81,9 +94,13 @@ export async function getAddressSwitchPort(addressId: string): Promise<SwitchPor
 // 事件類型 / 來源 (與後端 EVENT_TYPES / CHANGE_SOURCES 對齊)
 export const IP_CHANGE_EVENT_TYPES = [
   "created", "deleted", "hostname_changed", "mac_changed",
-  "state_changed", "online", "offline", "arp_changed", "edited",
+  "state_changed", "online", "offline", "arp_changed", "os_changed", "kind_changed", "edited",
 ] as const;
 
+// 篩選選項：各整合寫入時用的來源名稱（以前只列 7 個，mikrotik、fortigate 等選不到）。
+// 「上線／失聯」翻轉的來源是讓它上線的那個整合；失聯是 system（系統判定證據過期，#49）
 export const IP_CHANGE_SOURCES = [
-  "manual", "scanner", "librenms", "dns", "proxmox", "opnsense", "system",
+  "manual", "user", "system", "scanner", "librenms", "dns",
+  "proxmox", "esxi", "opnsense", "pfsense", "fortigate", "paloalto", "mikrotik",
+  "wazuh", "zabbix", "ocs", "adguard", "kea_dhcp", "isc_dhcp", "windows_dhcp", "rustdesk",
 ] as const;

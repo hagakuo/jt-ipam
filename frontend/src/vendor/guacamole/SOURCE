@@ -1,0 +1,13 @@
+guacamole-common-js 1.6.0 (Apache License 2.0), from the official Apache Guacamole source release.
+This is not an official Apache release; it is the unmodified library wrapped as an ES module.
+
+source:  https://dlcdn.apache.org/guacamole/1.6.0/source/guacamole-client-1.6.0.tar.gz
+sha256:  81f9fd5a7b4377fb0ee295d0d4fec92e9667f2aafaa3d0ed8937f535deabdee4
+         (matches https://downloads.apache.org/guacamole/1.6.0/source/guacamole-client-1.6.0.tar.gz.sha256)
+
+guacamole-common.js = header + guacamole-common-js/src/main/webapp/common/license.js
+                      + guacamole-common-js/src/main/webapp/modules/*.js (sorted by file name,
+                        the same set the official minify step bundles into all.js)
+                      + "export default Guacamole;"
+LICENSE is the Apache License 2.0 text from guacamole-client-1.6.0/LICENSE (its appendices cover
+components that are not part of guacamole-common-js and are omitted). NOTICE is unchanged.

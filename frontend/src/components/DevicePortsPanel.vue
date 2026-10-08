@@ -11,6 +11,8 @@ import { PlusIcon, EditIcon, DeleteIcon, LinkIcon, RefreshIcon, PhysicalIcon, Ex
 
 import { useTablePagination } from "@/composables/useTablePagination";
 import { apiErrMsg } from "@/api/client";
+import { renderMacWithVendor } from "@/utils/macVendor";
+import { withExportValue } from "@/utils/tableExport";
 const props = defineProps<{ deviceId: string; deviceName: string; admin: boolean }>();
 const { t } = useI18n();
 const msg = useMessage();
@@ -91,8 +93,14 @@ async function importPorts() {
   try {
     const r = await Physical.importPorts(props.deviceId);
     if (!r.linked_librenms) msg.warning(t("ports.import_no_source"));
-    else if (r.imported) { msg.success(t("ports.import_done", { n: r.imported })); await refresh(); }
-    else msg.info(t("ports.import_none"));
+    else if (r.imported || r.removed || r.pruned) {
+      // 新增、以及 LibreNMS 已不再回報而清掉的（網卡拔掉等）一起講
+      const parts = [];
+      if (r.imported) parts.push(t("ports.import_done", { n: r.imported }));
+      if (r.removed || r.pruned) parts.push(t("ports.import_removed", { n: (r.removed ?? 0) + (r.pruned ?? 0) }));
+      msg.success(parts.join("；"));
+      await refresh();
+    } else msg.info(t("ports.import_none"));
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
   finally { importing.value = false; }
 }
@@ -258,9 +266,11 @@ const cols = computed<DataTableColumns<DevicePort>>(() => [
           default: () => "→ " + r.link,
         })
       : "—" },
-  { title: t("ports.col_mac"), key: "mac_address", minWidth: 140, ellipsis: { tooltip: true },
-    sorter: (a, b) => natCompare(a.mac_address ?? "", b.mac_address ?? ""),
-    render: (r) => r.mac_address || "—" },
+  // MAC 在上、OUI 廠商在下（與 IP 清單同一個呈現，utils/macVendor）
+  withExportValue({ title: t("ports.col_mac"), key: "mac_address", minWidth: 150,
+    sorter: (a: DevicePort, b: DevicePort) => natCompare(a.mac_address ?? "", b.mac_address ?? ""),
+    render: (r: DevicePort) => renderMacWithVendor(r.mac_address, r.mac_vendor) },
+    (r) => [r.mac_address, r.mac_vendor].filter(Boolean).join(" ")),
   { title: t("ports.col_peer"), key: "peer_port_id", width: 100,
     sorter: (a, b) => natCompare(peerName(a.peer_port_id), peerName(b.peer_port_id)),
     render: (r) => peerName(r.peer_port_id) },
@@ -290,24 +300,27 @@ const cols = computed<DataTableColumns<DevicePort>>(() => [
   },
 ]);
 
+// 換一台裝置要重抓。機櫃圖點裝置會導到同一條路由 `/devices/:id`，只換參數時 Vue
+// 不會重建元件、只是換 prop —— 只寫 onMounted 的話畫面會一直停在第一次點的那台
+// （客戶回報 0.5.208）。隔壁的電源埠面板與可用性長條圖本來就有這個 watch。
+watch(() => props.deviceId, () => { void refresh(); });
 onMounted(() => { void refresh(); });
 </script>
 
 <template>
   <n-card :title="() => h('span', { style: 'display:inline-flex;align-items:center;gap:8px' }, [h(NIcon, { size: 18 }, () => h(PhysicalIcon)), t('ports.title')])" size="small">
-    <template #header-extra>
-      <n-space :size="8">
-        <n-button v-if="admin" size="small" type="primary" @click="openCreate">
-          <template #icon><n-icon><PlusIcon /></n-icon></template>{{ t("ports.add") }}
-        </n-button>
-        <n-button v-if="admin" size="small" :loading="importing" @click="importPorts">
-          <template #icon><n-icon><LinkIcon /></n-icon></template>{{ t("ports.import") }}
-        </n-button>
-        <n-button size="small" @click="refresh" :loading="loading">
-          <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("common.refresh") }}
-        </n-button>
-      </n-space>
-    </template>
+    <!-- 控制列：自標題列搬到內文最上方 -->
+    <n-space align="center" justify="end" style="margin-bottom: 10px">
+      <n-button v-if="admin" size="small" type="primary" @click="openCreate">
+        <template #icon><n-icon><PlusIcon /></n-icon></template>{{ t("ports.add") }}
+      </n-button>
+      <n-button v-if="admin" size="small" :loading="importing" @click="importPorts">
+        <template #icon><n-icon><LinkIcon /></n-icon></template>{{ t("ports.import") }}
+      </n-button>
+      <n-button size="small" @click="refresh" :loading="loading">
+        <template #icon><n-icon><RefreshIcon /></n-icon></template>{{ t("common.refresh") }}
+      </n-button>
+    </n-space>
     <n-data-table :columns="cols" :data="ports" :loading="loading" size="small" :bordered="false" :pagination="pg">
       <template #empty><div style="text-align:center;opacity:.5;padding:12px">{{ t("ports.empty") }}</div></template>
     </n-data-table>
@@ -351,14 +364,15 @@ onMounted(() => { void refresh(); });
 
     <!-- trace -->
     <n-modal v-model:show="showTrace" preset="card" style="width:520px" :title="t('ports.trace_title', { p: traceTitle })">
-      <template #header-extra>
+      <!-- 控制列：自標題列搬到內文最上方 -->
+      <n-space align="center" justify="end" style="margin-bottom: 10px">
         <n-dropdown v-if="traceConnected" trigger="click" :options="traceExportOptions" @select="onTraceExport">
           <n-button size="tiny">
             <template #icon><n-icon><ExportIcon /></n-icon></template>
             {{ t("common.download") }}
           </n-button>
         </n-dropdown>
-      </template>
+      </n-space>
       <div v-if="!trace" style="text-align:center;padding:20px;opacity:.6">…</div>
       <div v-else-if="!traceConnected" style="text-align:center;padding:20px;opacity:.6">{{ t("ports.not_connected") }}</div>
       <div v-else class="trace-chain">

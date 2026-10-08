@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>jt-ipam: BMC serial console (IPMI SOL) setup</title>
+<meta name="description" content="Getting a picture out of BMC IPMI SOL: recommended BIOS console-redirection settings field by field, and the host's own serial console setup." />
+<style>
+  :root{
+    --green:#18a058; --green-h:#36ad6a; --cyan:#22d3ee;
+    --ink:#0f172a; --body:#334155; --muted:#64748b;
+    --bg:#eef3ee; --card:#ffffff; --line:#e2e8e4;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+    color:var(--body);background:var(--bg);line-height:1.7}
+  a{color:inherit;text-decoration:none}
+  /* 三語切換：只顯示目前語言的節點。搜尋與各種 innerText 讀不到 display:none 的內容，
+     所以同一段程式對三種語言都成立。 */
+  .zh,.en,.ja{display:none}
+  body.lang-zh .zh{display:initial}
+  body.lang-en .en{display:initial}
+  body.lang-ja .ja{display:initial}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+  /* ── 與首頁一致的頂列 ── */
+  nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.92);backdrop-filter:saturate(1.4) blur(8px);
+    border-bottom:1px solid var(--line)}
+  .nav-in{display:flex;align-items:center;gap:18px;height:60px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;color:var(--ink);font-size:18px}
+  .nav-links{display:flex;gap:16px;margin-left:auto;flex-wrap:wrap;align-items:center}
+  .nav-links a{color:var(--body);font-size:14px;font-weight:500}
+  .nav-links a:hover{color:var(--green)}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 18px;border-radius:10px;
+    font-weight:600;font-size:15px;line-height:1.3;border:1px solid transparent;cursor:pointer;font-family:inherit}
+  .btn-ghost{background:#fff;border-color:var(--line);color:var(--ink)}
+  .btn-ghost:hover{border-color:var(--green)}
+  .btn-sm{padding:6px 12px;font-size:13px}
+  /* ── 語言切換（自訂下拉） ── */
+  /* 不用原生 <select>：桌面瀏覽器會叫出作業系統自己的彈出視窗，長相與站上其他元件
+     完全不同，也套不上我們的配色與圓角。面板自己畫，行為才一致。
+     也不用三顆並排：那在窄視窗會把頂列擠開，每加一種語言就更擠。 */
+  .langsw{position:relative;display:inline-flex;align-items:center}
+  .langsw > button{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);
+    border-radius:10px;background:#fff;color:var(--ink);font-family:inherit;font-size:13px;
+    font-weight:600;padding:6px 11px;cursor:pointer;line-height:1.3;white-space:nowrap}
+  .langsw > button:hover{border-color:var(--green)}
+  .langsw > button:focus-visible{outline:none;border-color:var(--green);box-shadow:0 0 0 3px rgba(24,160,88,.12)}
+  .langsw .chev{width:7px;height:7px;flex:none;border-right:1.6px solid var(--muted);
+    border-bottom:1.6px solid var(--muted);transform:translateY(-2px) rotate(45deg);transition:transform .15s}
+  .langsw > button[aria-expanded="true"] .chev{transform:translateY(1px) rotate(-135deg)}
+  .langsw ul{position:absolute;top:calc(100% + 6px);right:0;z-index:60;margin:0;padding:5px;
+    list-style:none;min-width:140px;background:#fff;border:1px solid var(--line);border-radius:12px;
+    box-shadow:0 10px 28px rgba(15,23,42,.13)}
+  .langsw li{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;
+    font-size:13.5px;color:var(--body);cursor:pointer;white-space:nowrap}
+  .langsw li:hover{background:#f1f5f2;color:var(--ink)}
+  .langsw li[aria-selected="true"]{color:var(--green);font-weight:700}
+  .langsw li .tick{width:14px;flex:none;text-align:center;opacity:0}
+  .langsw li[aria-selected="true"] .tick{opacity:1}
+  /* 手機：頂列讓它自己長高換行，不要硬壓在 60px 裡把品牌名擠成兩行。 */
+  @media(max-width:560px){
+    .nav-in{height:auto;padding:10px 16px;flex-wrap:wrap;gap:10px}
+    .brand{font-size:16px;white-space:nowrap}
+    .nav-links{gap:8px;width:100%;justify-content:flex-end}
+  }
+  @media(max-width:920px){.nav-links a:not(.btn){display:none}}
+  /* ── 內容 ── */
+  h1{font-size:clamp(26px,4vw,36px);color:var(--ink);margin:30px 0 6px}
+  .sub{color:var(--muted);font-size:14.5px;margin:0 0 24px}
+  .tree{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 26px 26px;
+    box-shadow:0 1px 3px rgba(15,23,42,.05)}
+  .grp{font-weight:800;color:var(--ink);font-size:16.5px;margin:22px 0 6px;display:flex;align-items:center;gap:9px}
+  .grp:first-child{margin-top:6px}
+  .grp .ic{width:22px;height:22px;color:var(--green);flex:none}
+  /* 樹狀分支連線 */
+  ul.branch{list-style:none;margin:0;padding-left:30px}
+  ul.branch > li{position:relative;padding:3px 0 3px 20px;font-size:14.5px}
+  ul.branch > li::before{content:"";position:absolute;left:0;top:-4px;bottom:0;width:2px;background:var(--line)}
+  ul.branch > li:last-child::before{height:20px;bottom:auto}
+  ul.branch > li::after{content:"";position:absolute;left:0;top:16px;width:14px;height:2px;background:var(--line)}
+  ul.branch > li .leaf::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+    background:var(--green);margin-right:8px;vertical-align:middle;opacity:.7}
+  h2{font-size:21px;color:var(--ink);margin:36px 0 10px;padding-top:8px;scroll-margin-top:70px}
+  h3{font-size:16px;color:var(--ink);margin:22px 0 6px}
+  p{font-size:14.5px}
+  code{background:#eef3ee;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:13px}
+  pre.cmd{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;
+    overflow-x:auto;font-size:13px;line-height:1.6;margin:8px 0}
+  .note{color:var(--muted);font-size:13.5px;margin:8px 0 0}
+  .callout{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--green);
+    border-radius:10px;padding:12px 16px;font-size:14px;margin:18px 0}
+  .callout a{color:var(--green);font-weight:600}
+  /* BIOS 畫面重現：照抄機器上看到的樣子，比文字描述好對照 */
+  .bios{margin:16px 0;border-radius:10px;overflow:hidden;border:1px solid #0b2a6b}
+  .bios-t{background:#1a49b8;color:#fff;font-size:12.5px;padding:7px 12px;font-weight:600}
+  .bios pre{background:#0b2a6b;color:#cfe0ff;margin:0;padding:14px 12px;overflow-x:auto;
+    font-size:13px;line-height:1.55}
+  .bios pre b{color:#fff}
+  table.t{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);
+    border-radius:12px;overflow:hidden;margin:14px 0;font-size:14px}
+  table.t th{background:#f6faf7;color:var(--ink);text-align:left;font-size:13.5px;
+    padding:10px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+  table.t td{padding:10px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.t tr:last-child td{border-bottom:none}
+  table.t.vals td:nth-child(2){white-space:nowrap}
+  table.t.sym td:first-child{width:30%;min-width:190px}
+  table.t tr.hi td{background:#fffbeb}
+  /* 表格裡的 BIOS 設定名是不含空白的長字串，窄螢幕會把整頁撐開（實測 41px）。 */
+  table.t th,table.t td{overflow-wrap:anywhere}
+  @media(max-width:820px){table.t th,table.t td{padding:8px 10px}
+    table.t.vals td:nth-child(2){white-space:normal}table.t.sym td:first-child{width:auto}}
+  footer{margin:30px 0 80px;font-size:12.5px;color:var(--muted);text-align:center}
+  footer a{color:var(--green)}
+</style>
+<noscript><style>.en{display:initial}</style></noscript>
+</head>
+<body>
+<script>
+  /* 在內容繪製前先決定語言（避免閃爍）。優先序：網址 ?lang= > localStorage 偏好 > 預設英文。 */
+  (function(){
+    try{
+      function norm(v){ v = (v || '').toLowerCase();
+        if (v === 'en' || v === 'en-us') return 'en';
+        if (v === 'ja' || v === 'ja-jp') return 'ja';
+        if (v === 'zh' || v === 'zh-tw' || v === 'zh-hant') return 'zh';
+        return null; }
+      var u = null; try { u = norm(new URLSearchParams(location.search).get('lang')); } catch (e) {}
+      var lang = u || norm(localStorage.getItem('jtipam-doc-lang')) || 'en';
+      document.body.classList.add('lang-' + lang);
+      document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : lang === 'ja' ? 'ja' : 'zh-Hant');
+      if (u){ try {
+        localStorage.setItem('jtipam-doc-lang', u);
+        var url = new URL(location.href);
+        url.searchParams.set('lang', u === 'en' ? 'en' : u === 'ja' ? 'ja' : 'zh-TW');
+        history.replaceState(null, '', url);
+      } catch (e) {} }
+    } catch (e) {}
+  })();
+</script>
+<nav>
+  <div class="wrap nav-in">
+    <span class="brand">
+      <svg viewBox="0 0 64 64" width="28" height="28" aria-hidden="true">
+        <rect width="64" height="64" rx="14" fill="#18a058"/>
+        <g stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-opacity="0.9">
+          <line x1="18" y1="18" x2="32" y2="32"/><line x1="46" y1="18" x2="32" y2="32"/>
+          <line x1="18" y1="46" x2="32" y2="32"/><line x1="46" y1="46" x2="32" y2="32"/>
+        </g>
+        <g fill="#fff"><circle cx="18" cy="18" r="5"/><circle cx="46" cy="18" r="5"/>
+          <circle cx="18" cy="46" r="5"/><circle cx="46" cy="46" r="5"/></g>
+        <circle cx="32" cy="32" r="8" fill="#fff"/><circle cx="32" cy="32" r="3.5" fill="#18a058"/>
+      </svg>
+      jt-ipam
+    </span>
+    <div class="nav-links">
+      <a href="index.html#features"><span class="zh">特色</span><span class="en">Features</span><span class="ja">機能</span></a>
+      <a href="index.html#integrations"><span class="zh">整合</span><span class="en">Integrations</span><span class="ja">連携</span></a>
+      <a href="index.html#screens"><span class="zh">畫面</span><span class="en">Screenshots</span><span class="ja">画面</span></a>
+      <a href="index.html#ai">AI</a>
+      <a href="index.html#install"><span class="zh">安裝</span><span class="en">Install</span><span class="ja">インストール</span></a>
+      <a href="adoption.html"><span class="zh">導入流程</span><span class="en">Adoption roadmap</span><span class="ja">導入ガイド</span></a>
+      <a href="api.html">API</a>
+      <a class="btn btn-ghost btn-sm" href="index.html"><span class="zh">回首頁</span><span class="en">Home</span><span class="ja">ホーム</span></a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener">GitHub</a>
+      <span class="langsw">
+        <button type="button" id="langBtn" aria-haspopup="listbox" aria-expanded="false" aria-label="Language">
+          <span id="langCur">繁體中文</span><span class="chev" aria-hidden="true"></span>
+        </button>
+        <ul id="langMenu" role="listbox" hidden>
+          <li role="option" data-lang="zh"><span class="tick">✓</span>繁體中文</li>
+          <li role="option" data-lang="en"><span class="tick">✓</span>English</li>
+          <li role="option" data-lang="ja"><span class="tick">✓</span>日本語</li>
+        </ul>
+      </span>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap">
+  <h1><span class="zh">BMC 序列主控台（IPMI SOL）設定</span><span class="en">BMC serial console (IPMI SOL) setup</span><span class="ja">BMC シリアルコンソール（IPMI SOL）の設定</span></h1>
+  <p class="sub">
+    <span class="zh">SOL 只是把主機的<strong>序列埠</strong>轉播出來：主機沒有把畫面送到序列埠，SOL 就是一片空白，這不是連線失敗。要看到完整畫面需要兩層設定：<strong>BIOS 的 Console Redirection</strong>（POST / BIOS 選單 / 開機載入器）與<strong>作業系統的序列主控台</strong>（kernel 訊息與登入提示）。</span>
+    <span class="en">SOL only relays the host's <strong>serial port</strong>. If the host sends nothing to that port the screen stays blank; that is not a failed connection. Two layers are involved: <strong>BIOS console redirection</strong> (POST, BIOS menu, boot loader) and the <strong>operating system's serial console</strong> (kernel messages and the login prompt).</span><span class="ja">SOL はホストの<strong>シリアルポート</strong>を中継しているだけです。ホストがそのポートへ何も出力していなければ画面は真っ白のままで、これは接続の失敗ではありません。関係する層は二つあります。<strong>BIOS のコンソールリダイレクション</strong>（POST・BIOS メニュー・ブートローダ）と、<strong>OS 側のシリアルコンソール</strong>（カーネルメッセージとログインプロンプト）です。</span>
+  </p>
+
+  <div class="callout">
+    <span class="zh"><strong>只想馬上能登入？</strong> 跳到 <a href="#os">作業系統設定</a> 的步驟 2：啟用 serial-getty 即可，免重新開機。<strong>要看 POST / BIOS 選單</strong>才需要下面的 BIOS 設定。</span>
+    <span class="en"><strong>Just want a login prompt?</strong> Jump to step 2 of <a href="#os">the OS setup</a>: enabling serial-getty is enough and needs no reboot. The BIOS settings below are only needed to see POST and the BIOS menu.</span><span class="ja"><strong>とりあえずログインできれば良い場合</strong>は <a href="#os">OS 側の設定</a>の手順 2 へ。serial-getty を有効にするだけで足り、再起動も不要です。下の BIOS 設定は、POST や BIOS メニューを見たい場合にだけ必要です。</span>
+  </div>
+
+  <!-- ─────────────── BIOS ─────────────── -->
+  <h2 id="bios"><span class="zh">一、BIOS：Console Redirection</span><span class="en">1. BIOS: console redirection</span><span class="ja">1. BIOS：コンソールリダイレクション</span></h2>
+  <p>
+    <span class="zh">以 AMI (Aptio) 為例，路徑是 <code>Advanced → Serial Port Console Redirection</code>。該畫面通常列出 <code>COM1</code>、<code>COM2</code>、<code>SOL</code> 等多個項目，<strong>要設定的是 SOL 那一個</strong>（有些主機板寫成 <code>COM2 (SOL)</code>），先把它的 <code>Console Redirection</code> 設為 <code>Enabled</code>，再進入 <code>Console Redirection Settings</code>：</span>
+    <span class="en">On AMI (Aptio) the path is <code>Advanced → Serial Port Console Redirection</code>. That screen usually lists several entries (<code>COM1</code>, <code>COM2</code>, <code>SOL</code>), and <strong>the one to configure is SOL</strong> (some boards label it <code>COM2 (SOL)</code>). Set its <code>Console Redirection</code> to <code>Enabled</code>, then open <code>Console Redirection Settings</code>:</span><span class="ja">AMI (Aptio) の場合、場所は <code>Advanced → Serial Port Console Redirection</code> です。この画面には <code>COM1</code>・<code>COM2</code>・<code>SOL</code> など複数の項目が並びますが、<strong>設定するのは SOL の項目</strong>です（<code>COM2 (SOL)</code> と表記する製品もあります）。まずその <code>Console Redirection</code> を <code>Enabled</code> にし、続いて <code>Console Redirection Settings</code> を開きます。</span>
+  </p>
+
+  <div class="bios">
+    <div class="bios-t">Aptio Setup Utility: Advanced → SOL → Console Redirection Settings</div>
+<pre>  Terminal Type                       <b>[VT100+]</b>
+  Bits per second                     <b>[115200]</b>
+  Data Bits                           <b>[8]</b>
+  Parity                              <b>[None]</b>
+  Stop Bits                           <b>[1]</b>
+  Flow Control                        <b>[None]</b>
+  VT-UTF8 Combo Key Support           <b>[Enabled]</b>
+  Recorder Mode                       <b>[Disabled]</b>
+  Resolution 100x31                   <b>[Enabled]</b>
+  Legacy OS Redirection Resolution    <b>[80x24]</b>
+  Putty KeyPad                        <b>[VT100]</b>
+  Redirection After BIOS POST         <b>[Always Enable]</b></pre>
+  </div>
+
+  <table class="t vals">
+    <thead><tr>
+      <th><span class="zh">欄位</span><span class="en">Setting</span><span class="ja">項目</span></th>
+      <th><span class="zh">建議值</span><span class="en">Value</span><span class="ja">推奨値</span></th>
+      <th><span class="zh">設錯會怎樣</span><span class="en">What goes wrong if it is off</span><span class="ja">間違えるとどうなるか</span></th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td>Terminal Type</td><td><code>VT100+</code></td>
+        <td><span class="zh">VT100 沒有色彩與功能鍵；VT-UTF8 只有在主機端也是 UTF-8 時才對得上，否則方框字。瀏覽器端的 SOL 終端機兩者都吃得下，<code>VT100+</code> 最不容易出錯。</span><span class="en">Plain VT100 has no colour or function keys; VT-UTF8 only lines up when the host is UTF-8 too, otherwise you get replacement boxes. The in-browser terminal accepts both, and <code>VT100+</code> is the safest.</span><span class="ja">素の VT100 には色もファンクションキーもありません。VT-UTF8 はホスト側も UTF-8 のときだけ噛み合い、違えば文字化けします。ブラウザ内の端末はどちらも扱えますが、<code>VT100+</code> が最も無難です。</span></td>
+      </tr>
+      <tr>
+        <td>Bits per second</td><td><code>115200</code></td>
+        <td><span class="zh"><strong>必須與 BMC 的 SOL 速率相同</strong>。查法：<code>ipmitool -I open sol info 1 | grep 'Bit Rate'</code>。不一致的症狀是「有畫面但整片亂碼」。</span><span class="en"><strong>Must match the BMC's SOL rate</strong>; check with <code>ipmitool -I open sol info 1 | grep 'Bit Rate'</code>. A mismatch shows up as a screen full of garbage.</span><span class="ja"><strong>BMC の SOL 速度と一致している必要があります</strong>。確認は <code>ipmitool -I open sol info 1 | grep 'Bit Rate'</code>。食い違うと画面一面が文字化けします。</span></td>
+      </tr>
+      <tr>
+        <td>Data Bits / Parity / Stop Bits</td><td><code>8</code> / <code>None</code> / <code>1</code></td>
+        <td><span class="zh">8N1 是 <code>console=</code> 與 serial-getty 的預設值。三格任一不同，字元就會錯位。</span><span class="en">8N1 is what <code>console=</code> and serial-getty default to. Any of the three differing corrupts every character.</span><span class="ja">8N1 は <code>console=</code> と serial-getty の既定値です。三つのどれかが違うだけで文字がずれます。</span></td>
+      </tr>
+      <tr>
+        <td>Flow Control</td><td><code>None</code></td>
+        <td><span class="zh">設成 <code>Hardware RTS/CTS</code> 但 SOL 這條路上沒有對應的線控，輸出送幾行就停住，看起來像「連上之後畫面凍住」。</span><span class="en">Set to <code>Hardware RTS/CTS</code> with nothing on the SOL side to answer it, output stops after a few lines; it looks like the session froze right after connecting.</span><span class="ja"><code>Hardware RTS/CTS</code> にしても SOL 側に応じる相手がいないため、数行で出力が止まります。接続直後に画面が固まったように見えます。</span></td>
+      </tr>
+      <tr>
+        <td>VT-UTF8 Combo Key Support</td><td><code>Enabled</code></td>
+        <td><span class="zh">讓終端機用組合鍵送出 F1&ndash;F12 與方向鍵。關掉的話 BIOS 選單裡按不動 F2 / F10 這類鍵。</span><span class="en">Lets a terminal send F1&ndash;F12 and arrows as key combinations. Disabled, you cannot press F2 / F10 in the BIOS menu.</span><span class="ja">端末から F1&ndash;F12 や方向キーを組み合わせキーとして送れるようにします。無効だと BIOS メニューで F2 / F10 が効きません。</span></td>
+      </tr>
+      <tr>
+        <td>Recorder Mode</td><td><code>Disabled</code></td>
+        <td><span class="zh">這是給「把輸出抄成純文字紀錄」用的：只送文字、拿掉游標定位。開著的話 BIOS 選單不會重繪，畫面會像一直往下捲的亂流水帳。</span><span class="en">This is for capturing output as a plain-text log: text only, no cursor positioning. Left on, the BIOS menu never repaints and the screen just scrolls endlessly.</span><span class="ja">これは出力をプレーンテキストのログとして取り込むための設定で、文字だけを送りカーソル移動を行いません。有効のままだと BIOS メニューが再描画されず、画面が延々と流れ続けます。</span></td>
+      </tr>
+      <tr>
+        <td>Resolution 100x31</td><td><code>Enabled</code></td>
+        <td><span class="zh">BIOS 用 100&times;31 而不是 80&times;24。若你的終端機固定 80 欄，右側會被切掉，那就把這格關掉，或在主控台工具列按「符合視窗」。</span><span class="en">Draws the BIOS at 100&times;31 instead of 80&times;24. If your terminal is fixed at 80 columns the right edge is cut off; either turn this off or use the console's "fit to window" button.</span><span class="ja">BIOS を 80&times;24 ではなく 100&times;31 で描画します。端末が 80 桁固定だと右端が切れるので、この項目を無効にするか、コンソールのツールバーの「ウィンドウに合わせる」を使ってください。</span></td>
+      </tr>
+      <tr>
+        <td>Legacy OS Redirection Resolution</td><td><code>80x24</code></td>
+        <td><span class="zh">只影響 legacy（非 UEFI）開機載入器的畫面大小，維持預設即可。</span><span class="en">Only affects the screen size for a legacy (non-UEFI) boot loader; the default is fine.</span><span class="ja">レガシー（非 UEFI）ブートローダの画面サイズにのみ影響します。既定のままで構いません。</span></td>
+      </tr>
+      <tr>
+        <td>Putty KeyPad</td><td><code>VT100</code></td>
+        <td><span class="zh">只影響 PuTTY 數字鍵盤送出的碼。用瀏覽器內的 SOL 主控台時無影響，維持 <code>VT100</code>。</span><span class="en">Only changes what PuTTY's numeric keypad sends. It makes no difference to the in-browser console; leave it at <code>VT100</code>.</span><span class="ja">PuTTY のテンキーが送るコードが変わるだけです。ブラウザ内のコンソールには影響しないので <code>VT100</code> のままにします。</span></td>
+      </tr>
+      <tr class="hi">
+        <td>Redirection After BIOS POST</td><td><code>Always Enable</code></td>
+        <td><span class="zh"><strong>最常設錯的一格。</strong><code>Disabled</code> 或 <code>Boot Loader</code> 會讓轉播在 POST 結束（或載入器交棒）後停掉，症狀是<strong>「看得到 BIOS，開機之後就沒畫面了」</strong>，很容易被誤判成作業系統那邊沒設好。</span><span class="en"><strong>The one that is most often wrong.</strong> <code>Disabled</code> or <code>Boot Loader</code> stops the relay once POST finishes (or once the loader hands over), so you <strong>see the BIOS and then nothing after boot</strong>, which is easily mistaken for a missing OS-side setting.</span><span class="ja"><strong>最も間違えやすい項目です。</strong><code>Disabled</code> や <code>Boot Loader</code> にすると、POST 終了時（またはローダが制御を渡した時点）で中継が止まります。<strong>BIOS は見えるのに起動後は何も出ない</strong>という症状になり、OS 側の設定漏れと誤解されがちです。</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p class="note">
+    <span class="zh">其他廠牌名稱不同，設定的是同一件事：<strong>HPE iLO</strong> 是 <code>BIOS/Platform Configuration → Serial Port Options → Virtual Serial Port</code>；<strong>Dell iDRAC</strong> 是 <code>Serial Communication</code>（把 <code>Serial Communication</code> 設為 <em>On with Console Redirection</em>、<code>Serial Port Address</code> 對到 <em>Serial Device 2</em>）；<strong>Supermicro</strong> 在 <code>Advanced → Serial Port Console Redirection</code>，項目名為 <code>SOL/COM2</code>。</span>
+    <span class="en">Other vendors name it differently but configure the same thing: <strong>HPE iLO</strong>: <code>BIOS/Platform Configuration → Serial Port Options → Virtual Serial Port</code>; <strong>Dell iDRAC</strong>: <code>Serial Communication</code> (set it to <em>On with Console Redirection</em> and point <code>Serial Port Address</code> at <em>Serial Device 2</em>); <strong>Supermicro</strong>: <code>Advanced → Serial Port Console Redirection</code>, the entry named <code>SOL/COM2</code>.</span><span class="ja">メーカーによって名称は異なりますが、設定している内容は同じです。<strong>HPE iLO</strong> は <code>BIOS/Platform Configuration → Serial Port Options → Virtual Serial Port</code>、<strong>Dell iDRAC</strong> は <code>Serial Communication</code>（<em>On with Console Redirection</em> にし、<code>Serial Port Address</code> を <em>Serial Device 2</em> に向けます）、<strong>Supermicro</strong> は <code>Advanced → Serial Port Console Redirection</code> の <code>SOL/COM2</code> という項目です。</span>
+  </p>
+
+  <!-- ─────────────── OS ─────────────── -->
+  <h2 id="os"><span class="zh">二、作業系統：序列主控台</span><span class="en">2. Operating system: serial console</span><span class="ja">2. OS：シリアルコンソール</span></h2>
+  <p>
+    <span class="zh">BIOS 只負責 POST 到開機載入器那一段。要看到 kernel 訊息與登入提示，作業系統也要往同一個序列埠輸出。</span>
+    <span class="en">The BIOS only covers POST through the boot loader. For kernel messages and a login prompt the OS has to write to the same serial port.</span><span class="ja">BIOS が面倒を見るのは POST からブートローダまでです。カーネルメッセージとログインプロンプトを見るには、OS も同じシリアルポートへ出力する必要があります。</span>
+  </p>
+
+  <h3 id="os-step-1"><span class="zh">步驟 1：找出 SOL 對應的埠</span><span class="en">Step 1: find the port SOL maps to</span><span class="ja">手順 1：SOL に対応するポートを特定する</span></h3>
+  <pre class="cmd">dmesg | grep -iE 'ttyS|SPCR'
+# SPCR: console: uart,io,0x3f8,115200  →  0x3f8 = ttyS0 / 0x2f8 = ttyS1</pre>
+  <p class="note">
+    <span class="zh">SPCR 宣告的未必就是 BMC 實際轉播的那一個。連著 SOL 時逐埠送測試字，哪個出現才是對的：<code>echo test &gt; /dev/ttyS0</code>、<code>echo test &gt; /dev/ttyS1</code>；或看 <code>/proc/tty/driver/serial</code>，<code>rx</code> 有在增加的那個就是。</span>
+    <span class="en">What SPCR declares is not always what the BMC relays. With SOL connected, send a marker to each port and see which one appears: <code>echo test &gt; /dev/ttyS0</code>, <code>echo test &gt; /dev/ttyS1</code>; or read <code>/proc/tty/driver/serial</code> and pick the one whose <code>rx</code> counter moves.</span><span class="ja">SPCR が宣言している値が、BMC が実際に中継しているポートとは限りません。SOL を接続した状態で各ポートへ目印を送り、どれが画面に出るかを見ます。<code>echo test &gt; /dev/ttyS0</code>、<code>echo test &gt; /dev/ttyS1</code>。あるいは <code>/proc/tty/driver/serial</code> を読み、<code>rx</code> のカウンタが増えているポートを選びます。</span>
+  </p>
+
+  <h3 id="os-step-2"><span class="zh">步驟 2：啟用序列登入（立即生效、免重開機）</span><span class="en">Step 2: enable a serial login (takes effect immediately)</span><span class="ja">手順 2：シリアルログインを有効にする（即時反映・再起動不要）</span></h3>
+  <pre class="cmd">systemctl enable --now serial-getty@ttyS1.service</pre>
+
+  <h3 id="os-step-3"><span class="zh">步驟 3：加入核心 console 參數</span><span class="en">Step 3: add the kernel console parameter</span><span class="ja">手順 3：カーネルの console パラメータを追加する</span></h3>
+  <pre class="cmd"># GRUB：/etc/default/grub
+GRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0 console=ttyS1,115200n8"
+update-grub          # Proxmox VE (systemd-boot/ZFS)：改 /etc/kernel/cmdline 後 proxmox-boot-tool refresh</pre>
+  <p class="note">
+    <span class="zh">保留 <code>console=tty0</code>，機房實體螢幕才不會失去輸出。<strong><code>console=</code> 只掛 SOL 那一個 ttyS</strong>：掛兩個以上時核心會挑最後一個當主控台，很容易挑錯。用 <code>cat /proc/consoles</code> 確認。改完要<strong>重新開機</strong>才生效。</span>
+    <span class="en">Keep <code>console=tty0</code> so the physical monitor still gets output. <strong>List only the SOL port in <code>console=</code></strong>; with more than one the kernel takes the last as its console, which is easy to get wrong. Confirm with <code>cat /proc/consoles</code>. A <strong>reboot</strong> is required.</span><span class="ja"><code>console=tty0</code> は残しておきます。そうすればサーバルームの物理モニタにも出力が残ります。<strong><code>console=</code> には SOL のポートだけを書いてください</strong>。二つ以上書くとカーネルは最後のものをコンソールとして扱うため、意図しない側になりがちです。<code>cat /proc/consoles</code> で確認できます。反映には<strong>再起動</strong>が必要です。</span>
+  </p>
+
+  <!-- ─────────────── 疑難排解 ─────────────── -->
+  <h2 id="troubleshooting"><span class="zh">三、症狀 → 先看哪一格</span><span class="en">3. Symptom → what to check first</span><span class="ja">3. 症状 → まずどこを見るか</span></h2>
+  <table class="t sym">
+    <thead><tr>
+      <th><span class="zh">症狀</span><span class="en">Symptom</span><span class="ja">症状</span></th>
+      <th><span class="zh">先看這裡</span><span class="en">Check this first</span><span class="ja">まずここを確認</span></th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="zh">連上但一片空白，按 Enter 也沒反應</span><span class="en">Connected but blank; Enter does nothing</span><span class="ja">接続できるが真っ白で、Enter を押しても反応しない</span></td>
+        <td><span class="zh">主機根本沒往那個埠輸出：先做 OS 步驟 2，再確認 BIOS 開的是 <strong>SOL 那一個</strong>埠而不是 COM1。</span><span class="en">Nothing is writing to that port: do OS step 2, then confirm the BIOS entry you enabled is the <strong>SOL</strong> one, not COM1.</span><span class="ja">そもそもそのポートへ何も書かれていません。まず OS の手順 2 を行い、次に BIOS で有効にした項目が COM1 ではなく <strong>SOL</strong> の方であることを確認します。</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">看得到 BIOS，開機後就沒畫面</span><span class="en">BIOS shows, then nothing after boot</span><span class="ja">BIOS は見えるのに起動後は何も出ない</span></td>
+        <td><span class="zh"><code>Redirection After BIOS POST</code> 不是 <code>Always Enable</code>；若那格是對的，才輪到 OS 的 <code>console=</code>。</span><span class="en"><code>Redirection After BIOS POST</code> is not <code>Always Enable</code>; only if that is right does the OS <code>console=</code> come into question.</span><span class="ja"><code>Redirection After BIOS POST</code> が <code>Always Enable</code> になっていません。そこが正しい場合に初めて OS 側の <code>console=</code> が疑わしくなります。</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">有開機訊息但沒有登入提示</span><span class="en">Boot messages appear but no login prompt</span><span class="ja">起動メッセージは出るがログインプロンプトが出ない</span></td>
+        <td><span class="zh">核心主控台掛對埠了，但那個埠沒有 serial-getty：<code>systemctl enable --now serial-getty@ttySN</code>。</span><span class="en">The kernel console is on the right port but nothing serves a login there: <code>systemctl enable --now serial-getty@ttySN</code>.</span><span class="ja">カーネルコンソールのポートは合っていますが、そのポートでログインを受け付けるものがありません。<code>systemctl enable --now serial-getty@ttySN</code> を実行します。</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">整片亂碼</span><span class="en">Everything is garbage</span><span class="ja">画面一面が文字化けする</span></td>
+        <td><span class="zh">速率沒對齊：<code>Bits per second</code>、<code>ipmitool sol info 1</code> 的 Bit Rate、<code>console=ttyS1,<b>115200</b>n8</code> 三處要一致。</span><span class="en">Rates disagree: <code>Bits per second</code>, the Bit Rate from <code>ipmitool sol info 1</code>, and <code>console=ttyS1,<b>115200</b>n8</code> must all match.</span><span class="ja">速度が揃っていません。<code>Bits per second</code>、<code>ipmitool sol info 1</code> の Bit Rate、<code>console=ttyS1,<b>115200</b>n8</code> の三つを一致させます。</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">送幾行就凍住</span><span class="en">Freezes after a few lines</span><span class="ja">数行で固まる</span></td>
+        <td><span class="zh"><code>Flow Control</code> 設成 <code>Hardware</code> 了，改 <code>None</code>。</span><span class="en"><code>Flow Control</code> is set to <code>Hardware</code>; set it to <code>None</code>.</span><span class="ja"><code>Flow Control</code> が <code>Hardware</code> になっています。<code>None</code> にしてください。</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">方框字、怪符號</span><span class="en">Replacement boxes and odd glyphs</span><span class="ja">文字化けの四角や見慣れない記号が出る</span></td>
+        <td><span class="zh">開機訊息是 systemd 的狀態圖示（核心參數加 <code>systemd.show_status=auto</code> 或改用 <code>quiet</code>）；BIOS 畫面則是 <code>Terminal Type</code> 選了 VT-UTF8。</span><span class="en">In boot messages it is systemd's status glyphs (add <code>systemd.show_status=auto</code>, or use <code>quiet</code>); on the BIOS screen it is <code>Terminal Type</code> set to VT-UTF8.</span><span class="ja">起動メッセージなら systemd のステータス記号です（カーネルパラメータに <code>systemd.show_status=auto</code> を加えるか <code>quiet</code> を使います）。BIOS 画面なら <code>Terminal Type</code> が VT-UTF8 になっています。</span></td>
+      </tr>
+      <tr>
+        <td><span class="zh">畫面被切掉 / 四周留黑</span><span class="en">Edges cut off, or a small screen with black margins</span><span class="ja">端が切れる/周囲に黒い余白が出る</span></td>
+        <td><span class="zh">序列連線無法自動傳視窗大小。按主控台工具列的<strong>符合視窗</strong>（送 <code>stty</code>），或把 BIOS 的 <code>Resolution 100x31</code> 關掉。</span><span class="en">A serial line cannot negotiate window size. Use the console's <strong>fit to window</strong> button (it sends <code>stty</code>), or turn the BIOS <code>Resolution 100x31</code> off.</span><span class="ja">シリアル回線はウィンドウサイズを通知できません。コンソールのツールバーの<strong>ウィンドウに合わせる</strong>（<code>stty</code> を送ります）を使うか、BIOS の <code>Resolution 100x31</code> を無効にしてください。</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p class="note">
+    <span class="zh">同一份教學（作業系統的部分）也內建在 App 裡：開啟 BMC 主控台後按<strong>設定教學</strong>。BMC 主控台為 <strong>Beta</strong>，只有鍵盤與文字畫面，不含電源控制或滑鼠。</span>
+    <span class="en">The OS half of this guide is also built into the app: open a BMC console and press <strong>Setup guide</strong>. The BMC console is <strong>Beta</strong>: keyboard and text screen only, no power control and no mouse.</span><span class="ja">この手引きの OS 側の内容はアプリにも組み込まれています。BMC コンソールを開いて<strong>設定ガイド</strong>を押してください。BMC コンソールは <strong>Beta</strong> で、キーボードとテキスト画面のみです。電源制御やマウスには対応していません。</span>
+  </p>
+  <footer>
+    <span class="zh">完整原始碼與文件見 </span><span class="en">Full source &amp; docs at </span><span class="ja">ソースとドキュメントは </span>
+    <a href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener">GitHub</a>
+  </footer>
+</div>
+
+<script>
+  (function(){
+    // 初始語言已由 <body> 開頭的 inline script 決定（避免閃爍）；這裡只負責切換按鈕。
+    var KEY = 'jtipam-doc-lang';
+    var btn = document.getElementById('langBtn');
+    var menu = document.getElementById('langMenu');
+    var label = document.getElementById('langCur');
+    var items = menu ? Array.prototype.slice.call(menu.querySelectorAll('li')) : [];
+    function cur(){ return document.body.classList.contains('lang-ja') ? 'ja'
+                         : document.body.classList.contains('lang-en') ? 'en' : 'zh'; }
+    function mark(){
+      var c = cur();
+      items.forEach(function(li){ li.setAttribute('aria-selected', String(li.dataset.lang === c)); });
+      var on = items.filter(function(li){ return li.dataset.lang === c; })[0];
+      if (label && on) label.textContent = on.textContent.replace('✓', '').trim();
+    }
+    function open(v){
+      if (!menu || !btn) return;
+      menu.hidden = !v;
+      btn.setAttribute('aria-expanded', String(v));
+    }
+    function set(l){
+      document.body.classList.remove('lang-zh','lang-en','lang-ja');
+      document.body.classList.add('lang-' + l);
+      document.documentElement.setAttribute('lang', l === 'en' ? 'en' : l === 'ja' ? 'ja' : 'zh-Hant');
+      try {
+        localStorage.setItem(KEY, l);
+        var u = new URL(location.href);
+        u.searchParams.set('lang', l === 'en' ? 'en' : l === 'ja' ? 'ja' : 'zh-TW');
+        history.replaceState(null, '', u);
+      } catch (e) {}
+      mark(); open(false);
+      // 頁面上其他要跟著語言改字的東西（例如 api.html 的上一節/下一節標題）掛這個事件。
+      document.dispatchEvent(new CustomEvent('jtipam:langchange', { detail: { lang: l } }));
+    }
+    if (btn) btn.addEventListener('click', function(e){ e.stopPropagation(); open(menu.hidden); });
+    items.forEach(function(li){ li.addEventListener('click', function(){ set(li.dataset.lang); }); });
+    // 點面板外面、按 Esc 都要關：自己畫的面板不會自動有這些行為。
+    document.addEventListener('click', function(e){ if (menu && !menu.hidden && !menu.contains(e.target)) open(false); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape') open(false); });
+    mark();
+  })();
+</script>
+<script>
+  /* <title> / description / <html lang> 也要跟著語言走。
+     原本只有內文與截圖會切，文件本身的中繼資料留在原地，於是三種語言的
+     分頁標題、搜尋結果與分享預覽全都是中文。靜態值放預設語言（英文），
+     這樣沒有 JavaScript 的讀者與爬蟲拿到的也是對的那一份。 */
+  (function(){
+    var META = {"zh": ["jt-ipam：BMC 序列主控台（IPMI SOL）設定", "讓 BMC IPMI SOL 看得到畫面：BIOS Console Redirection 逐欄建議值與作業系統序列主控台設定。"], "en": ["jt-ipam: BMC serial console (IPMI SOL) setup", "Getting a picture out of BMC IPMI SOL: recommended BIOS console-redirection settings field by field, and the host's own serial console setup."], "ja": ["jt-ipam：BMC シリアルコンソール（IPMI SOL）の設定", "BMC の IPMI SOL に画面を出すために：BIOS のコンソールリダイレクト設定を項目ごとに、そして OS 側のシリアルコンソール設定。"]};
+    function cur(){
+      var c = document.body.className;
+      return c.indexOf('lang-ja') >= 0 ? 'ja' : c.indexOf('lang-zh') >= 0 ? 'zh' : 'en';
+    }
+    function apply(l){
+      var m = META[l] || META.en;
+      if (!m) return;
+      document.title = m[0];
+      var d = document.querySelector('meta[name="description"]');
+      if (d) d.setAttribute('content', m[1]);
+      document.documentElement.setAttribute('lang', {"zh": "zh-Hant", "en": "en", "ja": "ja"}[l] || 'en');
+    }
+    document.addEventListener('jtipam:langchange', function(e){ apply(e.detail.lang); });
+    apply(cur());
+  })();
+</script>
+<script src="anchors.js" defer></script>
+</body>
+</html>

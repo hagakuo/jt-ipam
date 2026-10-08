@@ -105,3 +105,38 @@ async def test_stale_agent_is_not_monitoring_coverage(db_session):
     hits = [x for x in out if x["ip"] == "198.51.100.7"]
     assert hits and hits[0]["kind"] == "exposed_unmonitored"
     assert hits[0]["monitored"] is False
+
+
+async def test_os_comes_from_the_agent_that_still_represents_the_ip(db_session) -> None:
+    """同一個 IP 有兩個 agent（舊的失聯、新的連著）：以前任意取一個，取到舊的就被判不代表，
+    連著的那個反而沒用上 → OS 空白（2026-09-26 稽核）。"""
+    import uuid as _uuid
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.address import IPAddress
+    from app.models.section import Section
+    from app.models.subnet import Subnet
+    from app.models.wazuh import WazuhAgent, WazuhInstance
+    from app.services.os_precedence import _candidates
+
+    sec = Section(name=f"s-{_uuid.uuid4().hex[:6]}")
+    db_session.add(sec)
+    await db_session.flush()
+    sub = Subnet(section_id=sec.id, cidr="198.51.100.0/24")
+    db_session.add(sub)
+    await db_session.flush()
+    now = datetime.now(UTC)
+    ip = IPAddress(subnet_id=sub.id, ip="198.51.100.60", last_seen_scanner=now)
+    db_session.add(ip)
+    inst = WazuhInstance(name=f"wz-{_uuid.uuid4().hex[:6]}", api_url="https://wazuh.example",
+                         api_user="u", api_password_enc=b"x", api_password_nonce=b"x")
+    db_session.add(inst)
+    await db_session.flush()
+    db_session.add(WazuhAgent(instance_id=inst.id, agent_id="010", ip="198.51.100.60",
+                              status="disconnected", os_platform="darwin",
+                              last_keep_alive=now - timedelta(days=30)))
+    db_session.add(WazuhAgent(instance_id=inst.id, agent_id="011", ip="198.51.100.60",
+                              status="active", os_platform="ubuntu", os_version="24.04",
+                              last_keep_alive=now))
+    await db_session.flush()
+    assert (await _candidates(db_session, ip)).get("wazuh") == "ubuntu 24.04"

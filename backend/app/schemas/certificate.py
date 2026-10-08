@@ -22,6 +22,10 @@ class CertificateCreate(StrictModel):
 class CertificateUpdate(StrictModel):
     name: Annotated[str | None, Field(min_length=1, max_length=128)] = None
     description: Annotated[str | None, Field(max_length=1024)] = None
+    #: 到期前幾天開始通知。`None` 代表「沿用全域預設」，不是「不通知」。
+    expiry_warn_days: Annotated[int | None, Field(ge=1, le=365)] = None
+    #: 明確把這張憑證改回沿用全域預設（因為 `None` 在 PATCH 語意是「不修改」）
+    clear_expiry_warn_days: bool = False
 
 
 class SelfSignedRequest(StrictModel):
@@ -61,6 +65,8 @@ class CertificateRead(StrictModel):
     current_not_after: datetime | None = None
     current_days_remaining: int | None = None
     version_count: int = 0
+    #: 到期前幾天通知；`None`＝沿用全域預設
+    expiry_warn_days: int | None = None
     # 目前版本是否為自簽（subject==issuer）→ 前端據此顯示「續簽」按鈕並帶出 CN/SAN
     current_is_self_signed: bool = False
     current_common_name: str | None = None

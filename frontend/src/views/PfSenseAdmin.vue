@@ -46,7 +46,7 @@ const editing = ref<PfSense | null>(null);
 const form = ref({
   name: "", api_url: "", api_key: "", verify_tls: true, enabled: true,
   sync_interval_seconds: 300, sync_dhcp: false, sync_dhcp_ranges: false, sync_arp: true, sync_aliases: false, sync_rules: false, expose_dsv: false,
-  scope_subnet_ids: [] as string[], description: "",
+  scope_subnet_ids: [] as string[], auto_create_ips: false, description: "",
 });
 
 const subnetOptions = ref<{ label: string; value: string }[]>([]);
@@ -63,7 +63,7 @@ function openCreate() {
   form.value = {
     name: "", api_url: "", api_key: "", verify_tls: true, enabled: true,
     sync_interval_seconds: 300, sync_dhcp: false, sync_dhcp_ranges: false, sync_arp: true, sync_aliases: false, sync_rules: false, expose_dsv: false,
-    scope_subnet_ids: [], description: "",
+    scope_subnet_ids: [], auto_create_ips: false, description: "",
   };
   show.value = true;
 }
@@ -74,7 +74,8 @@ function openEdit(r: PfSense) {
     sync_interval_seconds: r.sync_interval_seconds, sync_dhcp: r.sync_dhcp,
     sync_dhcp_ranges: r.sync_dhcp_ranges ?? false,
     sync_arp: r.sync_arp, sync_aliases: r.sync_aliases, sync_rules: r.sync_rules, expose_dsv: r.expose_dsv,
-    scope_subnet_ids: r.scope_subnet_ids ?? [], description: r.description ?? "",
+    scope_subnet_ids: r.scope_subnet_ids ?? [], auto_create_ips: !!r.auto_create_ips,
+    description: r.description ?? "",
   };
   show.value = true;
 }
@@ -101,6 +102,7 @@ async function submit() {
       sync_arp: form.value.sync_arp,
       sync_aliases: form.value.sync_aliases, sync_rules: form.value.sync_rules, expose_dsv: form.value.expose_dsv,
       scope_subnet_ids: form.value.scope_subnet_ids,
+      auto_create_ips: form.value.auto_create_ips,
       description: form.value.description.trim() || null,
     };
     if (form.value.api_key.trim()) base.api_key = form.value.api_key.trim();
@@ -174,7 +176,7 @@ const allCols = computed<DataTableColumns<PfSense>>(() => autoSort([
   },
 ]));
 const cols = computed<DataTableColumns<PfSense>>(() =>
-  allCols.value.filter((c: any) => pfPrefs.visibleKeys.value.includes(c.key)));
+  pfPrefs.orderColumns(allCols.value.filter((c: any) => pfPrefs.visibleKeys.value.includes(c.key))));
 
 onMounted(() => { void refresh(); void loadSubnetOptions(); });
 </script>
@@ -208,7 +210,8 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         {{ t("pfsense_admin.create") }}
       </n-button>
       <ColumnPicker :all="pfPicker" :visible="pfPrefs.visibleKeys.value"
-                    @update:visible="pfPrefs.setVisible" @reset="pfPrefs.reset" />
+                    @update:visible="pfPrefs.setVisible" @reset="pfPrefs.reset"
+                    :order="pfPrefs.order.value" @update:order="pfPrefs.setOrder" />
       <ExportButton :columns="cols" :rows="rows" filename="pfsense" :title="t('pfsense_admin.title')" />
     </n-space>
     <n-data-table :columns="cols" :data="rows" :loading="loading" :bordered="false" :scroll-x="980" />
@@ -255,6 +258,17 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
             <n-select v-model:value="form.scope_subnet_ids" :options="subnetOptions"
                       multiple filterable clearable :placeholder="t('pfsense_admin.scope_all')" />
             <ScopeOverlapWarning :scope-empty="!form.scope_subnet_ids?.length" />
+          </div>
+        </n-form-item>
+        <n-form-item :label="t('fw_autocreate.label')">
+          <div style="width:100%">
+            <n-switch v-model:value="form.auto_create_ips" />
+            <div style="font-size:11px;opacity:.65;margin-top:4px">{{ t("fw_autocreate.hint") }}</div>
+            <!-- 開了就等於放棄一道偵測，這件事必須在開關旁邊講，不能只寫在文件裡 -->
+            <n-alert v-if="form.auto_create_ips" type="warning" :show-icon="false" :bordered="false"
+                     style="margin-top:6px">
+              {{ t("fw_autocreate.risk") }}
+            </n-alert>
           </div>
         </n-form-item>
         <n-form-item :label="t('common.description')">

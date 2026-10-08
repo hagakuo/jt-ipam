@@ -2,7 +2,7 @@
 
 OWASP：
 - 僅管理員（require_admin）。
-- service 走白名單；lines 為整數夾限；以 list 參數呼叫 subprocess（不經 shell，無注入）。
+- service 走允許清單；lines 為整數夾限；以 list 參數呼叫 subprocess（不經 shell，無注入）。
 - 僅回讀，不做任何控制（start/stop/restart 不開放）。
 """
 
@@ -19,7 +19,7 @@ from app.api.v1.dependencies import require_admin
 router = APIRouter(prefix="/system/logs", tags=["system-logs"],
                    dependencies=[Depends(require_admin)])
 
-# 可查的服務白名單（label → systemd unit）
+# 可查的服務允許清單（label → systemd unit）
 SERVICES: dict[str, str] = {
     "backend": "jt-ipam-backend",
     "sync": "jt-ipam-sync",
@@ -46,7 +46,7 @@ async def read_logs(
     journalctl = shutil.which("journalctl")
     if journalctl is None:
         raise HTTPException(status_code=503, detail="journalctl not available")
-    # 不經 shell；固定參數 + 白名單 unit + 整數 lines
+    # 不經 shell；固定參數 + 允許清單 unit + 整數 lines
     proc = await asyncio.create_subprocess_exec(
         journalctl, "-u", unit, "-n", str(lines), "--no-pager", "--output", "short-iso",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,

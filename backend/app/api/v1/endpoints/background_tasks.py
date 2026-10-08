@@ -9,7 +9,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser
@@ -27,6 +27,8 @@ async def list_tasks(
     session: Annotated[AsyncSession, Depends(get_session)],
     status_in: str | None = Query(None, description="逗號分隔，e.g. running,pending"),
     kind: str | None = Query(None),
+    trigger: str | None = Query(None, pattern="^(manual|scheduled)$"),
+    q: str | None = Query(None, max_length=200, description="搜尋類型、目標、錯誤訊息（不分大小寫）"),
     active_only: bool = Query(False, description="只看 pending / running"),
     page: int = Query(1, ge=1, le=10_000),
     page_size: int = Query(50, ge=1, le=200),
@@ -44,12 +46,23 @@ async def list_tasks(
     elif status_in:
         statuses = [s.strip() for s in status_in.split(",") if s.strip()]
         if statuses:
-            stmt = stmt.where(BackgroundTask.status.in_(statuses))
-            count_stmt = count_stmt.where(BackgroundTask.status.in_(statuses))
+            stmt = stmt.where(BackgroundTask.status.in_(statuses))  # bounded: status filter
+            count_stmt = count_stmt.where(BackgroundTask.status.in_(statuses))  # bounded: status filter
 
     if kind:
         stmt = stmt.where(BackgroundTask.kind == kind)
         count_stmt = count_stmt.where(BackgroundTask.kind == kind)
+    if trigger:
+        stmt = stmt.where(BackgroundTask.trigger == trigger)
+        count_stmt = count_stmt.where(BackgroundTask.trigger == trigger)
+    if q and q.strip():
+        # % 與 _ 當字面比對（使用者打 % 不是要萬用字元）
+        pat = "%" + q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        cond = or_(BackgroundTask.kind.ilike(pat, escape="\\"),
+                   BackgroundTask.target_label.ilike(pat, escape="\\"),
+                   BackgroundTask.error.ilike(pat, escape="\\"))
+        stmt = stmt.where(cond)
+        count_stmt = count_stmt.where(cond)
 
     stmt = (
         stmt.order_by(BackgroundTask.queued_at.desc())
@@ -62,6 +75,18 @@ async def list_tasks(
         items=[BackgroundTaskRead.model_validate(r) for r in rows],
         total=total, page=page, page_size=page_size,
     )
+
+
+@router.get("/kinds", response_model=list[str])
+async def list_task_kinds(
+    user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> list[str]:
+    """作業頁「類型」篩選的選項：看得到的作業裡出現過哪些類型。"""
+    stmt = select(BackgroundTask.kind).distinct().order_by(BackgroundTask.kind)
+    if not user.is_admin:
+        stmt = stmt.where(BackgroundTask.actor_user_id == user.id)
+    return [k for (k,) in (await session.execute(stmt)).all()]
 
 
 @router.get("/{task_id}", response_model=BackgroundTaskRead)

@@ -156,3 +156,187 @@ async def test_no_agent_vm_ambiguous_mac_skipped(db_session, monkeypatch):
     for ipa in (a, b):
         await db_session.refresh(ipa)
         assert ipa.hostname != "web-vm"
+
+
+# ── 2026-09-26 稽核：鏡像只增不刪、主 IP 只設一次 ──
+# VM 在 PVE 刪掉後，清單裡永遠留著最後的狀態（例如 running）；VM 改 IP 或 VMID 被重複使用時，
+# 主 IP 停在舊的 → 從舊 IP 開 PVE 主控台會開到錯的（甚至已刪除的）guest。
+
+def _with(resp: dict, **paths) -> dict:
+    out = dict(resp)
+    for k, v in paths.items():
+        out[k.replace("__", "/")] = v
+    return out
+
+
+def _qemu(*vms) -> dict:
+    return {"data": [{"vmid": vmid, "name": name, "status": "stopped",
+                      "cpus": 1, "maxmem": 1073741824, "maxdisk": 1073741824}
+                     for vmid, name in vms]}
+
+
+async def _vmids(session) -> set[int]:
+    return set((await session.execute(select(VirtualMachine.legacy_vmid))).scalars().all())
+
+
+async def test_a_vm_deleted_in_pve_is_removed(db_session, monkeypatch):
+    resp = dict(_RESP)
+    resp["/api2/json/nodes/pve1/qemu"] = _qemu((100, "web-vm"), (101, "old-vm"))
+    _patch(monkeypatch, resp)
+    inst = await _instance(db_session)
+    await px.sync_instance(db_session, inst)
+    assert await _vmids(db_session) == {100, 101}
+
+    resp["/api2/json/nodes/pve1/qemu"] = _qemu((100, "web-vm"))
+    _patch(monkeypatch, resp)
+    summary = await px.sync_instance(db_session, inst)
+    assert await _vmids(db_session) == {100}
+    assert summary.vms_removed == 1
+
+
+async def test_nothing_is_removed_when_a_node_listing_fails(db_session, monkeypatch):
+    """某個節點的 lxc 清單讀不到 → 不知道那些 CT 還在不在，一台都不可以刪。"""
+    resp = dict(_RESP)
+    resp["/api2/json/nodes/pve1/qemu"] = _qemu((100, "web-vm"), (101, "old-vm"))
+    _patch(monkeypatch, resp)
+    inst = await _instance(db_session)
+    await px.sync_instance(db_session, inst)
+
+    resp["/api2/json/nodes/pve1/qemu"] = _qemu((100, "web-vm"))
+
+    async def _fake(_s, _i, path, *, base_url=None, timeout=None):
+        if path.endswith("/lxc"):
+            raise px.ProxmoxError("HTTP 500")
+        return resp.get(path, {"data": []})
+    monkeypatch.setattr(px, "_api_get", _fake)
+    summary = await px.sync_instance(db_session, inst)
+    assert summary.errors
+    assert await _vmids(db_session) == {100, 101}
+
+
+async def test_an_empty_listing_removes_nothing(db_session, monkeypatch):
+    """讀到 0 台、之前卻有 → 多半是 token 權限被收，不是整個叢集的 VM 都刪了。"""
+    _patch(monkeypatch)
+    inst = await _instance(db_session)
+    await px.sync_instance(db_session, inst)
+    _patch(monkeypatch, _with(_RESP, **{"/api2/json/nodes/pve1/qemu": {"data": []}}))
+    await px.sync_instance(db_session, inst)
+    assert await _vmids(db_session) == {100}
+
+
+async def test_another_platforms_vms_are_not_touched(db_session, monkeypatch):
+    """同一張表也放 ESXi 的 VM：PVE 的清除只限自己的叢集。"""
+    from app.models.virt import VirtCluster as _C
+    other = _C(name="esxi-a", type="vmware", is_standalone=True)
+    db_session.add(other)
+    await db_session.flush()
+    db_session.add(VirtualMachine(cluster_id=other.id, legacy_vmid=555, name="esx-vm"))
+    await db_session.flush()
+    _patch(monkeypatch)
+    inst = await _instance(db_session)
+    await px.sync_instance(db_session, inst)
+    assert 555 in await _vmids(db_session)
+
+
+async def test_primary_ip_follows_the_vm_when_its_ip_changes(db_session, monkeypatch):
+    """主 IP 每輪重算：網卡改到別的 IP（同 MAC 被搬到另一個位址），主 IP 跟著走。"""
+    a = await _seed_ip(db_session, "10.9.0.5", "aa:bb:cc:dd:ee:ff")
+    _patch(monkeypatch)
+    inst = await _instance(db_session)
+    await px.sync_instance(db_session, inst)
+    vm = (await db_session.execute(select(VirtualMachine))).scalar_one()
+    assert vm.primary_ip_id == a.id
+
+    a.mac = None
+    b = await _seed_ip(db_session, "10.9.0.6", "aa:bb:cc:dd:ee:ff")
+    await px.sync_instance(db_session, inst)
+    assert vm.primary_ip_id == b.id
+
+
+async def test_primary_ip_is_cleared_when_nothing_maps_any_more(db_session, monkeypatch):
+    a = await _seed_ip(db_session, "10.9.0.5", "aa:bb:cc:dd:ee:ff")
+    _patch(monkeypatch)
+    inst = await _instance(db_session)
+    await px.sync_instance(db_session, inst)
+    vm = (await db_session.execute(select(VirtualMachine))).scalar_one()
+    assert vm.primary_ip_id == a.id
+
+    a.mac = None
+    await db_session.flush()
+    await px.sync_instance(db_session, inst)
+    assert vm.primary_ip_id is None
+
+
+async def test_primary_ip_is_kept_when_the_config_could_not_be_read(db_session, monkeypatch):
+    """設定讀不到＝這一輪不知道它的網卡：保留原值，不要清了下一輪又設回來。"""
+    a = await _seed_ip(db_session, "10.9.0.5", "aa:bb:cc:dd:ee:ff")
+    _patch(monkeypatch)
+    inst = await _instance(db_session)
+    await px.sync_instance(db_session, inst)
+    vm = (await db_session.execute(select(VirtualMachine))).scalar_one()
+
+    async def _fake(_s, _i, path, *, base_url=None, timeout=None):
+        if path.endswith("/config"):
+            raise px.ProxmoxError("HTTP 500")
+        return _RESP.get(path, {"data": []})
+    monkeypatch.setattr(px, "_api_get", _fake)
+    await px.sync_instance(db_session, inst)
+    assert vm.primary_ip_id == a.id
+
+
+# ── 叢集以名稱為身分：兩台都叫 pve 的獨立節點會共用同一個叢集 ──
+# 以前是 VMID 相同的兩台 VM 合成一筆、來回翻動；有了清除之後會變成每輪互刪對方的 VM。
+
+async def _instance_at(session, host: str) -> ProxmoxInstance:
+    inst = ProxmoxInstance(api_url=f"https://{host}:8006", auth_username="root@pam",
+                           auth_token_id="jtipam")
+    session.add(inst)
+    await session.flush()
+    return inst
+
+
+def _patch_per_instance(monkeypatch, by_host: dict[str, dict]):
+    async def _fake(_s, inst, path, *, base_url=None, timeout=None):
+        from urllib.parse import urlsplit
+        return by_host[urlsplit(inst.api_url).hostname].get(path, {"data": []})
+    monkeypatch.setattr(px, "_api_get", _fake)
+
+
+async def test_two_standalone_hosts_with_the_same_node_name_do_not_share_vms(db_session, monkeypatch):
+    a_resp = _with(_RESP, **{"/api2/json/nodes/pve1/qemu": _qemu((100, "a-web"), (101, "a-db"))})
+    b_resp = _with(_RESP, **{"/api2/json/nodes/pve1/qemu": _qemu((100, "b-web"), (200, "b-app"))})
+    _patch_per_instance(monkeypatch, {"pve-a.example.com": a_resp, "pve-b.example.com": b_resp})
+    a = await _instance_at(db_session, "pve-a.example.com")
+    b = await _instance_at(db_session, "pve-b.example.com")
+    for _ in range(2):
+        await px.sync_instance(db_session, a)
+        await px.sync_instance(db_session, b)
+    assert a.cluster_id != b.cluster_id
+    names = set((await db_session.execute(select(VirtualMachine.name))).scalars().all())
+    assert names == {"a-web", "a-db", "b-web", "b-app"}
+
+
+async def test_two_instances_of_one_real_cluster_share_it(db_session, monkeypatch):
+    """同一個 PVE 叢集設了兩個進入點（備援）→ 同一個叢集、VM 不重複。"""
+    resp = _with(_RESP, **{"/api2/json/cluster/status": {"data": [
+        {"type": "cluster", "name": "prod-cl"}, {"type": "node", "name": "pve1"}]}})
+    _patch_per_instance(monkeypatch, {"pve-a.example.com": resp, "pve-b.example.com": resp})
+    a = await _instance_at(db_session, "pve-a.example.com")
+    b = await _instance_at(db_session, "pve-b.example.com")
+    await px.sync_instance(db_session, a)
+    await px.sync_instance(db_session, b)
+    assert a.cluster_id == b.cluster_id
+    assert await _vmids(db_session) == {100}
+
+
+async def test_a_pve_node_named_like_an_esxi_cluster_gets_its_own(db_session, monkeypatch):
+    from app.models.virt import VirtCluster as _C
+    esx = _C(name="pve1", type="vmware", is_standalone=True)
+    db_session.add(esx)
+    await db_session.flush()
+    _patch(monkeypatch)
+    inst = await _instance(db_session)
+    await px.sync_instance(db_session, inst)
+    assert inst.cluster_id != esx.id
+    cl = await db_session.get(_C, inst.cluster_id)
+    assert cl.type == "proxmox"

@@ -170,3 +170,22 @@ async def test_proxmox_vms_are_untouched(db_session, monkeypatch):
         VirtualMachine.cluster_id == pve.id))).scalars().all()
     assert [v.name for v in still] == ["pve-vm"]
     assert still[0].legacy_vmid == 101 and still[0].kind == "ct"
+
+
+async def test_an_esxi_named_like_a_pve_cluster_leaves_the_pve_vms_alone(db_session, monkeypatch):
+    """叢集以名稱找：ESXi 實例的名稱剛好等於某個 PVE 叢集名 → 以前會拿 PVE 的叢集來用，
+    再把「這次沒看到」的 PVE VM 全部刪掉（2026-09-26 稽核）。"""
+    inst = await _inst(db_session)
+    pve = VirtCluster(name=inst.name, type="proxmox", is_standalone=True)
+    db_session.add(pve)
+    await db_session.flush()
+    db_session.add(VirtualMachine(cluster_id=pve.id, legacy_vmid=100, name="pve-vm"))
+    await db_session.flush()
+    _patch(monkeypatch, VMS)
+    await esxi.sync_instance(db_session, inst)
+    await db_session.flush()
+    assert inst.cluster_id != pve.id
+    assert (await db_session.get(VirtCluster, inst.cluster_id)).type == "vmware"
+    left = (await db_session.execute(select(VirtualMachine.name).where(
+        VirtualMachine.cluster_id == pve.id))).scalars().all()
+    assert left == ["pve-vm"]

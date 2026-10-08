@@ -5,6 +5,7 @@
  * kind=ct → xterm.js + PVE term 協定。WS 走同站後端代理到 PVE。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { useTerminalLinks } from "@/composables/useTerminalLinks";
 import { useI18n } from "vue-i18n";
 import {
   NCard, NSpin, NButton, NButtonGroup, NDropdown, NIcon, NSelect, NInput, NSwitch, NAlert, NTag,
@@ -13,6 +14,7 @@ import {
 import {
   NoVncIcon, TerminalIcon, DeleteIcon, CancelIcon, RefreshIcon, KeyIcon, ExpandIcon, ReduceIcon, ChevronDownIcon, InfoIcon,
 } from "@/icons";
+import ConnElapsed from "@/components/ConnElapsed.vue";
 import ConsoleDisconnectedOverlay from "@/components/ConsoleDisconnectedOverlay.vue";
 import { buildSendKeysMenu } from "@/composables/useSendKeys";
 import { apiErrMsg } from "@/api/client";
@@ -38,7 +40,7 @@ const phase = ref<Phase>("form");
 const errorMsg = ref("");
 
 const form = ref({ username: "", password: "", realm: "pam", tfa_code: "" });
-// PVE 帳號啟用兩階段驗證時，後端回 tfa_required → 顯示驗證碼欄位讓使用者補（issue #23）
+// PVE 帳號啟用兩階段驗證時，後端回 pve_tfa_required → 顯示驗證碼欄位讓使用者補（issue #23）
 const needTfa = ref(false);
 const realmOpts = [
   { label: "pam (Linux PAM)", value: "pam" }, { label: "pve (Proxmox VE)", value: "pve" },
@@ -58,11 +60,17 @@ let rfb: any = null;
 let ws: WebSocket | null = null;
 let term: any = null;
 let fitAddon: any = null;
+let detachLinks: (() => void) | null = null;
+const { attachTerminalLinks } = useTerminalLinks();
 let heartbeat: number | null = null;
 
-const credOptions = computed(() => savedCreds.value.map((c) => ({
-  label: `${c.label}（${c.username}）`, value: c.id,
-})));
+const credOptions = computed(() => [
+  // 「用別組帳密」必須在**下拉裡**看得到 —— 只靠 hover 才出現的 ✕ 不算可發現
+  { label: t("ssh.cred_manual"), value: null as unknown as string },
+  ...savedCreds.value.map((c) => ({
+    label: `${c.label}（${c.username}）`, value: c.id,
+  })),
+]);
 
 async function loadCreds() {
   try {
@@ -82,6 +90,7 @@ function stopConnection() {
 // 完整拆除：連同 terminal 與畫面 DOM 一起清掉（回表單／離開頁面時用）
 function cleanup() {
   stopConnection();
+  if (detachLinks) { detachLinks(); detachLinks = null; }
   if (term) { try { term.dispose(); } catch { /* noop */ } term = null; fitAddon = null; }
   if (screenBox.value) screenBox.value.innerHTML = "";
 }
@@ -105,6 +114,9 @@ async function connect() {
       credId = saved.id;
       // 記進本地狀態 → 同一分頁「重新連線」直接沿用剛存的憑證，不再跳帳密輸入
       selectedCredId.value = saved.id;
+      // 同時重新載入清單（比照 SSH／RDP）：只設選取值的話，下拉找不到這個 id 的選項，
+      // 連線失敗回到表單時就只看到一串 UUID（使用者回報，2026-09-24）
+      void loadCreds();
     } catch (e: any) {
       phase.value = "error";
       errorMsg.value = e?.response?.data?.detail || t("novnc.err_save_cred");
@@ -119,10 +131,12 @@ async function connect() {
       : { username: form.value.username, password: form.value.password,
           realm: form.value.realm, tfa_code: tfa });
   } catch (e: any) {
-    const d = e?.response?.data?.detail;
-    const code = typeof d === "object" ? d?.code : undefined;
+    const data = e?.response?.data;
+    const d = data?.detail;
+    // detail 已被 client.ts 的 localizeDetail 翻成字串，代碼另外掛在 detail_code
+    const code = data?.detail_code ?? (typeof d === "object" ? d?.code : undefined);
     const msg = typeof d === "object" ? d?.message : d;
-    if (code === "tfa_required" || code === "tfa_failed") {
+    if (code === "pve_tfa_required" || code === "pve_tfa_failed") {
       // 回到帳密表單並要求驗證碼，而不是停在一個看不出原因的錯誤畫面
       needTfa.value = true;
       form.value.tfa_code = "";
@@ -174,10 +188,16 @@ async function connectXterm(wsUrl: string, pveUser: string, vncticket: string) {
       import("@xterm/xterm"), import("@xterm/addon-fit"),
     ]);
     await import("@xterm/xterm/css/xterm.css");
-    term = new Terminal({ cursorBlink: true, fontSize: 13, theme: { background: "#000000" } });
+    term = new Terminal({ cursorBlink: true, fontSize: 13, allowProposedApi: true,
+      theme: { background: "#000000" } });
     fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-    if (screenBox.value) { screenBox.value.innerHTML = ""; term.open(screenBox.value); fitAddon.fit(); }
+    if (screenBox.value) {
+      screenBox.value.innerHTML = "";
+      term.open(screenBox.value);
+      detachLinks = attachTerminalLinks(term, screenBox.value);
+      fitAddon.fit();
+    }
     ws = new WebSocket(wsUrl, "binary");
     ws.binaryType = "arraybuffer";
     const enc = new TextEncoder();
@@ -270,7 +290,7 @@ async function removeCred() {
         </n-alert>
 
         <!-- 已存 PVE 帳密 -->
-        <div v-if="credOptions.length" class="vnc-saved-row">
+        <div v-if="savedCreds.length" class="vnc-saved-row">
           <span class="vnc-saved-label">{{ t("novnc.saved_cred") }}</span>
           <n-select v-model:value="selectedCredId" :options="credOptions" clearable size="small"
                     :placeholder="t('novnc.use_typed')" style="flex:1" />
@@ -334,6 +354,7 @@ async function removeCred() {
           <n-tag size="small" type="warning" :bordered="false" round>PVE</n-tag>
           <n-tag size="small" :bordered="false" round>{{ protoLabel }}</n-tag>
           <n-tag v-if="deviceName" size="small" type="info" :bordered="false" round>{{ deviceName }}</n-tag>
+          <ConnElapsed :active="phase === 'connected'" />
         </span>
         <!-- LXC（xterm）提示：放在狀態列右側、單行，太長以 … 截斷 -->
         <span v-if="phase === 'connected' && !isVm && !ctHintDismissed" class="vnc-hint"
@@ -390,10 +411,14 @@ async function removeCred() {
 .novnc-disp { position: relative; }
 .novnc-disp.vnc-full { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .vnc-screen-area.vnc-full { flex: 1; min-height: 0; }
-.vnc-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 2px; gap: 8px; }
+.vnc-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 4px 2px; gap: 8px; }
 .vnc-status { font-size: 13px; display: inline-flex; align-items: center; gap: 7px;
   padding: 3px 11px; border-radius: 999px; font-weight: 500;
   background: rgba(128, 128, 128, .12); color: #888; }
+/* 手機：內容放不下時整顆標籤換到下一行，不要把「連線錯誤」擠成直排、也不要超出畫面 */
+.vnc-status { flex-wrap: wrap; row-gap: 4px; max-width: 100%; min-width: 0; }
+.vnc-status > * { flex: none; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 640px) { .vnc-status { border-radius: 14px; } }
 .vnc-status[data-state="connected"] { color: #18a058; background: rgba(24,160,88,.12); }
 .vnc-status[data-state="connecting"] { color: #f0a020; background: rgba(240,160,32,.12); }
 .vnc-status[data-state="closed"] { color: #888; background: rgba(128,128,128,.14); }

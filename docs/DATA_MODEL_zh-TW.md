@@ -1,6 +1,6 @@
 # jt-ipam 核心資料模型
 
-> English: [DATA_MODEL.md](DATA_MODEL.md)
+> English: [DATA_MODEL.md](DATA_MODEL.md) · 日本語：[DATA_MODEL_ja.md](DATA_MODEL_ja.md)
 
 > 後端：SQLAlchemy 2.0（async）+ PostgreSQL 16 + Alembic，使用原生 `inet` / `cidr` / `macaddr` / `citext` / `jsonb` 型別。主鍵一律用 UUID（少數高頻 / 鏈式 log 表用 `bigint`）。
 >
@@ -58,7 +58,7 @@ erDiagram
 
 ## 二、IPAM 核心
 
-### 2.1 `customers` — 單位 / 管理單位 / 租戶
+### 2.1 `customers`：單位 / 管理單位 / 租戶
 單位（管理單位）是 jt-ipam 的歸屬錨點。不同於 phpIPAM（只支援 section/subnet），`customer_id` 外鍵掛在 **section、subnet、IP 位址、裝置、機房、虛擬化叢集、VLAN** 上。單位範圍同時驅動 IP 關係鏈（例如 IP 只連到同單位的 VM）。
 
 - `name`（唯一 slug）、`title`（顯示全名）、`description`、`contact`、`email`、`phone`、`address`。
@@ -70,7 +70,7 @@ erDiagram
 - `section_id`（CASCADE，必填）、`master_subnet_id`（自參照巢狀）、`cidr`（原生 `cidr`）。
 - `vlan_id`、`vrf_id`、`location_id`、`customer_id`、`gateway`（`inet`）、`dns_servers`（逗號分隔）。
 - `is_pool`、`is_full`、`threshold_pct`（使用率通知）、`auto_dns`。
-- `archived_at` — 非 NULL = 已歸檔：資料保留但不顯示、不掃描，重疊檢查也忽略（歸檔子網路底下的 IP 一併隱藏）。
+- `archived_at`：非 NULL 表示已歸檔，資料保留但不顯示、不掃描，重疊檢查也忽略（歸檔子網路底下的 IP 一併隱藏）。
 - **掃描**：`scan_enabled`、`scan_method`（`text[]`，預設 `{icmp}`）、`scan_agent_id`（外鍵 → scan_agents；有設定則該子網路改走該掃描代理，而非本機）。
 - `custom_fields`（jsonb）。`cidr` 建 GiST 索引。
 
@@ -78,9 +78,9 @@ erDiagram
 - `subnet_id`（CASCADE）、`ip`（`inet`），`(subnet_id, ip)` 唯一，`ip` 建 GiST 索引。
 - `hostname`（解析後的有效值）、`description`、`owner`、`note`、`state`（`active`/`reserved`/`offline`/`dhcp`/`used`）、`customer_id`、`device_id`。
 - **MAC / 交換器位置**：`mac`（`macaddr`）、`mac_source`（目前 MAC 的來源，給 ARP 優先序用）、`switch_port`、`switch_port_confident`（由 FDB 推得；該 port 為 uplink/trunk 帶多個 MAC 時為 false）。
-- **探測 / 掃描**：`exclude_from_ping`；`excluded_probes`（`text[]`）— 此 IP 略過的探測項目（icmp 與 `exclude_from_ping` 雙向同步）；`probe_last_run`（jsonb，`{probe: 時間}`，供「下次到期」顯示）。
+- **探測 / 掃描**：`exclude_from_ping`；`excluded_probes`（`text[]`），此 IP 略過的探測項目（icmp 與 `exclude_from_ping` 雙向同步）；`probe_last_run`（jsonb，`{probe: 時間}`，供「下次到期」顯示）。
 - **OS 偵測**：`os_guess`（原始字串）、`os_family`（正規化家族 key，給前端配 icon；見 `core/os_fingerprint.py`）。
-- **hostname 優先序**：`hostname_source_pin` — 把有效 hostname 固定以某來源為準（NULL = 跟全域優先序）。各來源的原始 hostname 存在 `ip_hostname_observations`。
+- **hostname 優先序**：`hostname_source_pin`，把有效 hostname 固定以某來源為準（NULL = 跟全域優先序）。各來源的原始 hostname 存在 `ip_hostname_observations`。
 - **多源活躍度**：`discovery_source`（`manual`/`scanner`/`librenms`/`dns`/`proxmox`/`opnsense`/`phpipam`）、`last_seen_scanner`、`last_seen_librenms`、`last_seen_dns`、`effective_status`（小寫，如 `online`/`online (scanner)`/`online (librenms)`/`offline`）。
 - `in_dhcp_lease`（由防火牆的 DHCP 租約自動標記）、`ptr_ignore`、`custom_fields`（jsonb）。
 
@@ -108,7 +108,7 @@ IP 申請工作流，狀態機清楚（`pending → approved → fulfilled` / `r
 - `name`、`description`、`enabled`、`agent_url`（舊 pull 模型用，選填）。
 - 驗證：`enroll_key_hash`（enrollment key 的 sha256，明文只在建立時回傳一次）給 push；`api_token_enc`/`api_token_nonce`（AES-GCM）給舊 pull。
 - 遙測：`last_seen_at`、`last_error`、`agent_version`、`last_source_ip`。
-- **探測設定**：`enabled_probes`（`text[]`，能力天花板，預設 `{icmp}`）、`probe_intervals`（jsonb `{probe: 秒}` 覆寫）、`available_probes`（`text[]`，代理回報它實際裝得起哪些 probe，給 UI 反灰用）、`force_scan_at`（admin「立刻執行一次」— 代理下次 poll 取走後清空，本輪所有探測強制到期立即跑）。
+- **探測設定**：`enabled_probes`（`text[]`，能力天花板，預設 `{icmp}`）、`probe_intervals`（jsonb `{probe: 秒}` 覆寫）、`available_probes`（`text[]`，代理回報它實際裝得起哪些 probe，給 UI 反灰用）、`force_scan_at`（admin「立刻執行一次」，代理下次 poll 取走後清空，本輪所有探測強制到期立即跑）。
 
 ### 3.2 三層探測解析
 某個 IP 實際會跑的探測項目是：
@@ -125,19 +125,19 @@ agent.enabled_probes  ∩  subnet.scan_method  −  ip.excluded_probes
 
 ### 4.1 `devices`（裝置）
 - `name`、`fqdn`、`primary_ip_id`（外鍵 ip_addresses，use_alter）、`type`（`server`/`switch`/`router`/`firewall`/`ap`/`storage`/`ipmi`/`other`）、`vendor`、`model`、`serial`、`customer_id`、`custom_fields`。
-- 機櫃擺放：`location_id`、`rack_id`、`u_position`、`u_size`、`rack_face`（`front`/`rear`）、`rack_side`（`full`/`left`/`right` — 半 U 裝置共用一個 U）。
+- 機櫃擺放：`location_id`、`rack_id`、`u_position`、`u_size`、`rack_face`（`front`/`rear`）、`rack_side`（`full`/`left`/`right`；半 U 裝置共用一個 U）。
 
 ### 4.2 `locations`（＝機房）與 `racks`（機櫃）
 - **Location（機房）**：`name`（唯一）、`address`、`latitude`/`longitude`、`customer_id`、`floor_plan_path`（上傳的平面圖底圖；Location 同時當「機房」用）。
 - **Rack（機櫃）**：`location_id`、`name`、`u_height`（預設 42）、實體 `width_mm`/`depth_mm`（平面圖依真實腳印按比例呈現）、`seq`（由左到右排序）、`numbering`（`top-down`/`bottom-up`）、`face`（`front`/`rear`）、平面圖位置 `pos_x`/`pos_y`（0..1 比例）、`pos_rot`（任意旋轉角度）、`pos_w`/`pos_h`。
 
-### 4.3 佈線 — `device_ports`、`cables`、`cable_terminations`
+### 4.3 佈線：`device_ports`、`cables`、`cable_terminations`
 NetBox 風但精簡（一張多型 termination 表，不拆多表）。
 - **DevicePort**：裝置上的連接埠/介面；`type`（`network`/`front`/`rear`/`console`/`power`）、`peer_port_id`（front↔rear 對應，做跳接面板穿透）、`position`、`mac_address`（此埠自身實體 MAC，如 LibreNMS `ifPhysAddress`，非學到的對端 MAC）。`(device_id, name)` 唯一。
 - **Cable**：`label`、`type`（`cat6`/`fiber-mm`/`fiber-sm`/`power`）、`color`、`length_m`、`status`（`planned`/`connected`/`decommissioned`）。
 - **CableTermination**：纜線兩端；`side`（`A`/`B`）、多型 `(object_type, object_id)`（device / 跳接面板埠 / 插座…）、`port_label`。Cable Trace 沿這些端點加上埠的 `peer_port_id` 連結做多跳穿透。
 
-### 4.4 電力 — NetBox 風
+### 4.4 電力：NetBox 風
 - **PowerPanel** → **PowerFeed**（`voltage_v`、`amperage_a`、`phase` single/three、`supply_type` ac/dc、選填 `rack_id`）→ **PowerOutlet**（`feed_id`、`rack_id`、`label`）。
 - **DevicePowerPort**：裝置側電源埠（PSU / 電源輸入，如 PSU1/PSU2）、`outlet_id`（外鍵 power_outlets；NULL = 尚未接線）、`max_watts`。一台裝置可有多個，故能建模雙電源跨 A/B 迴路備援。
 
@@ -154,7 +154,7 @@ NetBox 風但精簡（一張多型 termination 表，不拆多表）。
 - **電路**：`providers` → `circuits`（`cid` 同 provider 內唯一、`type_id` → `circuit_types`、`status`、日期、`monthly_fee_cents`、`commit_rate_kbps`、非對稱 `up_kbps`/`down_kbps`、選填固定 IP 欄位 `ip_address`/`gateway`/`netmask`/`dns_servers`、`device_id` 指 WAN 端裝置、`tenant_id`）。
 - **聯絡人**：`contact_groups`（自參照）、`contact_roles`、`contacts`，以及 `contact_assignments`（用多型 `(object_type, object_id)` 把聯絡人＋角色指派到任意物件）。
 - **無線**：`wireless_ssids`（`ssid`、`auth_type`、`vlan_id`、`tenant_id`）、`wireless_links`（點對點 A/B 裝置）。
-- **VPN**：`vpn_tunnels` — `type`（ipsec_ikev1/ikev2/wireguard/openvpn/l2tp/vxlan/vpls/evpn/other）、A/B 裝置＋端點、WireGuard `local_public_key`/`peer_public_key` 供可靠對接、`pairing_method`（`wireguard_pubkey` 可靠 / `ipsec_endpoint` best-effort）供 UI 標示可信度。
+- **VPN**：`vpn_tunnels`，含 `type`（ipsec_ikev1/ikev2/wireguard/openvpn/l2tp/vxlan/vpls/evpn/other）、A/B 裝置＋端點、WireGuard `local_public_key`/`peer_public_key` 供可靠對接、`pairing_method`（`wireguard_pubkey` 可靠 / `ipsec_endpoint` best-effort）供 UI 標示可信度。
 
 ---
 
@@ -162,27 +162,27 @@ NetBox 風但精簡（一張多型 termination 表，不拆多表）。
 
 每個整合都有一張 **instance** 表（連線 metadata；API key/密碼以 AES-GCM 加密，多以雙欄 `*_enc` / `*_nonce` 或透過 `encrypted_secrets` 儲存），加上若干 **synced** 表（pull-only 快取）。
 
-### 6.1 LibreNMS — `librenms.py`
-- **LibreNMSInstance**：`api_url`、加密 token、各項開關（`sync_devices`/`sync_arp`/`sync_fdb`/`sync_vlans`/`use_for_status`/`auto_add_devices`/`auto_create_ips`）、`scope_subnet_ids`（jsonb — 限定 IP 解析範圍，化解重疊網段）、間隔＋last_sync/error。`auto_create_ips`（預設開啟）會在受監控裝置的主 IP 落在「既有且符合 scope」的子網路時，自動建立一筆 `ip_addresses`。
+### 6.1 LibreNMS：`librenms.py`
+- **LibreNMSInstance**：`api_url`、加密 token、各項開關（`sync_devices`/`sync_arp`/`sync_fdb`/`sync_vlans`/`use_for_status`/`auto_add_devices`/`auto_create_ips`）、`scope_subnet_ids`（jsonb，限定 IP 解析範圍，化解重疊網段）、間隔＋last_sync/error。`auto_create_ips`（預設開啟）會在受監控裝置的主 IP 落在「既有且符合 scope」的子網路時，自動建立一筆 `ip_addresses`。
 - **LibreNMSDevice**：拉回的裝置（`legacy_device_id` = LibreNMS id）、`hostname`/`sysname`/`primary_ip`/`hardware`/`os`/`status`、`jt_ipam_device_id` 連結。
 - **ARPEntry**：來自 `/resources/ip/arp/` 的 IP↔MAC，含 `interface`/`vrf`，用來補 IP 的 MAC。
 - **FDBEntry**：來自 `/devices/{id}/fdb` 的 MAC 位置（`port_name`、`vlan_id_num`），用來推導交換器埠。
 
-### 6.2 Wazuh — `wazuh.py`
+### 6.2 Wazuh：`wazuh.py`
 - **WazuhInstance**：`api_url`、`api_user` + 加密密碼、`verify_tls`。
-- **WazuhAgent**：每次 sync 的代理（`agent_id`、`ip`、`status`、OS/版本、`group`、keep-alive），透過 `jt_ipam_address_id` 對應到 IP，加上漏洞摘要計數（`cve_critical_count`/`cve_high_count`/`cve_summary_at`）。
+- **WazuhAgent**：每次 sync 的代理（`agent_id`、`ip`、`status`、OS/版本、`group`、keep-alive），透過 `jt_ipam_address_id` 對應到 IP。`cve_summary_at` 仍在；兩個 CVE 計數欄位已於 `0138` 移除：它們從來沒有任何程式在寫。Wazuh 4.8 起 manager API 沒有漏洞端點，而一個永遠是 null 的欄位讀起來像「查過了，沒有漏洞」，不是「從來沒查過」。
 
-### 6.3 OPNsense 防火牆 — `firewall.py`、`firewall_rule.py`、`nat.py`、`dhcp.py`
+### 6.3 OPNsense 防火牆：`firewall.py`、`firewall_rule.py`、`nat.py`、`dhcp.py`
 - **OPNsenseFirewall**：加密 `api_key` + `api_secret`、`verify_tls`、同步開關（`sync_dhcp`/`sync_arp`/`sync_openvpn`/`sync_rules`/`sync_nat`/`sync_aliases`），以及 `expose_dsv`（opt-in：把該防火牆的 規則 label→alias 與 alias→members 對外提供成 Graylog DSV）。
 - **OPNsenseAliasMapping**：jt-ipam 範圍 → OPNsense alias 的推送規則；`selector`（jsonb：section/subnet/tag/custom_field）、`direction`（push/pull/both）、上次同步狀態。
 - **OPNsenseSyncedAlias**：從 OPNsense 拉回的 alias（唯讀檢視用，`content`、`member_count`）；也是 alias→members DSV 的來源。
 - **OPNsenseRuleLabel**：從 `pf_statistics` 解析，把 filterlog 的 `rid`（pf 規則 label）對應到規則引用的 alias：`label`/`action`/`interface`/`alias_names` jsonb，給規則→alias 的 Graylog DSV 用。
 - **OPNsenseRule**：拉回的防火牆規則唯讀快取（`legacy_uuid`、action/interface/direction/protocol、src/dst net & port、`raw` jsonb）。
-- **DHCPPoolRange**：從防火牆（Kea/ISC）同步回的 DHCP 發放範圍 — `subnet_cidr`、`start_ip`/`end_ip`；落在範圍內的 IP 標示為 DHCP。
+- **DHCPPoolRange**：從防火牆（Kea/ISC）同步回的 DHCP 發放範圍，含 `subnet_cidr`、`start_ip`/`end_ip`；落在範圍內的 IP 標示為 DHCP。
 
 > **Graylog DSV**（token 保護的 `/api/v1/lookup/...` 端點）：全域 IP→hostname/FQDN、每台防火牆的 `rid → alias` 與 `alias → members`（受 `expose_dsv` 控制）、每個 PVE 叢集的 `vmid → VM 名稱`；供 Graylog「DSV File from HTTP」配接器抓取（key 欄=0、value 欄=1）。
 
-### 6.3b pfSense 防火牆 — `pfsense.py`（獨立設定頁，不與 OPNsense 共用）
+### 6.3b pfSense 防火牆：`pfsense.py`（獨立設定頁，不與 OPNsense 共用）
 
 透過第三方 **pfSense-pkg-RESTAPI**（pfrest.org；base `/api/v2`、`X-API-Key`）與 pfSense 溝通。
 
@@ -190,24 +190,24 @@ NetBox 風但精簡（一張多型 termination 表，不拆多表）。
 - **PfSenseSyncedAlias**：抓回的別名（`members`、`alias_type`）供唯讀檢視；也餵 alias→members 的 Graylog DSV。
 - pfSense 的 NAT port-forward 會同步進同一張 `nat_translations` 表、`source_origin = pfsense:<fw_uuid>`，與 OPNsense NAT 並列（可依來源篩選）。
 
-### 6.4 Proxmox 虛擬化 — `virt.py`
+### 6.4 Proxmox 虛擬化：`virt.py`
 - **ProxmoxInstance**：PVE API 連線（`api_url` + `extra_api_urls` 供節點換手、`auth_username`/`auth_token_id`、secret 走 `encrypted_secrets`、`verify_tls`）。
 - **VirtCluster**：Proxmox 叢集（`type`、`is_standalone`、`location_id`、`tenant_id`、`customer_id`）。
 - **VirtualMachine**：VM/CT（`legacy_vmid`、`node`、`kind` vm/ct、`status`、vcpus/memory/disk）、`primary_ip_id`、`device_id` 連結、`is_template`。
 - **VMInterface**：`mac`、`primary_ip`、`bridge`、`vlan_id`。
 
-### 6.5 DNS — `dns.py`
+### 6.5 DNS：`dns.py`
 - **DNSServer**：provider 抽象 `type`（powerdns/bind9/unbound_opnsense/windows_dns/univention_ucs）；密鑰在 `encrypted_secrets`。
 - **DNSZone**：`type`（forward/reverse）、`managed`、`associated_subnet_ids`（`uuid[]`）。
 - **DNSRecord**：`type`（A/AAAA/PTR/CNAME/MX/TXT/SRV/NS/SOA）、`source`（manual/from_ipam/from_dns_pulled）、`consistency_state`（consistent/dns_only/ipam_only/mismatch）供不一致報表、選填 `ipam_address_id` 反向連結。
 
-### 6.6 AdGuard Home — `adguard.py`
+### 6.6 AdGuard Home：`adguard.py`
 - **AdGuardInstance**：HTTP basic-auth（加密密碼）、`sync_clients` / `sync_rewrites` 開關。pull-only 補充 IPAM 資料。
 
-### 6.7 phpIPAM 遷移 — `migration_mapping.py`
+### 6.7 phpIPAM 遷移：`migration_mapping.py`
 - **PhpIPAMMigrationMapping**：`(object_type, legacy_id)` → `jt_ipam_id`，附 `last_synced_hash`（canonical JSON 的 sha256）供 idempotent 重跑 / 偵測變更，及 `last_seen_at` 供偵測刪除。
 
-### 6.8 OUI — `oui.py`
+### 6.8 OUI：`oui.py`
 - **OUIVendor**：IEEE MAC 廠商對照。PK = 6 位 hex `prefix`（前 24 bits）、`short_name` / `name`、`source`（Wireshark `manuf`，每月更新）。
 
 ---
@@ -224,27 +224,27 @@ NetBox 風但精簡（一張多型 termination 表，不拆多表）。
 - **User**：`username`/`email`（citext 唯一）、`password_hash`（argon2id；外部驗證為 NULL）、`auth_provider`（local/ldap/radius/saml/oidc）、`external_subject`、`is_active`、`is_admin`、加密 TOTP（`totp_secret_enc`/`totp_nonce`）、帳號鎖定（`failed_login_count`/`locked_until`）、`last_login_at`/`last_login_ip`。CHECK：local 使用者必須有密碼。
 - **Group**：`name`（citext 唯一）、`is_builtin`。成員透過 `user_group_members`（複合 PK）。
 
-### 8.2 `permissions` — 物件層級 RBAC（預設關閉，A01）
+### 8.2 `permissions`：物件層級 RBAC（預設關閉，A01）
 物件層級授權：`(object_type, object_id, principal_type, principal_id, level)`。
 - `object_type` ∈ `customer / section / subnet / ip / device / rack / location`（7 種可授權物件）。
 - `object_id` NULL = 萬用（該類型全部）。
 - `principal_type` ∈ `user / group`；`level` ∈ `read / write / admin`。
-- `(object_type, object_id, principal_type, principal_id)` 唯一。未授權 = 無存取。`visible_ids()` 回 None（全部可見 — admin 或萬用）/ set（限定）/ 空 set（無）；列表 / 詳細資料 / 搜尋 / 儀表板彙總 / 計數全部都要依此縮放。
+- `(object_type, object_id, principal_type, principal_id)` 唯一。未授權 = 無存取。`visible_ids()` 回 None（全部可見：admin 或萬用）/ set（限定）/ 空 set（無）；列表 / 詳細資料 / 搜尋 / 儀表板彙總 / 計數全部都要依此縮放。
 
-### 8.3 `audit_logs` — SHA-256 鏈（A08）
+### 8.3 `audit_logs`：SHA-256 鏈（A08）
 `bigint` PK；`actor_user_id`/`actor_ip`/`actor_user_agent`、`object_type`/`object_id`（UUID）、`action`、`diff`（jsonb，敏感欄位 redact）、`request_id`。`prev_hash` + `this_hash` 構成可驗竄改的鏈；寫入用 advisory lock 序列化。`object_id` 必須是真正的 UUID（別塞非 UUID）。
 
 ### 8.4 `encrypted_secrets`（A02 / A04）
 任意敏感欄位的 AES-256-GCM 保險庫。`(object_type, object_id, field, key_id)` 唯一；`ciphertext` + `nonce`。承載 DNS/Proxmox 帳密、SNMP community、TOTP 等。
 
 ### 8.5 `api_tokens`
-`token_hash`（sha256 — 明文不存）+ `token_prefix` 供識別、`scopes`（`text[]`）、`object_filters`（jsonb ACL）、`expires_at`（必填）、使用 / 撤銷時間。
+`token_hash`（sha256，明文不存）+ `token_prefix` 供識別、`scopes`（`text[]`）、`object_filters`（jsonb ACL）、`expires_at`（必填）、使用 / 撤銷時間。
 
 ### 8.6 `custom_field_definitions`
 admin 為 `object_type` ∈ `subnet / ip / device` 定義欄位。`field_type` ∈ text/int/float/bool/date/select/multi_select/regex，含 `options`/`validation_regex`/`required`/`display_order`。值經驗證後存進各實體的 `custom_fields` jsonb。`(object_type, name)` 唯一。
 
 ### 8.7 `user_preferences`
-每使用者（PK = user_id）：`locale`（zh-TW/en-US）、`theme`、`timezone`、`calendar`（gregorian/minguo）、`page_size`、`table_columns`（jsonb — 各表顯示欄位）、`pinned_subnet_ids`（jsonb — 儀表板「常用子網路」）、`pinned`（jsonb `{namespace: [id…]}` — 機房/地點/機櫃等通用釘選，存後端而非 localStorage）。註：上線判定閾值已改為全域設定（`system_settings.online_grace_minutes`），不再是個人偏好。
+每使用者（PK = user_id）：`locale`（zh-TW/en-US/ja-JP；加語言時 CHECK 約束要靠 migration 一起放寬，否則選了新語言會存檔失敗，畫面上只寫「儲存失敗」）、`theme`、`timezone`、`calendar`（gregorian/minguo）、`page_size`、`table_columns`（jsonb，各表顯示欄位）、`pinned_subnet_ids`（jsonb，儀表板「常用子網路」）、`pinned`（jsonb `{namespace: [id…]}`，機房/地點/機櫃等通用釘選，存後端而非 localStorage）。註：上線判定閾值已改為全域設定（`system_settings.online_grace_minutes`），不再是個人偏好。
 
 ### 8.8 `system_settings`
 admin key/value 設定（`key` PK、`value` jsonb、`updated_by`），覆寫 env。內含 hostname / ARP-MAC / 裝置名稱 / 裝置型號 / OS 解析的**來源優先序**、`online_grace_minutes`、LLM 設定、AI chat 保留天數等。
@@ -256,10 +256,10 @@ admin key/value 設定（`key` PK、`value` jsonb、`updated_by`），覆寫 env
 ### 8.10 `background_tasks`
 長時間作業的統一記錄（`librenms.sync` / `opnsense.sync` / `dns.sync` / `phpipam.migration` / `scanner.run` …）：`kind`、`status`（pending/running/succeeded/failed/cancelled）、`target_*`、`progress`（0–100）、`summary`（jsonb）、時間戳。於 `/api/v1/tasks` 呈現。
 
-### 8.11 憑證集中保管與派送 — `certificate.py`
+### 8.11 憑證集中保管與派送：`certificate.py`
 - **Certificate**：受管理的憑證（`name`、`domains`/SAN、`source_type`（`none`/`url`/`sftp`）+ `source_config` jsonb 供定期自動抓取、`fetch_interval_seconds`、`last_fetch_at`/`last_fetch_error`）。
-- **CertVersion**：每個上傳 / 抓取的版本 — `fingerprint_sha256`、`subject`/`issuer`/`serial`、`not_before`/`not_after`、`cert_pem`/`chain_pem`、AES-GCM 加密的私鑰（`key_enc`/`key_nonce`）、`is_current`。缺中繼 / 根憑證時可用系統信任庫補齊。
-- **CertAgent**：每台主機的派送代理 — `enroll_key_hash`、`scope_cert_ids`（jsonb，預設關閉）、`device_id`（連到某 jt-ipam 裝置；名稱＋來源 IP 在 UI 變可點）、`last_source_ip` / `recent_sources`（同把 Key 多主機偵測）、`agent_version`、`reported`（jsonb 部署狀態）。純 bash 代理以 `X-Agent-Key` 拉憑證，派送到 nginx / apache / haproxy / Proxmox VE·PMG·PBS / Zimbra / … 並做 設定測試 → 失敗還原 → reload。私鑰僅在 scope 內經 TLS 釋出給代理，且逐次稽核；到期 / 飄移會發出告警。
+- **CertVersion**：每個上傳 / 抓取的版本，含 `fingerprint_sha256`、`subject`/`issuer`/`serial`、`not_before`/`not_after`、`cert_pem`/`chain_pem`、AES-GCM 加密的私鑰（`key_enc`/`key_nonce`）、`is_current`。缺中繼 / 根憑證時可用系統信任庫補齊。
+- **CertAgent**：每台主機的派送代理，含 `enroll_key_hash`、`scope_cert_ids`（jsonb，預設關閉）、`device_id`（連到某 jt-ipam 裝置；名稱＋來源 IP 在 UI 變可點）、`last_source_ip` / `recent_sources`（同把 Key 多主機偵測）、`agent_version`、`reported`（jsonb 部署狀態）。純 bash 代理以 `X-Agent-Key` 拉憑證，派送到 nginx / apache / haproxy / Proxmox VE·PMG·PBS / Zimbra / … 並做 設定測試 → 失敗還原 → reload。私鑰僅在 scope 內經 TLS 釋出給代理，且逐次稽核；到期 / 飄移會發出告警。
 
 ---
 

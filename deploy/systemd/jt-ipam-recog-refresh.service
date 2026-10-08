@@ -1,0 +1,16 @@
+[Unit]
+Description=jt-ipam Recog fingerprint database weekly update check
+After=network-online.target jt-ipam-backend.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=jtipam
+Group=jtipam
+WorkingDirectory=/opt/jt-ipam/backend
+EnvironmentFile=/etc/jt-ipam/backend.env
+# Optional component: a failed check is logged and leaves the installed release untouched.
+ExecStart=/opt/jt-ipam/backend/.venv/bin/python -m app.cli.recog update
+TimeoutStartSec=10min
+StandardOutput=journal
+StandardError=journal

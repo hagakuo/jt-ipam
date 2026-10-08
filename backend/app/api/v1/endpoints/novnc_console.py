@@ -35,6 +35,7 @@ from app.core.db import SessionLocal, get_session
 from app.core.rate_limit import _redis_client
 from app.core.security import envelope_decrypt
 from app.core.tickets import take_once
+from app.core.ui_error import detail_of, ui_detail
 from app.models.address import IPAddress
 from app.models.ssh_credential import SSHCredential
 from app.models.user import User
@@ -70,20 +71,21 @@ class NovncTicketIn(BaseModel):
 
 async def _resolve_creds(
     session: AsyncSession, user: User, ip: IPAddress, payload: NovncTicketIn,
-) -> tuple[str, str]:
-    """回 (pve_username〔user@realm〕, password)。優先用金庫憑證，否則用輸入帳密。"""
+) -> tuple[str, str, str | None]:
+    """回 (pve_username〔user@realm〕, password, 已存帳密的名稱)。優先用金庫憑證，否則用輸入帳密
+    （手動輸入時名稱是 None）。名稱是給錯誤訊息用的：被拒時要講出是哪一組。"""
     if payload.credential_id is not None:
         from app.api.v1.endpoints.ssh_credentials import cred_aad
         cred = await session.get(SSHCredential, payload.credential_id)
         if (cred is None or cred.owner_user_id != user.id or cred.protocol != "pve"
                 or (cred.target_ip_id is not None and cred.target_ip_id != ip.id)):
-            raise HTTPException(status_code=404, detail="找不到 PVE 憑證")
+            raise HTTPException(status_code=404, detail=ui_detail("console_pve_cred_not_found", "找不到 PVE 憑證"))
         secrets_enc = dict(cred.secrets_enc or {})
         password = envelope_decrypt(secrets_enc["password"], aad=cred_aad(user.id, "password"))
-        return cred.username, password
+        return cred.username, password, cred.label
     if not payload.username or not payload.password:
-        raise HTTPException(status_code=400, detail="缺少 PVE 帳號或密碼")
-    return pvec.normalize_username(payload.username, payload.realm), payload.password
+        raise HTTPException(status_code=400, detail=ui_detail("console_pve_creds_missing", "缺少 PVE 帳號或密碼"))
+    return pvec.normalize_username(payload.username, payload.realm), payload.password, None
 
 
 @router.post("/{address_id}/novnc/ticket")
@@ -95,7 +97,8 @@ async def issue_novnc_ticket(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     if not NOVNC_AVAILABLE:
-        raise HTTPException(status_code=503, detail="PVE 主控台功能未安裝（缺 websockets 相依）")
+        raise HTTPException(status_code=503, detail=ui_detail("console_pve_not_installed",
+                            "PVE 主控台功能未安裝（缺 websockets 相依）"))
     from app.core.rate_limit import limit_per_ip
 
     await limit_per_ip(request, name="novnc")
@@ -104,12 +107,12 @@ async def issue_novnc_ticket(
     if ip is None:
         raise HTTPException(status_code=404, detail="Address not found")
     if not await can_use_novnc(session, user=user, ip=ip):
-        raise HTTPException(status_code=403, detail="無 PVE 主控台連線權限")
+        raise HTTPException(status_code=403, detail=ui_detail("console_pve_forbidden", "無 PVE 主控台連線權限"))
     target = await pvec.resolve_pve_target(session, ip)
     if target is None:
-        raise HTTPException(status_code=409, detail="此 IP 未對應到 Proxmox VE 的 VM/CT")
+        raise HTTPException(status_code=409, detail=ui_detail("console_pve_no_vm", "此 IP 未對應到 Proxmox VE 的 VM/CT"))
 
-    pve_user, password = await _resolve_creds(session, user, ip, payload)
+    pve_user, password, cred_label = await _resolve_creds(session, user, ip, payload)
     # 用使用者帳密登入 PVE → vncproxy/termproxy（權限不足在這裡就擋下）
     try:
         pve_ticket, csrf = await pvec.pve_login(
@@ -118,11 +121,20 @@ async def issue_novnc_ticket(
         )
         vncticket, port = await pvec.pve_console_proxy(target, pve_ticket, csrf)
     except pvec.PveConsoleError as e:
-        # 帶上 code：前端要能分辨 tfa_required（跳出驗證碼輸入）與其他失敗。
-        # detail 保持含 message 欄位，既有只讀字串的呼叫端不會變成 [object Object]。
+        if e.code == "pve_auth_failed" and cred_label is not None:
+            # 用已存帳密被拒：講出是哪一組 —— 存的時候密碼就打錯、或之後改過密碼，是最常見的原因
+            # （使用者回報，2026-09-24：那組從來沒有成功用過）
+            e = pvec.PveConsoleError(
+                f"PVE（{e.params.get('host')}）拒絕了已存帳密「{cred_label}」（{pve_user}）。"
+                "已存的密碼可能打錯或已變更，請改用手動輸入並重新儲存",
+                code="pve_auth_failed_saved", status=401,
+                label=cred_label, user=pve_user, host=e.params.get("host") or "",
+            )
+        # 帶上 code：前端要能分辨 pve_tfa_required（跳出驗證碼輸入）與其他失敗，
+        # 而且句子要能翻成使用者的語言（errors.<code>）。
         raise HTTPException(
             status_code=e.http_status,
-            detail={"code": e.code, "message": str(e)},
+            detail=detail_of(e, "pve_error"),
         ) from e
     finally:
         del password
@@ -213,6 +225,11 @@ async def novnc_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = ""
         await websocket.close(code=4429)
         return
 
+    # ⚠️ 跳板（issue #24）不適用於這個主控台：noVNC 連的是**虛擬化主機**
+    # （`data["base_url"]`，由 Proxmox 整合設定），不是這筆 IP 記錄的位址。
+    # 因此子網路上的「連線出口」對它沒有意義，也**不會**造成「連到別人」的風險 ——
+    # PVE 的位址是明確設定的，不是可能重疊的私網位址。
+    # 真的需要經跳板連 PVE 的話，要處理的是 Proxmox 整合那一端，不是這裡。
     pve_url = pvec.pve_vncwebsocket_url(
         pvec.PveTarget(kind=data["kind"], node=data["node"], vmid=int(data["vmid"]),
                        cluster_name=None, base_url=data["base_url"], verify_tls=bool(data["verify_tls"])),

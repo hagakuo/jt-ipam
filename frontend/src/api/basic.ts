@@ -155,6 +155,17 @@ export interface DeviceVLAN {
   source: string;
   last_seen_at: string;
 }
+/** 依 id 取單一裝置。
+ *
+ *  名稱顯示**不可以**只靠 `listDevices()` 的那份清單：它預設只拿一頁（200 筆），
+ *  剛建立或排序落在後面的裝置就會查不到，畫面只好退回顯示一段 UUID。
+ *  實機遇過：依建議建立裝置之後，IP 詳細資料的「裝置」欄顯示 `a392af8f…`。
+ */
+export async function getDevice(id: string): Promise<Device> {
+  const { data } = await apiClient.get<Device>(`/api/v1/devices/${id}`);
+  return data;
+}
+
 export async function getDeviceVlans(deviceId: string): Promise<DeviceVLAN[]> {
   const { data } = await apiClient.get<DeviceVLAN[]>(`/api/v1/devices/${deviceId}/vlans`);
   return data;
@@ -164,7 +175,7 @@ export interface DeviceLibreNMS {
   hostname: string | null; sysname: string | null; primary_ip: string | null;
   hardware: string | null; os: string | null; version: string | null;
   serial: string | null; uptime: number | null; status: string | null;
-  last_seen_at: string | null;
+  last_seen_at: string | null; url: string | null;
 }
 export async function getDeviceLibrenms(deviceId: string): Promise<DeviceLibreNMS | null> {
   const { data } = await apiClient.get<DeviceLibreNMS | null>(`/api/v1/devices/${deviceId}/librenms`);
@@ -219,14 +230,54 @@ export async function setMapProvider(provider: MapProvider): Promise<void> {
   await apiClient.put("/api/v1/system/map-provider", { provider });
 }
 
-export async function getOnlineGrace(): Promise<number> {
+/** 一個候選的上線判定證據來源。 */
+export interface LivenessSource {
+  key: string;
+  /** 證據會不會過期 —— 不會過期的勾了就等於「看過一次就永遠上線」 */
+  aging: boolean;
+  /** 這個站台真的有這個整合 */
+  configured: boolean;
+}
+export interface LivenessConfig {
+  minutes: number;
+  sources: string[];
+  /** 後端算好的候選清單（只含這個站台有的整合，加上已勾選的） */
+  available: LivenessSource[];
+}
+
+export async function getOnlineGrace(): Promise<LivenessConfig> {
   try {
-    const { data } = await apiClient.get<{ minutes: number }>("/api/v1/system/online-grace");
-    return Number(data.minutes) || 30;
+    const { data } = await apiClient.get<LivenessConfig>("/api/v1/system/online-grace");
+    return {
+      minutes: Number(data.minutes) || 30,
+      sources: Array.isArray(data.sources) ? data.sources : ["scanner", "librenms"],
+      available: Array.isArray(data.available) ? data.available : [],
+    };
+  } catch { return { minutes: 30, sources: ["scanner", "librenms"], available: [] }; }
+}
+export async function setOnlineGrace(minutes: number, sources: string[]): Promise<void> {
+  await apiClient.put("/api/v1/system/online-grace", { minutes, sources });
+}
+
+export async function getIpCooldown(): Promise<number> {
+  try {
+    const { data } = await apiClient.get<{ days: number }>("/api/v1/system/ip-cooldown");
+    return Number(data.days) || 0;
   } catch { return 30; }
 }
-export async function setOnlineGrace(minutes: number): Promise<void> {
-  await apiClient.put("/api/v1/system/online-grace", { minutes });
+export async function setIpCooldown(days: number): Promise<void> {
+  await apiClient.put("/api/v1/system/ip-cooldown", { days });
+}
+
+/** 憑證到期通知的**全域預設**天數（每張憑證仍可各自覆寫）。 */
+export async function getCertExpiryDays(): Promise<number> {
+  try {
+    const { data } = await apiClient.get<{ days: number }>("/api/v1/system/cert-expiry-alert");
+    return Number(data.days) || 21;
+  } catch { return 21; }
+}
+export async function setCertExpiryDays(days: number): Promise<void> {
+  await apiClient.put("/api/v1/system/cert-expiry-alert", { days });
 }
 
 export type RackNameAlign = "left" | "center" | "right";

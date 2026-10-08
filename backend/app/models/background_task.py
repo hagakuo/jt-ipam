@@ -32,7 +32,7 @@ class BackgroundTask(Base, UUIDPrimaryKeyMixin):
     # 對應的物件（選用）— 例如 LibreNMSInstance.id
     target_type: Mapped[str | None] = mapped_column(String(64))
     target_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    target_label: Mapped[str | None] = mapped_column(Text)  # 顯示用，例如 "mon5"
+    target_label: Mapped[str | None] = mapped_column(Text)  # 顯示用，例如監控實例的名稱
 
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

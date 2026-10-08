@@ -200,13 +200,13 @@ async def _notify_stage(
     gids = {_uuid.UUID(x) for x in step["group_ids"] if _is_uuid(x)}
     if gids:
         rows = (await session.execute(
-            select(UserGroupMember.user_id).where(UserGroupMember.group_id.in_(gids))
+            select(UserGroupMember.user_id).where(UserGroupMember.group_id.in_(gids))  # bounded: approver groups
         )).all()
         uids.update(r[0] for r in rows)
     if not uids:
         return
     users = list((await session.execute(
-        select(_User).where(_User.id.in_(uids), _User.is_active.is_(True))
+        select(_User).where(_User.id.in_(uids), _User.is_active.is_(True))  # bounded: approver groups
     )).scalars().all())
     body = f"申請 {subnet.cidr} 的 IP 已進入「{step['name']}」關卡，待你審核。"
     await _deliver_to_approvers(

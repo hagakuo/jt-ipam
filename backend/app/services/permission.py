@@ -23,9 +23,10 @@ import uuid
 from collections import defaultdict
 from typing import Any, Literal
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.sqlin import in_values
 from app.models.permission import Permission
 from app.models.user import User, UserGroupMember
 
@@ -172,6 +173,23 @@ async def can_use_ssh(session: AsyncSession, *, user: User, ip: Any) -> bool:
     看不到該 IP（子網路權限為 none）一律不可用。
     """
     if not getattr(ip, "ssh_enabled", False):
+        return False
+    if user.is_admin:
+        return True
+    level = await get_object_permission(
+        session, user=user, object_type="subnet", object_id=ip.subnet_id
+    )
+    if level == "none":
+        return False
+    if has_permission(level, "write"):
+        return True
+    return bool(getattr(user, "can_ssh", False))
+
+
+async def can_use_rustdesk(session: AsyncSession, *, user: User, ip: Any) -> bool:
+    """是否給「以 RustDesk 連線」的網址。比照 VNC：這個 IP 要勾了 rustdesk_enabled，再看遠端主控台權限
+    （admin、子網路 write、或 can_ssh 且看得到）。連線本身在 RustDesk 客戶端與對方之間，對方的 RustDesk 密碼仍是最後一道。"""
+    if not getattr(ip, "rustdesk_enabled", False):
         return False
     if user.is_admin:
         return True
@@ -336,35 +354,35 @@ async def _resolve_visible(
         return set(granted.get("location", set()))
     if object_type == "section":
         conds = []
-        if granted.get("section"): conds.append(Section.id.in_(granted["section"]))
-        if granted.get("customer"): conds.append(Section.customer_id.in_(granted["customer"]))
+        if granted.get("section"): conds.append(in_values(Section.id, granted["section"]))
+        if granted.get("customer"): conds.append(in_values(Section.customer_id, granted["customer"]))
         return await ids_of(Section.id, *conds)
     if object_type == "rack":
         conds = []
-        if granted.get("rack"): conds.append(Rack.id.in_(granted["rack"]))
-        if granted.get("location"): conds.append(Rack.location_id.in_(granted["location"]))
+        if granted.get("rack"): conds.append(in_values(Rack.id, granted["rack"]))
+        if granted.get("location"): conds.append(in_values(Rack.location_id, granted["location"]))
         return await ids_of(Rack.id, *conds)
     if object_type == "subnet":
         vis_sections = await _resolve_visible(session, "section", granted)  # 含 customer→section
         conds = []
-        if granted.get("subnet"): conds.append(Subnet.id.in_(granted["subnet"]))
-        if vis_sections: conds.append(Subnet.section_id.in_(vis_sections))
-        if granted.get("customer"): conds.append(Subnet.customer_id.in_(granted["customer"]))
+        if granted.get("subnet"): conds.append(in_values(Subnet.id, granted["subnet"]))
+        if vis_sections: conds.append(in_values(Subnet.section_id, vis_sections))
+        if granted.get("customer"): conds.append(in_values(Subnet.customer_id, granted["customer"]))
         return await ids_of(Subnet.id, *conds)
     if object_type == "ip":
         vis_subnets = await _resolve_visible(session, "subnet", granted)
         conds = []
-        if granted.get("ip"): conds.append(IPAddress.id.in_(granted["ip"]))
-        if vis_subnets: conds.append(IPAddress.subnet_id.in_(vis_subnets))
-        if granted.get("customer"): conds.append(IPAddress.customer_id.in_(granted["customer"]))
+        if granted.get("ip"): conds.append(in_values(IPAddress.id, granted["ip"]))
+        if vis_subnets: conds.append(in_values(IPAddress.subnet_id, vis_subnets))
+        if granted.get("customer"): conds.append(in_values(IPAddress.customer_id, granted["customer"]))
         return await ids_of(IPAddress.id, *conds)
     if object_type == "device":
         vis_racks = await _resolve_visible(session, "rack", granted)
         conds = []
-        if granted.get("device"): conds.append(Device.id.in_(granted["device"]))
-        if vis_racks: conds.append(Device.rack_id.in_(vis_racks))
-        if granted.get("location"): conds.append(Device.location_id.in_(granted["location"]))
-        if granted.get("customer"): conds.append(Device.customer_id.in_(granted["customer"]))
+        if granted.get("device"): conds.append(in_values(Device.id, granted["device"]))
+        if vis_racks: conds.append(in_values(Device.rack_id, vis_racks))
+        if granted.get("location"): conds.append(in_values(Device.location_id, granted["location"]))
+        if granted.get("customer"): conds.append(in_values(Device.customer_id, granted["customer"]))
         return await ids_of(Device.id, *conds)
     return set()
 
@@ -394,10 +412,23 @@ DEFAULT_ROLES: dict[str, dict[str, str]] = {
 }
 
 
+# 啟動時 seed 用的 advisory lock 鍵（任意常數，只要各 seed 不同）
+SEED_LOCK_ROLES = 0x6A74_0001
+
+
 async def seed_default_roles(session: AsyncSession) -> int:
-    """建立 5 個內建角色（群組 + wildcard 授權），冪等。回傳新建角色數。"""
+    """建立 5 個內建角色（群組 + wildcard 授權），冪等。回傳新建角色數。
+
+    ⚠️ 冪等（重跑安全）不等於**並行安全**：多個 uvicorn worker 是同時啟動的，會同時看到
+    空表、同時 INSERT，輸的那幾個吃到 UniqueViolation。功能沒壞（贏的那個已經建好），但
+    每次全新安裝的 journal 都會噴一整段紅色 SQL 例外，客戶第一次看 log 就先被嚇到。
+    因此在這裡拿 advisory lock 讓呼叫端排隊 —— 鎖要跟它保護的不變式放在一起，任何
+    呼叫路徑都受保護。鎖在同一個交易裡，函式結尾 commit 時自動釋放；後面的 worker 在
+    READ COMMITTED 下每個 statement 取新快照，看得到前一個已建好的資料。
+    """
     from app.models.user import Group
 
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": SEED_LOCK_ROLES})
     created = 0
     for role_name, grants in DEFAULT_ROLES.items():
         grp = (await session.execute(
@@ -424,3 +455,25 @@ async def seed_default_roles(session: AsyncSession) -> int:
                 ))
     await session.commit()
     return created
+
+
+async def purge_permissions_for_object(
+    session: AsyncSession, *, object_type: str, object_id: Any,
+) -> int:
+    """物件被刪掉時，一併清掉指向它的授權。回傳清掉幾筆。
+
+    `permissions.object_id` 沒有外鍵（它指向七種表其中之一），所以沒有人會自動清。
+    留著雖然不會讓誰多拿到權限（物件已經不存在，比對永遠不會命中），但那是**看不見的
+    垃圾**：權限頁列得出來卻點不進去，稽核時也解釋不了。與 principal 側同一套處理。
+    """
+    from sqlalchemy import delete as _delete
+
+    from app.models.permission import Permission
+
+    rows = (await session.execute(
+        _delete(Permission).where(
+            Permission.object_type == object_type,
+            Permission.object_id == object_id,
+        ).returning(Permission.id)
+    )).scalars().all()
+    return len(rows)

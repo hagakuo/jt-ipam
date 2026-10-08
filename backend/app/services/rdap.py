@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.ui_error import UiError
 
 # 每個來源的查詢入口。兩者都會視網段轉址到實際的註冊管理機構，`safe_request`
 # 會在每次轉址後重新做 SSRF 檢查。
@@ -30,7 +31,7 @@ RDAP_SOURCES: dict[str, str] = {
 _TIMEOUT = 20.0
 
 
-class RdapError(RuntimeError):
+class RdapError(UiError):
     """查詢失敗（連不上、查無資料、對方回非預期內容）—— 屬上游問題。"""
 
 
@@ -59,13 +60,13 @@ def normalize_query(raw: str) -> str:
     """
     q = (raw or "").strip()
     if not q:
-        raise RdapInputError("請輸入 IP 或 CIDR")
+        raise RdapInputError("請輸入 IP 或 CIDR", code="rdap_empty")
     try:
         if "/" in q:
             return str(ipaddress.ip_network(q, strict=False))
         return str(ipaddress.ip_address(q))
     except ValueError as exc:
-        raise RdapInputError(f"不是有效的 IP 或 CIDR：{raw}") from exc
+        raise RdapInputError(f"不是有效的 IP 或 CIDR：{raw}", code="rdap_bad_query", value=str(raw)) from exc
 
 
 def _cidrs_from(d: dict[str, Any]) -> list[str]:
@@ -135,30 +136,31 @@ async def lookup_ip(source: str, query: str) -> RdapNetwork:
     """向指定來源查一個 IP / CIDR 的網段登記資料。"""
     base = RDAP_SOURCES.get(source)
     if base is None:
-        raise RdapInputError(f"未知的查詢來源：{source}")
+        raise RdapInputError(f"未知的查詢來源：{source}", code="rdap_unknown_source", value=source)
     q = normalize_query(query)
     url = f"{base}/ip/{q}"
     try:
         resp = await safe_request("GET", url, timeout=_TIMEOUT,
                                   headers={"Accept": "application/rdap+json"})
     except UnsafeOutboundURL as exc:
-        raise RdapError(f"查詢被安全檢查擋下：{exc}") from exc
+        raise RdapError(f"查詢被安全檢查擋下：{exc}", code="rdap_ssrf", reason=str(exc)[:200]) from exc
     except Exception as exc:  # 連線失敗 / 逾時
-        raise RdapError(f"連不上 {base}：{exc}") from exc
+        raise RdapError(f"連不上 {base}：{exc}", code="rdap_unreachable", base=base, reason=str(exc)[:200]) from exc
 
     if resp.status_code == 404:
-        raise RdapError(f"{source.upper()} 查無此網段：{q}")
+        raise RdapError(f"{source.upper()} 查無此網段：{q}", code="rdap_not_found", source=source.upper(), query=q)
     if resp.status_code >= 400:
-        raise RdapError(f"{source.upper()} 回應 HTTP {resp.status_code}")
+        raise RdapError(f"{source.upper()} 回應 HTTP {resp.status_code}", code="rdap_http",
+                        source=source.upper(), status=resp.status_code)
     try:
         data = resp.json()
     except ValueError as exc:
-        raise RdapError("對方回的不是 JSON（可能不是 RDAP 服務）") from exc
+        raise RdapError("對方回的不是 JSON（可能不是 RDAP 服務）", code="rdap_not_json") from exc
     if not isinstance(data, dict):
-        raise RdapError("RDAP 回應格式非預期")
+        raise RdapError("RDAP 回應格式非預期", code="rdap_bad_shape")
 
     net = parse_rdap_network(data)
     net.source_url = str(resp.url)
     if not net.cidrs:
-        raise RdapError(f"查到資料但取不出網段（{q}）")
+        raise RdapError(f"查到資料但取不出網段（{q}）", code="rdap_no_cidr", query=q)
     return net

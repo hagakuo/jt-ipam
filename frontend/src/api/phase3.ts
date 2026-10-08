@@ -58,6 +58,7 @@ export interface ScanAgent {
   enabled: boolean;
   /** 跑在 jt-ipam 主機上的那一個（安裝時自動建立） */
   is_local: boolean;
+  auto_create_ips: boolean;
   has_key: boolean;
   agent_version: string | null;
   server_agent_version: string | null;
@@ -67,6 +68,16 @@ export interface ScanAgent {
   available_probes: string[] | null;
   tools: ScanAgentTool[] | null;
   subnet_count: number;
+  /** 最近一輪的負載摘要（代理 1.10.0 起回報）；還沒回報過就是 null */
+  load?: ScanAgentLoadSummary | null;
+  /** 主控台中繼（issue #24 階段二）：管理員允許、上限、代理回報的能力（舊代理＝null）、目前中繼數 */
+  relay_allowed?: boolean;
+  relay_max_sessions?: number;
+  /** 允許中繼的埠（網頁設定，"22,3389,5900-5910"） */
+  relay_ports?: string;
+  /** 代理回報：enabled＝代理主機沒有否決；ports／max＝代理主機的本機限縮（空／0＝不限） */
+  relay_caps?: { enabled: boolean; ports: number[]; max: number; pinned: boolean } | null;
+  relay_active?: number;
   last_seen_at: string | null;
   last_error: string | null;
   created_at: string;
@@ -75,6 +86,36 @@ export interface ScanAgent {
 // 建立 / rotate 時多回一次性 enroll_key
 export interface ScanAgentCreated extends ScanAgent { enroll_key: string; }
 
+export type ScanLoadLevel = "ok" | "busy" | "overloaded";
+export interface ScanAgentLoadSummary {
+  ratio: number; level: ScanLoadLevel; duration_s: number; interval_s: number;
+  heavy_backlog: number; truncated: number; coverage_gap?: number; at: string | null;
+}
+export interface ScanLoadSubnet {
+  cidr: string; subnet_id?: string | null; hosts: number; total_hosts?: number; alive: number;
+  duration_s: number; per_host_ms: number | null; truncated: boolean;
+  /** 分段輪替（代理 1.11.0 起）：這輪是第幾段／共幾段 */
+  chunk?: number; rounds?: number;
+}
+export interface ScanLoadSuggestion { code: string; params: Record<string, unknown> }
+export interface ScanAgentLoad {
+  agent_id: string;
+  last_cycle: Record<string, unknown> | null;
+  evaluation: {
+    ratio: number; level: ScanLoadLevel; duration_s: number; interval_s: number;
+    heavy_backlog: number; heavy_lagging: boolean; truncated: string[];
+    subnets: ScanLoadSubnet[]; suggestions: ScanLoadSuggestion[];
+  } | null;
+  history: { at: string; duration_s: number; interval_s: number; heavy_backlog: number;
+             hosts: number | null; alive: number | null }[];
+}
+
+/** 負載面板：最近一輪的逐子網路細節、評估與建議、最近幾輪的耗時 */
+export async function getScanAgentLoad(id: string): Promise<ScanAgentLoad> {
+  const { data } = await apiClient.get<ScanAgentLoad>(`/api/v1/scan-agents/${id}/load`);
+  return data;
+}
+
 export async function listScanAgents(): Promise<Paginated<ScanAgent>> {
   const { data } = await apiClient.get<Paginated<ScanAgent>>("/api/v1/scan-agents", {
     params: { page: 1, page_size: 200 },
@@ -82,7 +123,7 @@ export async function listScanAgents(): Promise<Paginated<ScanAgent>> {
   return data;
 }
 export async function createScanAgent(p: {
-  name: string; description?: string; enabled?: boolean;
+  name: string; description?: string; enabled?: boolean; auto_create_ips?: boolean;
   enabled_probes?: string[]; probe_intervals?: Record<string, number>;
 }): Promise<ScanAgentCreated> {
   const { data } = await apiClient.post<ScanAgentCreated>("/api/v1/scan-agents", p);
@@ -97,8 +138,9 @@ export async function scanNowAgent(id: string): Promise<{ queued: boolean; eta_s
   return data;
 }
 export async function updateScanAgent(id: string, p: Partial<{
-  description: string; enabled: boolean;
+  description: string; enabled: boolean; auto_create_ips: boolean;
   enabled_probes: string[]; probe_intervals: Record<string, number>;
+  relay_allowed: boolean; relay_max_sessions: number; relay_ports: string;
 }>): Promise<ScanAgent> {
   const { data } = await apiClient.patch<ScanAgent>(`/api/v1/scan-agents/${id}`, p);
   return data;
@@ -190,6 +232,7 @@ export interface NAT {
   source_kind: string | null;
   source_firewall_id: string | null;
   source_label: string | null;
+  source_firewall_name?: string | null;
   external_id: string | null;
 }
 
@@ -240,17 +283,37 @@ export async function deleteNAT(id: string): Promise<void> {
 export interface AnomalyReport {
   ip_conflicts: any[];
   mac_drifts: any[];
+  /** 參考用的換埠（虛擬機遷移、隨機 MAC 漫遊、上行路徑變更）：不通知、不算總數 */
+  mac_drift_reference?: any[];
   ghost_ips: any[];
   unauthorized_ips: any[];
+  /** 未授權 IP 總數：清單最多列 1,000 筆（最近看到的在前），超過時這裡比清單長度大 */
+  unauthorized_total?: number;
   rogue_dhcp: any[];
   external_exposure: any[];
   dangling_dns: any[];
   duplicate_ip_records: any[];
   suspicious_changes: any[];
+  fw_rule_rot: any[];
+  arp_only_liveness: any[];
+  stale_device_links: any[];
+  mac_flapping?: Record<string, any>[];
+  identity_changes?: Record<string, any>[];
 }
 
 export async function runAnomalyScan(): Promise<AnomalyReport> {
   const { data } = await apiClient.post<AnomalyReport>("/api/v1/anomalies/scan");
+  return data;
+}
+
+/** 上一次偵測的結果（手動或排程）。`live`（上線狀態）是現在算的，不是當時的快照。 */
+export interface LastAnomalyReport {
+  report: AnomalyReport | null;
+  at: string | null;
+  trigger: "manual" | "schedule" | null;
+}
+export async function getLastAnomalyReport(): Promise<LastAnomalyReport> {
+  const { data } = await apiClient.get<LastAnomalyReport>("/api/v1/anomalies/last");
   return data;
 }
 
@@ -422,6 +485,8 @@ export interface ProxmoxWrite {
   auth_username: string; auth_token_id: string; token_secret?: string;
   verify_tls?: boolean; enabled?: boolean; sync_interval_seconds?: number;
   scope_subnet_ids?: string[] | null;
+  /** 信任虛擬化取得的 IP：IPAM 沒有時自動建立（預設關） */
+  auto_create_ips?: boolean;
 }
 
 export const Virt = {
@@ -474,6 +539,8 @@ export interface DevicePort {
   id: string; device_id: string; name: string; type: string;
   peer_port_id: string | null; position: number | null; description: string | null;
   link?: string | null; mac_address?: string | null;
+  /** OUI 廠商（後端依 MAC 前綴查） */
+  mac_vendor?: string | null;
 }
 export interface TraceNode {
   port_id?: string; port_name?: string; port_type?: string;
@@ -505,7 +572,8 @@ export const Physical = {
     return data;
   },
   async deletePort(id: string): Promise<void> { await apiClient.delete(`/api/v1/device-ports/${id}`); },
-  async importPorts(deviceId: string): Promise<{ imported: number; found: number; linked_librenms: number; source: string }> {
+  async importPorts(deviceId: string): Promise<{ imported: number; removed?: number; pruned?: number;
+    found: number; linked_librenms: number; source: string }> {
     const { data } = await apiClient.post("/api/v1/device-ports/import", null, { params: { device_id: deviceId } });
     return data;
   },
@@ -547,3 +615,41 @@ export const Physical = {
     await apiClient.delete(`/api/v1/cables/${id}`);
   },
 };
+
+/** 異常偵測的排程設定（管理員）。形狀與巡檢排程一致；`interval` 是每隔 N 分鐘。 */
+export interface AnomalySchedule {
+  schedule_enabled: boolean;
+  times: string[];
+  frequency: "daily" | "weekly" | "monthly" | "interval";
+  weekdays: number[];
+  month_day: number;
+  interval_minutes: number;
+  last_run_at: string | null;
+}
+
+export async function getAnomalySchedule(): Promise<AnomalySchedule> {
+  const { data } = await apiClient.get<AnomalySchedule>("/api/v1/anomalies/schedule");
+  return data;
+}
+
+export async function updateAnomalySchedule(
+  patch: Partial<Omit<AnomalySchedule, "last_run_at">>,
+): Promise<AnomalySchedule> {
+  const { data } = await apiClient.put<AnomalySchedule>("/api/v1/anomalies/schedule", patch);
+  return data;
+}
+
+/** 可以逐 IP 忽略的異常類別（由後端決定，前端不要自己再寫一份）。 */
+export async function listIgnorableCategories(): Promise<{ categories: string[] }> {
+  const { data } = await apiClient.get<{ categories: string[] }>("/api/v1/anomalies/ignorable");
+  return data;
+}
+
+/** 把某個 IP 的某一類異常標記為忽略（會合併既有的忽略項目）。 */
+export async function ignoreAnomalyForIp(
+  ipId: string, category: string, existing: string[] = [],
+): Promise<{ ip_id: string; categories: string[] }> {
+  const categories = Array.from(new Set([...existing, category]));
+  const { data } = await apiClient.put(`/api/v1/anomalies/ignore/${ipId}`, { categories });
+  return data;
+}

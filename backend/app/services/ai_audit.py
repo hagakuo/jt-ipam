@@ -7,7 +7,7 @@
    （相關：MCP 曾經漏掉 `get_topology` 的過濾）。
 2. **每一筆發現都要帶 `evidence`。** LLM 會用非常肯定的語氣講錯話；沒有依據資料，
    使用者無從判斷，那些話就會被當成事實。UI 也必須標明來源是 AI 推測。
-3. **模型的輸出一律當成不可信輸入。** 嚴重度、分類都對照白名單，超出的一律降級；
+3. **模型的輸出一律當成不可信輸入。** 嚴重度、分類都對照允許清單，超出的一律降級；
    長度截斷；解析失敗就整批捨棄而不是塞半截資料進資料庫。
 
 刻意**不**做的事：不讓 LLM 決定任何異動。它只產生「發現」，處置由人決定。
@@ -17,16 +17,20 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
+import structlog
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.sqlin import in_values
 from app.models.address import IPAddress
 from app.models.ai_finding import AIFinding
 from app.models.device import Device
@@ -35,6 +39,10 @@ from app.models.subnet import Subnet
 from app.models.user import User
 from app.services.arp_precedence import normalize_mac
 from app.services.permission import visible_ids
+
+# 排程判斷住在 `services/schedule.py`（巡檢與異常偵測共用一份）。這裡再匯出，
+# 既有的 `from app.services.ai_audit import due` 與測試不必跟著改。
+from app.services.schedule import due  # noqa: F401
 from app.services.system_config import (
     get_ai_audit_last_run,
     get_llm_config,
@@ -79,6 +87,9 @@ class AuditBusy(RuntimeError):
     """已經有一次巡檢在跑。"""
 
 
+log = structlog.get_logger("ai_audit")
+
+
 def is_audit_running() -> bool:
     """目前是否有巡檢在跑（給端點先擋掉重複觸發，而不是讓它跑到一半才失敗）。"""
     return _RUNNING.locked()
@@ -107,7 +118,7 @@ async def _collect(session: AsyncSession, user: User) -> dict[str, Any]:
     if vis_sub is not None:
         if not vis_sub:
             return {"subnets": [], "ips": [], "devices": [], "empty": True}
-        sub_q = sub_q.where(Subnet.id.in_(vis_sub))
+        sub_q = sub_q.where(in_values(Subnet.id, vis_sub))
     sub_rows = (await session.execute(sub_q.limit(MAX_SAMPLE))).all()
 
     # 每個網段的掃描涵蓋：有沒有在掃、掃到過幾筆。
@@ -120,7 +131,7 @@ async def _collect(session: AsyncSession, user: User) -> dict[str, Any]:
             select(IPAddress.subnet_id,
                    func.count().filter(IPAddress.last_seen_scanner.isnot(None)),
                    func.count())
-            .where(IPAddress.subnet_id.in_([r[0] for r in sub_rows]))
+            .where(in_values(IPAddress.subnet_id, [r[0] for r in sub_rows]))
             .group_by(IPAddress.subnet_id)
         )).all():
             cover[sid] = (int(seen or 0), int(total or 0))
@@ -143,16 +154,16 @@ async def _collect(session: AsyncSession, user: User) -> dict[str, Any]:
         if not vis_ip:
             ip_q = ip_q.where(IPAddress.id.is_(None))
         else:
-            ip_q = ip_q.where(IPAddress.id.in_(vis_ip))
+            ip_q = ip_q.where(in_values(IPAddress.id, vis_ip))
     # IP 也跟著子網路的範圍走 —— 否則勾掉的網段照樣被整段送給模型
-    ip_q = ip_q.where(IPAddress.subnet_id.in_([r[0] for r in sub_rows])
+    ip_q = ip_q.where(in_values(IPAddress.subnet_id, [r[0] for r in sub_rows])
                       if sub_rows else IPAddress.id.is_(None))
     ip_rows = (await session.execute(ip_q.limit(MAX_SAMPLE))).all()
 
     vis_dev = await visible_ids(session, user=user, object_type="device", required="read")
     dev_q = select(Device.id, Device.name, Device.type)
     if vis_dev is not None:
-        dev_q = dev_q.where(Device.id.in_(vis_dev)) if vis_dev else dev_q.where(Device.id.is_(None))
+        dev_q = dev_q.where(in_values(Device.id, vis_dev)) if vis_dev else dev_q.where(Device.id.is_(None))
     dev_rows = (await session.execute(dev_q.limit(MAX_SAMPLE))).all()
     # 只給名稱與類型，不給 UUID —— 給了模型就會把 UUID 寫進發現裡，
     # 而人看著一串 UUID 完全不知道那是哪台機器
@@ -254,7 +265,10 @@ _ZH_TW_TERMS = (
     "「預設」不用「默認」、「設定」不用「配置」、「支援」不用「支持」、"
     "「品質」不用「質量」、「透過」不用「通過」、「軟體」不用「軟件」、"
     "「硬體」不用「硬件」、「程式」不用「程序」、「檔案」不用「文件」、"
-    "「登入」不用「登錄」、「還原」不用「回滾」、「選用」不用「可選」"
+    "「登入」（login）不用「登錄」（台灣的「登錄」是登記的意思）、「還原」不用「回滾」、"
+    "「選用」不用「可選」、「正式環境」不用「生產環境」。"
+    "提到資料欄位或狀態值時，寫畫面上的中文名稱並把原文放在括號裡，不要只寫原文，例如"
+    "「狀態（state）為使用中（active）」「最後出現（掃描代理，last_seen_scanner）為空值（null）」"
 )
 
 _LANGUAGES = {
@@ -262,12 +276,16 @@ _LANGUAGES = {
         "Traditional Chinese as used in Taiwan（繁體中文，台灣用語，標點用全形）。"
         "特別注意這些對照，寫錯會一眼看出不是台灣的產品：" + _ZH_TW_TERMS
     ),
-    "en-US": "English",
+    "en-US": ("English. When you mention a data field, use its plain name and put the raw field "
+              "name in parentheses, e.g. \"last seen (scanner, last_seen_scanner)\"."),
+    "ja-JP": ("Japanese（日本語。です・ます調で、専門用語はカタカナまたは英語のまま。"
+              "データ項目や状態値は画面上の日本語名を書き、原文を括弧で添えること。例："
+              "「状態（state）が使用中（active）」「最終確認（スキャナ、last_seen_scanner）が値なし（null）」）"),
 }
 
 
-async def _language_for(session: AsyncSession, user: User) -> str:
-    """發現內容要用哪種語言寫。
+async def _locale_for(session: AsyncSession, user: User) -> str:
+    """發現內容要用哪種語言寫（zh-TW／en-US／ja-JP）。
 
     存下來的是一段文字、不是 i18n key（模型的敘述沒辦法預先翻譯），所以只能挑一種語言。
     取執行者的介面偏好 —— 排程執行時就是設定裡指定的那個管理員。
@@ -277,7 +295,25 @@ async def _language_for(session: AsyncSession, user: User) -> str:
     loc = (await session.execute(
         select(UserPreference.locale).where(UserPreference.user_id == user.id)
     )).scalar_one_or_none()
-    return _LANGUAGES.get(loc or "", _LANGUAGES["zh-TW"])
+    return loc if loc in _LANGUAGES else "zh-TW"
+
+
+def _language_instruction(locale: str) -> str:
+    """語言指示＋欄位名稱對照（跟畫面一致）。只給範例的話，模型會自己取名：實測把 status 寫成
+    「狀態」，跟 state 的「狀態」撞名；兩個最後出現時間也沒標來源。"""
+    base = _LANGUAGES[locale]
+    labels = _FIELD_LABELS.get(locale, {})
+    fields = [k for k in ("state", "status", "last_seen_scanner", "last_seen_librenms", "hostname",
+                          "description", "source", "dhcp_server") if k in labels]
+    if not fields:
+        return base
+    pairs = "、".join(f"{k}＝{labels[k]}" for k in fields) if locale != "en-US" else \
+        ", ".join(f"{k} = {labels[k]}" for k in fields)
+    return f"{base}\nField names on screen: {pairs}"
+
+
+async def _language_for(session: AsyncSession, user: User) -> str:
+    return _language_instruction(await _locale_for(session, user))
 
 
 # 提示詞裡的用詞對照是「盡力而為」—— 模型不一定照做（實測：叫它別用「涉及」，它
@@ -287,15 +323,24 @@ async def _language_for(session: AsyncSession, user: User) -> str:
 # 「支持」（支持某個立場）、「程序」（法律程序）這種一詞兩義的，替換會改錯句意，
 # 只留在提示詞裡靠模型自律。
 _ZH_TW_FIXUPS: tuple[tuple[str, str], ...] = (
-    # 先長後短：「IP 地址」要在「地址」之前，否則會先被短的吃掉
-    ("涉及裝置", "相關裝置"), ("涉及的", "相關的"), ("涉及到", "相關的"),
-    ("IP 地址", "IP 位址"), ("IP地址", "IP 位址"), ("地址", "位址"),
-    ("信息", "資訊"), ("網絡", "網路"), ("服務器", "伺服器"),
-    ("默認", "預設"), ("軟件", "軟體"), ("硬件", "硬體"),
-    ("內存", "記憶體"), ("端口", "連接埠"), ("登錄", "登入"),
-    ("缺失", "缺少"), ("在線", "上線"), ("映射", "對應"),
-    ("子網掩碼", "子網路遮罩"), ("交換機", "交換器"), ("路由器", "路由器"),
+    # 正規表示式＋替換。先長後短：「IP 地址」要在「地址」之前，否則會先被短的吃掉。
+    # **要看前後文**：單純字串取代會跨詞誤轉 —— 「網路區段內存在個人裝置」（內＋存在）
+    # 被換成「區段記憶體在」（2026-09-28 使用者回報）。
+    (r"涉及裝置", "相關裝置"), (r"涉及的", "相關的"), (r"涉及到", "相關的"),
+    (r"IP ?地址", "IP 位址"), (r"地址", "位址"),
+    (r"信息", "資訊"), (r"網絡", "網路"), (r"服務器", "伺服器"),
+    (r"默認", "預設"), (r"軟件", "軟體"), (r"硬件", "硬體"),
+    (r"內存(?!在)", "記憶體"),               # 「內存在」是「內＋存在」
+    (r"端口", "連接埠"),
+    (r"缺失", "缺少"),
+    (r"(?<![所存])在線(?!路)", "上線"),      # 「所在線路」「存在線上」不是「在線」
+    (r"映射", "對應"),
+    (r"子網掩碼", "子網路遮罩"), (r"交換機", "交換器"),
+    # 台灣說「正式環境」；「生產環境」是中國用語（使用者回報）
+    (r"生產(?=環境|網路|伺服器|主機|系統|服務|區段|用途)", "正式"),
+    # 刻意不換「登錄」：台灣的「登錄」是登記的意思（「未登錄於 IPAM」），換成「登入」會改錯句意
 )
+_ZH_TW_RULES = tuple((re.compile(p), r) for p, r in _ZH_TW_FIXUPS)
 
 
 def zh_tw_fixup(text: str) -> str:
@@ -303,9 +348,126 @@ def zh_tw_fixup(text: str) -> str:
 
     只動敘述文字，**不動 evidence** —— 那裡面是主機名稱與位址，一個字都不能改。
     """
-    for bad, good in _ZH_TW_FIXUPS:
-        text = text.replace(bad, good)
+    for pat, good in _ZH_TW_RULES:
+        text = pat.sub(good, text)
     return text
+
+
+# 送給模型的快照用的是資料欄位原名（state、last_seen_scanner……），模型常照抄進敘述，
+# 讀的人只看到一串程式代碼（使用者回報：「不要只有原文」）。敘述裡出現的欄位原名與狀態值，
+# 換成**畫面上的名稱**並把原文放在括號裡，依發起巡檢的使用者語言；名稱跟前端 i18n 一致。
+# 英文本身就是英文字，只替沒有意義的欄位代碼（底線命名）加註。
+_FIELD_LABELS: dict[str, dict[str, str]] = {
+    "zh-TW": {
+        "last_seen_scanner": "最後出現（掃描代理）", "last_seen_librenms": "最後出現（LibreNMS）",
+        "dhcp_server": "DHCP 主機", "scan_enabled": "掃描", "ips_seen": "已偵測到的 IP 數",
+        "ips_total": "IP 總數", "hostname": "主機名稱", "description": "說明", "state": "狀態",
+        "status": "實際狀態", "source": "來源", "device": "裝置",
+        "active": "使用中", "reserved": "保留", "offline": "離線", "online": "上線", "unknown": "未知",
+        "used": "已使用", "inactive": "停用", "null": "空值",
+    },
+    "ja-JP": {
+        "last_seen_scanner": "最終確認（スキャナ）", "last_seen_librenms": "最終確認（LibreNMS）",
+        "dhcp_server": "DHCP サーバー", "scan_enabled": "スキャン", "ips_seen": "検出済み IP 数",
+        "ips_total": "IP 総数", "hostname": "ホスト名", "description": "説明", "state": "状態",
+        "status": "実効状態", "source": "ソース", "device": "機器",
+        "active": "使用中", "reserved": "予約", "offline": "オフライン", "online": "オンライン",
+        "unknown": "不明", "used": "使用済み", "inactive": "無効", "null": "値なし",
+    },
+    "en-US": {
+        "last_seen_scanner": "last seen (scanner)", "last_seen_librenms": "last seen (LibreNMS)",
+        "dhcp_server": "DHCP server", "scan_enabled": "scanning enabled", "ips_seen": "IPs seen",
+        "ips_total": "total IPs",
+    },
+}
+# 前後不可以是英數、底線、點、連字號、斜線、冒號、@：主機名稱（active-dir01、gw-01.example.net）裡的字不算
+_FIELD_BOUND_L = r"(?<![\w.\-/:@])"
+_FIELD_BOUND_R = r"(?![\w.\-/:@])"
+
+
+def _inside_parens(text: str, idx: int) -> bool:
+    """idx 之前有沒有還沒關閉的括號（已經加註過的「狀態（state）」就不要再加）。"""
+    depth = 0
+    for ch in reversed(text[:idx]):
+        if ch in "）)":
+            depth += 1
+        elif ch in "（(":
+            if depth == 0:
+                return True
+            depth -= 1
+    return False
+
+
+def annotate_fields(text: str, locale: str) -> str:
+    """把敘述裡的欄位原名／狀態值換成「畫面上的名稱（原文）」。"""
+    labels = _FIELD_LABELS.get(locale)
+    if not labels or not text:
+        return text
+    cjk = locale in ("zh-TW", "ja-JP")
+    sep = "，" if locale == "zh-TW" else "、"
+    names = sorted(labels, key=len, reverse=True)
+    pat = re.compile(_FIELD_BOUND_L + "(" + "|".join(map(re.escape, names)) + ")" + _FIELD_BOUND_R)
+
+    def repl(m: re.Match[str]) -> str:
+        raw = m.group(1)
+        if _inside_parens(m.string, m.start()):
+            return raw
+        label = labels[raw]
+        if cjk:
+            return f"{label[:-1]}{sep}{raw}）" if label.endswith("）") else f"{label}（{raw}）"
+        return f"{label[:-1]}, {raw})" if label.endswith(")") else f"{label} ({raw})"
+
+    out = pat.sub(repl, text)
+    if cjk:
+        # 中日文裡夾英文時習慣前後留空白；換成全形名稱後，名稱兩側的半形空白就多餘了
+        out = re.sub(r"(?<=[^\x00-\x7f]) (?=[^\x00-\x7f])", "", out)
+    return out
+
+
+#: 敘述裡「看起來像位址」的字樣（四段以點分隔）。刻意寫得寬鬆到連壞掉的也抓得到 ——
+#: 實機出現過 `192.16CA.1.59`（模型把 `192.168.1.59` 寫壞）。
+_IPISH = re.compile(r"(?<![\w.])(?:[0-9A-Za-z]{1,4}\.){3}[0-9A-Za-z]{1,4}(?:/\d{1,2})?(?![\w.])")
+
+
+def _valid_ipv4(tok: str) -> bool:
+    try:
+        ipaddress.ip_network(tok, strict=False)
+    except ValueError:
+        return False
+    return True
+
+
+def strip_unverifiable_addresses(text: str, allowed: set[str]) -> tuple[str, int]:
+    """把敘述裡「查不到出處的位址」拿掉，回傳處理後的文字與拿掉幾個。
+
+    模型會在敘述中重寫位址，而且會寫錯：實機同一次巡檢裡出現 `192.16CA.1.59`
+    （壞字）與 `196.168.1.39`（合法但不存在，真正的是 `192.168.1.39`）。
+    這種錯誤特別危險 —— 它看起來精確、語氣肯定，讀的人會直接照著去查那個位址。
+
+    真正的依據在 `evidence`（那是我們自己從資料庫撈的，不是模型寫的），畫面上也
+    一直有顯示。所以敘述裡對不上依據的位址一律拿掉，寧可少一句話，也不要留一個
+    **看起來像事實的錯誤**。CIDR（含 `/` 的網段）保留 —— 那通常是在講範圍，不是指某台機器。
+    """
+    removed = 0
+
+    def repl(m: re.Match[str]) -> str:
+        nonlocal removed
+        tok = m.group(0)
+        if "/" in tok and _valid_ipv4(tok):
+            return tok                       # 網段：講範圍用的，不是指認某一台
+        if tok in allowed:
+            return tok
+        removed += 1
+        return ""
+
+    out = _IPISH.sub(repl, text)
+    if removed:
+        # 收拾拿掉之後留下的空括號與連續空白／標點
+        out = re.sub(r"[（(]\s*[)）]", "", out)
+        out = re.sub(r"\s{2,}", " ", out)
+        out = re.sub(r"\s+([，。、）)])", r"\1", out)
+        out = re.sub(r"([（(])\s+", r"\1", out)
+    return out.strip(), removed
 
 
 def _clean(text: str | None, limit: int) -> str:
@@ -370,7 +532,7 @@ def _salvage_findings(txt: str) -> list[dict[str, Any]] | None:
     return out
 
 
-def _parse(raw: str) -> list[dict[str, Any]] | None:
+def _parse(raw: str, locale: str = "zh-TW") -> list[dict[str, Any]] | None:
     """解析模型輸出。**`None` ＝解析失敗，`[]` ＝解析成功但沒有發現** —— 兩者不同。
 
     模型輸出**一律當成不可信輸入**：可能夾雜說明文字、用自創的嚴重度、或根本不是 JSON。
@@ -411,13 +573,36 @@ def _parse(raw: str) -> list[dict[str, Any]] | None:
         cat = str(it.get("category", "")).lower()
         ev = it.get("evidence")
         rec = _clean(it.get("recommendation"), 2000) or None
+        # 依據資料裡的位址才算數 —— 那是我們自己撈的，不是模型寫的
+        allowed = set()
+        if isinstance(ev, dict) and isinstance(ev.get("ips"), list):
+            allowed = {str(x).strip() for x in ev["ips"] if str(x).strip()}
+        dropped = 0
+
+        def _sane(text: str, _allowed: set[str] = allowed) -> str:
+            nonlocal dropped
+            cleaned, n = strip_unverifiable_addresses(text, _allowed)
+            dropped += n
+            return cleaned
+
+        def _fix(text: str) -> str:
+            if locale == "zh-TW":
+                text = zh_tw_fixup(text)
+            return annotate_fields(text, locale)
+
+        title = _sane(_fix(title))
+        detail = _sane(_fix(_clean(it.get("detail"), 4000)))
+        rec_txt = _sane(_fix(rec)) if rec else None
+        if dropped:
+            log.info("ai_audit dropped unverifiable addresses",
+                     count=dropped, category=cat)
         out.append({
             "severity": sev if sev in SEVERITIES else "low",   # 自創等級一律降為 low
             "category": cat if cat in CATEGORIES else "other",
-            # 敘述套台灣用詞修正；evidence 不動（裡面是主機名稱與位址）
-            "title": zh_tw_fixup(title),
-            "detail": zh_tw_fixup(_clean(it.get("detail"), 4000)),
-            "recommendation": zh_tw_fixup(rec) if rec else None,
+            # 敘述套台灣用詞修正並清掉查不到出處的位址；evidence 不動（那是我們撈的）
+            "title": title,
+            "detail": detail,
+            "recommendation": rec_txt,
             "evidence": ev if isinstance(ev, dict) else ({"note": str(ev)[:2000]} if ev else None),
         })
     return out
@@ -511,7 +696,8 @@ async def _run_audit(
                         error="沒有可見的資料可分析（檢查此帳號的權限範圍）")
 
     cfg = await get_llm_config(session)
-    prompt = _PROMPT.replace("{language}", await _language_for(session, user))
+    locale = await _locale_for(session, user)
+    prompt = _PROMPT.replace("{language}", _language_instruction(locale))
     batches = _batches(snapshot, _budget_tokens(cfg))
     total = len(batches)
     await _emit("analyzing", 0, total,
@@ -551,7 +737,7 @@ async def _run_audit(
             await _emit("analyzing", i, total, error=str(exc))
             continue
 
-        parsed = _parse(raw)
+        parsed = _parse(raw, locale=locale)
         if parsed is None:
             # 有回應但解析不出來：把模型實際講了什麼帶出來。只說「無法解析」的話，
             # 要查是模型講廢話、回應被截斷、還是換了格式，完全無從下手。
@@ -572,20 +758,25 @@ async def _run_audit(
     items = _dedupe(items)[:MAX_FINDINGS]
 
     kept = await reconcile_findings(session, run_id, items,
-                                    model_name=cfg.ai_audit_model or cfg.chat_model)
+                                    model_name=cfg.ai_audit_model or cfg.chat_model,
+                                    # 有批次失敗 → 這輪不完整，不能拿它去判定誰已解決
+                                    partial=bool(errors))
     await session.commit()
     await _emit("done", total, total, found=kept)
     return AuditRun(
         run_id=run_id, findings=kept, skipped=len(errors),
-        # 部分批次失敗仍然回報，但不擋掉已經拿到的發現 —— 兩者都要讓人知道
-        error=(f"{len(errors)}/{total} 批分析失敗（結果可能不完整）：{errors[0]}"
+        # 部分批次失敗仍然回報，但不擋掉已經拿到的發現 —— 兩者都要讓人知道。
+        # 也要講出「這次沒有移除任何既有發現」，否則使用者會納悶清單為什麼沒縮。
+        error=(f"{len(errors)}/{total} 批分析失敗（結果可能不完整）；"
+               f"為避免把沒檢查到的問題誤判為已解決，這次不移除既有發現。"
+               f"第一個錯誤：{errors[0]}"
                if errors else None),
     )
 
 
 async def reconcile_findings(
     session: AsyncSession, run_id: Any, items: list[dict[str, Any]],
-    model_name: str | None = None,
+    model_name: str | None = None, *, partial: bool = False,
 ) -> int:
     """把「未處理」清單對齊這一次的結果，回傳這次實際留下的未處理筆數。
 
@@ -598,6 +789,11 @@ async def reconcile_findings(
     - 這次還在的：沿用原本那一列（保留發現時間，才看得出從什麼時候就這樣）
     - 這次沒有了：刪掉（問題解決了，或模型換了說法）
     - 這次新出現的：新增
+
+    `partial=True`（有批次失敗）時**不刪除**。巡檢是分批送給模型的，只要有一批失敗，
+    那一批的資料這次根本沒有被檢查過，它裡面的問題自然不會出現在結果裡 —— 照常對齊
+    就會把它們當成「已經解決」而刪掉，畫面上看起來像問題自己好了。寧可留著一筆可能
+    已修好的，也不要讓一個還在的問題安靜消失。
     """
     dismissed_fps = {
         fp for (fp,) in (await session.execute(
@@ -605,6 +801,7 @@ async def reconcile_findings(
                 AIFinding.status == "dismissed", AIFinding.fingerprint.is_not(None))
         )).all()
     }
+    dismissed_by_cat = await dismissed_subjects(session)
     existing = {
         f.fingerprint: f for f in (await session.execute(
             select(AIFinding).where(AIFinding.status == "open"))
@@ -620,6 +817,11 @@ async def reconcile_findings(
         seen.add(fp)
         if fp in dismissed_fps:
             continue          # 使用者判斷過是誤報 → 不再開啟
+        subj = subjects(it)
+        if subj and subj <= dismissed_by_cat.get(it.get("category") or "", set()):
+            # 這條講的每一台，使用者都已經在同一個分類下忽略過了 → 不要再開一筆。
+            # **有新對象時仍然會出現**（那是新資訊，不是重複），這正是想要的行為。
+            continue
         cur = existing.get(fp)
         if cur is not None:
             # 同一件事還在：更新敘述（模型可能改寫過），但保留原本的發現時間
@@ -631,30 +833,74 @@ async def reconcile_findings(
                                   model=model_name, **it))
         kept += 1
 
-    # 這次沒再出現的未處理發現 → 移除（否則清單只會愈長愈長）
-    for fp, row in existing.items():
-        if fp not in seen:
-            await session.delete(row)
+    # 這次沒再出現的未處理發現 → 移除（否則清單只會愈長愈長）。
+    # 但這一輪如果有批次失敗，「沒再出現」不代表「已經解決」，只代表沒被看過。
+    if not partial:
+        for fp, row in existing.items():
+            if fp not in seen:
+                await session.delete(row)
 
     await session.flush()
     return kept
 
 
-def fingerprint(item: dict[str, Any]) -> str:
-    """「同一件事」的指紋：分類＋依據資料裡的 IP 清單。
+def subjects(item: dict[str, Any]) -> set[str]:
+    """這條發現「在講哪些對象」——依據資料裡的位址，正規化後的集合。
 
-    刻意**不用標題**：模型每次都會重新措辭（「重複的紀錄」／「重複的 IP 位址紀錄」），
-    用標題比對等於幾乎每次都比不中，忽略過的東西照樣跳回來。位址清單穩定得多。
-
-    沒有 IP 可以指的發現退回用標題 —— 總比完全沒有指紋好。
+    只留位址：依據資料裡也會混進主機名稱與網段，那些每次措辭都不同，
+    拿來當識別只會讓同一件事每次都長得不一樣。
     """
     ev = item.get("evidence") or {}
     ips = ev.get("ips") if isinstance(ev, dict) else None
-    if isinstance(ips, list) and ips:
-        key = f"{item.get('category', '')}|" + ",".join(sorted(str(x).strip() for x in ips))
+    out: set[str] = set()
+    for raw in (ips or []):
+        text = str(raw).strip()
+        if not text or "/" in text:          # 網段不算對象（它是範圍，不是那台機器）
+            continue
+        try:
+            out.add(str(ipaddress.ip_address(text)))
+        except ValueError:
+            continue                          # 主機名稱之類的跳過
+    return out
+
+
+def fingerprint(item: dict[str, Any]) -> str:
+    """「同一件事」的指紋：分類＋依據資料裡的位址集合。
+
+    刻意**不用標題**：模型每次都會重新措辭（「重複的紀錄」／「重複的 IP 位址紀錄」），
+    用標題比對等於幾乎每次都比不中，忽略過的東西照樣跳回來。
+
+    ⚠️ 但光靠這個指紋**不夠**（2026-09-05 使用者回報「忽略了又出現，只好一直按忽略」）：
+    模型每次引用的位址是**不同的子集** —— 實機上同一件「IPMI 在服務網段」被拆成五筆，
+    分別引用 `{1.60}`、`{1.46}`、`{1.60,1.46}`、`{1.74,1.60,1.54}`。集合不同 → 指紋不同 →
+    忽略當然帶不過去。所以真正讓忽略生效的是 `dismissed_subjects()` 的**逐對象**比對，
+    這個指紋只負責「完全一樣的那一筆」與沒有位址可指的發現。
+
+    沒有位址可以指的發現退回用標題 —— 總比完全沒有指紋好。
+    """
+    subj = subjects(item)
+    if subj:
+        key = f"{item.get('category', '')}|" + ",".join(sorted(subj))
     else:
         key = f"{item.get('category', '')}|title:{item.get('title', '').strip().casefold()}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:64]
+
+
+async def dismissed_subjects(session: AsyncSession) -> dict[str, set[str]]:
+    """每個分類底下，使用者已經表示「這個對象不用再提」的位址集合。
+
+    忽略記在**對象**而不是那一筆發現上：使用者按下忽略的意思是
+    「這幾台機器的這件事我知道了」，不是「這串措辭我看過了」。
+    """
+    out: dict[str, set[str]] = {}
+    rows = (await session.execute(
+        select(AIFinding.category, AIFinding.evidence)
+        .where(AIFinding.status == "dismissed"))).all()
+    for category, evidence in rows:
+        got = subjects({"evidence": evidence})
+        if got:
+            out.setdefault(category or "", set()).update(got)
+    return out
 
 
 def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -695,49 +941,3 @@ async def latest_summary(session: AsyncSession) -> dict[str, Any]:
     return {"counts": counts, "total": sum(counts.values()), "ip_count": int(ip_count),
             "last_run_at": last.isoformat() if last else None}
 
-
-def _local_now() -> datetime:
-    """伺服器本地時間。排程時刻是使用者用牆上時鐘設的，不是 UTC。"""
-    return datetime.now().astimezone()
-
-
-def due(last_run: datetime | None, times: list[str], now: datetime | None = None) -> bool:
-    """排程判斷：自上次執行後，是否已經越過任何一個排定時刻。
-
-    用「每天幾點幾分」而不是「每 N 小時」：間隔式排程會跟著每次的執行時間往後漂，
-    跑了幾天之後就沒人說得準它半夜還是上班時間在打 LLM。
-
-    `last_run` 為 None（剛啟用、還沒跑過）→ 下一輪就跑一次，之後才照時刻走。這是刻意的：
-    打開開關卻要等到明天半夜才有任何動靜，看起來就像功能壞了。
-    """
-    times = [t for t in times if _parse_hhmm(t) is not None]
-    if not times:
-        return False
-    if last_run is None:
-        return True
-    now = now or _local_now()
-    prev = _previous_occurrence(times, now)
-    return last_run.astimezone(now.tzinfo) < prev
-
-
-def _parse_hhmm(text: str) -> tuple[int, int] | None:
-    hh, _, mm = str(text).partition(":")
-    try:
-        h, m = int(hh), int(mm)
-    except ValueError:
-        return None
-    return (h, m) if 0 <= h <= 23 and 0 <= m <= 59 else None
-
-
-def _previous_occurrence(times: list[str], now: datetime) -> datetime:
-    """最近一個「已經過去」的排定時刻（今天還沒到的話就回昨天最後一個）。"""
-    todays = []
-    for t in times:
-        hm = _parse_hhmm(t)
-        if hm is None:
-            continue
-        todays.append(now.replace(hour=hm[0], minute=hm[1], second=0, microsecond=0))
-    passed = [t for t in todays if t <= now]
-    if passed:
-        return max(passed)
-    return max(todays) - timedelta(days=1)

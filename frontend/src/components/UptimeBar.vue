@@ -35,6 +35,9 @@
         </template>
         <template v-else>{{ t("uptime.no_data") }}</template>
       </span>
+      <span v-if="data?.observed_from" class="uptime-basis" :title="t('uptime.observed_hint')">
+        {{ t("uptime.observed_from", { d: data.observed_from }) }}
+      </span>
       <span>{{ t("uptime.today") }}</span>
     </div>
   </div>
@@ -61,6 +64,8 @@ interface UptimeData {
   known_days: number;
   down_days: number;
   has_source: boolean;
+  /** 逐日觀測的起點；更早的日子只能依狀態轉換推估 */
+  observed_from?: string | null;
 }
 
 const data = ref<UptimeData | null>(null);

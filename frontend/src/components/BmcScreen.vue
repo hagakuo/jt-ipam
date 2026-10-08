@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { wsErrorText } from "@/utils/wsError";
 /**
  * BMC 主控台（IPMI SOL）— 瀏覽器內序列主控台，版面比照 SshTerminal。
  * 與後端 `/addresses/{id}/bmc/ws` 連線：先送 JSON config，之後資料雙向走 binary（鍵盤 ↔ SOL）。
@@ -12,10 +13,12 @@ import {
 } from "naive-ui";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { useTerminalLinks } from "@/composables/useTerminalLinks";
 import "@xterm/xterm/css/xterm.css";
 import { requestBmcTicket, buildBmcWsUrl, listBmcCredentials, createBmcCredential } from "@/api/bmc";
 import type { SshCredential } from "@/api/ssh";
 import { TerminalIcon, CancelIcon, RefreshIcon, InfoIcon, FitIcon } from "@/icons";
+import ConnElapsed from "@/components/ConnElapsed.vue";
 import ConsoleDisconnectedOverlay from "@/components/ConsoleDisconnectedOverlay.vue";
 
 const props = withDefaults(defineProps<{
@@ -45,6 +48,8 @@ const cipherOptions = [
 const termEl = ref<HTMLElement | null>(null);
 let term: Terminal | null = null;
 let fit: FitAddon | null = null;
+let detachLinks: (() => void) | null = null;
+const { hoveredUrl, attachTerminalLinks } = useTerminalLinks();
 let ws: WebSocket | null = null;
 const enc = new TextEncoder();
 
@@ -52,7 +57,9 @@ const credOptions = ref<{ label: string; value: string }[]>([]);
 async function loadCreds() {
   try {
     creds.value = await listBmcCredentials(props.addressId);
-    credOptions.value = creds.value.map((c) => ({ label: `${c.label} (${c.username})`, value: c.id }));
+    credOptions.value = [
+    { label: t('ssh.cred_manual'), value: null as unknown as string },
+    ...creds.value.map((c) => ({ label: `${c.label} (${c.username})`, value: c.id }))];
     if (creds.value.length && !selectedCredId.value) selectedCredId.value = creds.value[0].id;
   } catch { /* ignore */ }
 }
@@ -79,15 +86,22 @@ async function connect() {
         password: form.value.password, target_ip_id: props.addressId,
       });
       selectedCredId.value = c.id;
+      // 同時重新載入清單：否則下拉找不到這個 id 的選項，會直接顯示一串 UUID（noVNC 踩過）
+      void loadCreds();
     } catch { /* 存失敗不擋連線 */ }
   }
 
   await nextTick();
   term = new Terminal({ cursorBlink: true, fontSize: fontSize.value, scrollback: 5000, convertEol: false,
+    allowProposedApi: true,   // Unicode 11 寬度表需要
     theme: { background: "#1e1e1e" } });
   fit = new FitAddon();
   term.loadAddon(fit);
-  if (termEl.value) { term.open(termEl.value); fit.fit(); }
+  if (termEl.value) {
+    term.open(termEl.value);
+    detachLinks = attachTerminalLinks(term, termEl.value);
+    fit.fit();
+  }
   term.onData((d) => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(enc.encode(d)); });
 
   ws = new WebSocket(buildBmcWsUrl(ticket.ws_path, ticket.ticket));
@@ -108,7 +122,7 @@ async function connect() {
           phase.value = "connected";
           connInfo.value = `cipher ${m.cipher}${m.vendor ? " · " + m.vendor : ""}`;
           nextTick(() => { fit?.fit(); term?.focus(); });
-        } else if (m.type === "error") { phase.value = "error"; errorMsg.value = m.message || m.code; cleanupWs(); }
+        } else if (m.type === "error") { phase.value = "error"; errorMsg.value = wsErrorText(m, m.code ?? ""); cleanupWs(); }
       } catch { /* ignore */ }
     } else { term?.write(new Uint8Array(ev.data as ArrayBuffer)); }
   };
@@ -129,7 +143,10 @@ window.addEventListener("resize", onWinResize);
 
 function cleanupWs() { try { ws?.close(); } catch { /* */ } ws = null; }
 function disconnect() { cleanupWs(); phase.value = "closed"; }
-function teardown() { cleanupWs(); try { term?.dispose(); } catch { /* */ } term = null; fit = null; }
+function teardown() {
+  if (detachLinks) { detachLinks(); detachLinks = null; }
+  cleanupWs(); try { term?.dispose(); } catch { /* */ } term = null; fit = null;
+}
 function backToForm() { teardown(); phase.value = "form"; errorMsg.value = ""; connInfo.value = ""; void loadCreds(); }
 onBeforeUnmount(() => { window.removeEventListener("resize", onWinResize); teardown(); });
 </script>
@@ -150,7 +167,7 @@ onBeforeUnmount(() => { window.removeEventListener("resize", onWinResize); teard
           </span>
         </template>
         <!-- 已存帳密 -->
-        <div v-if="credOptions.length" class="bmc-saved-row">
+        <div v-if="creds.length" class="bmc-saved-row">
           <span class="bmc-saved-label">{{ t("bmc.saved_cred") }}</span>
           <n-select v-model:value="selectedCredId" :options="credOptions" clearable size="small"
                     :placeholder="t('bmc.saved_cred_ph')" style="flex:1" />
@@ -197,6 +214,7 @@ onBeforeUnmount(() => { window.removeEventListener("resize", onWinResize); teard
           <n-tag v-if="hostname" size="small" :bordered="false" round>{{ hostname }}</n-tag>
           <span class="conn-proto conn-proto--bmc">BMC SOL</span>
           <span v-if="connInfo" class="bmc-meta">{{ connInfo }}</span>
+          <ConnElapsed :active="phase === 'connected'" />
         </span>
         <n-space :size="8" align="center">
           <n-tooltip v-if="phase === 'connected'" :delay="0" trigger="hover" placement="bottom">
@@ -231,7 +249,10 @@ onBeforeUnmount(() => { window.removeEventListener("resize", onWinResize); teard
         </n-button>
       </n-alert>
       <div class="bmc-disp" :class="{ 'bmc-full': fullHeight }">
-        <div ref="termEl" class="bmc-term" :class="{ 'bmc-full': fullHeight, 'term-dim': phase === 'closed' }" />
+        <div class="term-host">
+          <div ref="termEl" class="bmc-term" :class="{ 'bmc-full': fullHeight, 'term-dim': phase === 'closed' }" />
+          <div v-if="hoveredUrl" class="term-linkbar" :title="hoveredUrl">{{ hoveredUrl }}</div>
+        </div>
         <ConsoleDisconnectedOverlay :show="phase === 'closed' || phase === 'error'" :error="phase === 'error'" />
       </div>
     </div>
@@ -281,7 +302,13 @@ proxmox-boot-tool refresh</pre>
           <span class="bmc-guide-num">4</span>
           <div class="bmc-guide-body">
             <h4>{{ t("bmc.guide_s4") }}</h4>
-            <p>{{ t("bmc.guide_s4_d") }}</p>
+            <p>
+              {{ t("bmc.guide_s4_d") }}
+              <!-- 逐欄的建議值（Redirection After BIOS POST 之類）放在文件站，
+                   這裡不重複貼一整張表把教學撐長 -->
+              <a class="bmc-guide-link" href="https://jasoncheng7115.github.io/jt-ipam/bmc-sol.html"
+                 target="_blank" rel="noopener">{{ t("bmc.guide_s4_link") }}</a>
+            </p>
           </div>
         </div>
 
@@ -325,9 +352,13 @@ proxmox-boot-tool refresh</pre>
 .bmc-disp { position: relative; }
 .bmc-disp.bmc-full { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .bmc-term-area.bmc-full { flex: 1; min-height: 0; }
-.bmc-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 2px; gap: 8px; }
+.bmc-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 4px 2px; gap: 8px; }
 .bmc-status { font-size: 13px; display: inline-flex; align-items: center; gap: 7px;
   padding: 3px 11px; border-radius: 999px; font-weight: 500; background: rgba(128,128,128,.12); color: #888; }
+/* 手機：內容放不下時整顆標籤換到下一行，不要把「連線錯誤」擠成直排、也不要超出畫面 */
+.bmc-status { flex-wrap: wrap; row-gap: 4px; max-width: 100%; min-width: 0; }
+.bmc-status > * { flex: none; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 640px) { .bmc-status { border-radius: 14px; } }
 .bmc-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
 .bmc-ip { opacity: .7; font-variant-numeric: tabular-nums; }
 .bmc-meta { opacity: .7; font-size: 12px; }
@@ -357,6 +388,7 @@ html[data-theme="dark"] .bmc-guide-intro { color: #b6c2d4; }
 .bmc-guide-num { flex: none; width: 24px; height: 24px; border-radius: 50%; background: #18a058; color: #fff;
   font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
 .bmc-guide-body { flex: 1; min-width: 0; }
+.bmc-guide-link { color: #63e2b7; white-space: nowrap; }
 .bmc-guide-body h4 { margin: 2px 0 4px; font-size: 14px; }
 .bmc-guide-body p { margin: 0 0 8px; color: #666; font-size: 13px; }
 html[data-theme="dark"] .bmc-guide-body p { color: #a6b2c4; }
@@ -370,4 +402,14 @@ html[data-theme="dark"] .bmc-guide-body p { color: #a6b2c4; }
 html[data-theme="dark"] .bmc-ts li { color: #a6b2c4; }
 .bmc-ts code { background: rgba(128,128,128,.16); padding: 1px 6px; border-radius: 5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+
+/* 懸停連結預覽：終端機文字是遠端主機控制的，點下去之前要看得到完整目標 */
+.term-host { position: relative; height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.term-linkbar {
+  position: absolute; left: 0; bottom: 0; max-width: 100%;
+  padding: 2px 10px; font-size: 12px; line-height: 1.6;
+  background: rgba(0, 0, 0, .82); color: #9ecbff;
+  border-top-right-radius: 6px; pointer-events: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 </style>

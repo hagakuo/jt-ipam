@@ -66,6 +66,8 @@ class WazuhAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     status: Mapped[str | None] = mapped_column(String(32))   # active / disconnected / pending / never_connected
     os_platform: Mapped[str | None] = mapped_column(String(64))
     os_version: Mapped[str | None] = mapped_column(String(64))
+    # 產品名稱（os.name，如「Microsoft Windows 11 Pro」）；顯示優先用它，見 os_fingerprint.wazuh_os_display
+    os_name: Mapped[str | None] = mapped_column(String(160))
     agent_version: Mapped[str | None] = mapped_column(String(64))
     group: Mapped[str | None] = mapped_column(Text)
     node_name: Mapped[str | None] = mapped_column(String(64))
@@ -79,9 +81,10 @@ class WazuhAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         ForeignKey("ip_addresses.id", ondelete="SET NULL"),
     )
 
-    # 漏洞掃描：上次 vulnerability summary 抓回來的 critical 數
-    cve_critical_count: Mapped[int | None] = mapped_column(Integer)
-    cve_high_count: Mapped[int | None] = mapped_column(Integer)
+    # 漏洞數量欄位已於 0138 移除：Wazuh 4.8 起 manager API 沒有漏洞端點，唯一來源是
+    # Wazuh Indexer，所以那兩個欄位從加進來的那天起就沒有任何程式在寫，實機上全是 NULL。
+    # 空欄位比沒有欄位更糟——API 回一個永遠是 null 的 cve_critical，讀起來像「查過了，
+    # 沒有漏洞」。真的接上 Indexer 時再加回來，那時它們才會有值。
     cve_summary_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # SCA（資安組態評估）：拿現有的 manager API 帳號就讀得到，不需要額外憑證。
@@ -93,6 +96,8 @@ class WazuhAgent(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     sca_fail: Mapped[int | None] = mapped_column(Integer)
     sca_policy_count: Mapped[int | None] = mapped_column(Integer)
     sca_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 最後一次去查 SCA 的時間（有沒有結果都記）：決定下一輪輪到誰。見 services/wazuh.sync_sca
+    sca_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         UniqueConstraint("instance_id", "agent_id", name="wazuh_agent_unique"),

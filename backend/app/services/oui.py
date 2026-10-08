@@ -25,6 +25,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.safe_http import safe_request
+from app.core.sqlin import in_values
+from app.core.ui_error import UiError
 from app.models.oui import OUIVendor
 
 logger = logging.getLogger(__name__)
@@ -174,7 +176,7 @@ async def vendor_map(session: AsyncSession, macs: list[str | None]) -> dict[str,
     rows = (
         await session.execute(
             select(OUIVendor.prefix, OUIVendor.short_name, OUIVendor.name)
-            .where(OUIVendor.prefix.in_(prefixes))
+            .where(in_values(OUIVendor.prefix, prefixes))
         )
     ).all()
     return {r[0]: (r[1] or r[2]) for r in rows}
@@ -207,13 +209,13 @@ async def search_oui_vendors(
     if prefix:
         hex_only = re.sub(r"[^0-9A-Fa-f]", "", prefix).upper()
         if not hex_only:
-            raise ValueError("prefix 需含至少一個 hex 字元")
+            raise UiError("prefix 需含至少一個 hex 字元", code="oui_prefix_needs_hex")
         conds.append(OUIVendor.prefix.like(f"{hex_only}%"))
     if name:
         like = f"%{name.strip()}%"
         conds.append(OUIVendor.name.ilike(like) | OUIVendor.short_name.ilike(like))
     if not conds:
-        raise ValueError("請提供 prefix 或 name 至少一項")
+        raise UiError("請提供 prefix 或 name 至少一項", code="oui_need_prefix_or_name")
     for c in conds:
         stmt = stmt.where(c)
     # 多抓一筆判斷是否被截斷

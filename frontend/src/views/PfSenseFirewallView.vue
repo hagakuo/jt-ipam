@@ -15,11 +15,16 @@ import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import { useTablePagination } from "@/composables/useTablePagination";
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
+import { useFocusRow } from "@/composables/useFocusRow";
+import FocusRowBanner from "@/components/FocusRowBanner.vue";
+import { useRoute } from "vue-router";
 
 const { t } = useI18n();
 const pg = useTablePagination();
+const route = useRoute();
 const insts = ref<PfSense[]>([]);
-const fwId = ref<string | null>(null);
+// IP 詳細頁點進來：?tab=rules|aliases&fw=<id>&focus=<tracker 或 #位置／別名名稱>
+const fwId = ref<string | null>(typeof route.query.fw === "string" ? route.query.fw : null);
 const rules = ref<PfRule[]>([]);
 const aliases = ref<{ name: string; type: string | null; members: string[]; descr: string | null }[]>([]);
 const loading = ref(false);
@@ -27,6 +32,12 @@ const loading = ref(false);
 const fwOptions = computed(() => insts.value.map((i) => ({ label: i.name, value: i.id })));
 const { query: ruleQ, filtered: rulesFiltered } = useTableQuickFilter(rules);
 const { query: aliasQ, filtered: aliasesFiltered } = useTableQuickFilter(aliases);
+// pfSense 規則沒有自己的 id：有 tracker 用 tracker，沒有就用在完整清單中的位置（後端同一套規則）
+const ruleFocus = useFocusRow(rules, (r, k, i) =>
+  k.startsWith("#") ? `#${i}` === k : String(r.tracker ?? "") === k, "rules");
+const aliasFocus = useFocusRow(aliases, (a, k) => a.name === k, "aliases");
+const rulesShown = computed(() => ruleFocus.apply(rulesFiltered.value));
+const aliasesShown = computed(() => aliasFocus.apply(aliasesFiltered.value));
 
 const rPrefs = useColumnPrefs("pfsense_view_rules",
   ["disabled", "type", "interface", "protocol", "source", "destination", "destination_port", "descr", "tracker"],
@@ -59,7 +70,10 @@ async function loadData() {
   } catch { rules.value = []; aliases.value = []; }
   finally { loading.value = false; }
 }
-watch(fwId, () => void loadData());
+watch(fwId, (_n, old) => {
+  if (old != null) { ruleFocus.clear(); aliasFocus.clear(); }   // 換了防火牆，那一筆就不在這裡了
+  void loadData();
+});
 
 const allRuleCols = computed<DataTableColumns<PfRule>>(() => autoSort([
   { title: t("cols.enabled"), key: "disabled", width: 70,
@@ -75,7 +89,7 @@ const allRuleCols = computed<DataTableColumns<PfRule>>(() => autoSort([
   { title: t("common.description"), key: "descr", minWidth: 150, ellipsis: { tooltip: true }, render: (r) => r.descr || "—" },
   { title: "tracker", key: "tracker", width: 110, render: (r) => r.tracker ?? "—" },
 ]));
-const ruleCols = computed(() => allRuleCols.value.filter((c: any) => rPrefs.visibleKeys.value.includes(c.key)));
+const ruleCols = computed(() => rPrefs.orderColumns(allRuleCols.value.filter((c: any) => rPrefs.visibleKeys.value.includes(c.key))));
 const allAliasCols = computed<DataTableColumns<any>>(() => autoSort([
   { title: t("common.name"), key: "name", minWidth: 160, ellipsis: { tooltip: true } },
   { title: t("pfsense_admin.r_action"), key: "type", width: 100, render: (r) => r.type ?? "—" },
@@ -83,9 +97,9 @@ const allAliasCols = computed<DataTableColumns<any>>(() => autoSort([
     render: (r) => (r.members || []).join(" ") || "—" },
   { title: t("common.description"), key: "descr", minWidth: 150, ellipsis: { tooltip: true }, render: (r) => r.descr || "—" },
 ]));
-const aliasCols = computed(() => allAliasCols.value.filter((c: any) => aPrefs.visibleKeys.value.includes(c.key)));
+const aliasCols = computed(() => aPrefs.orderColumns(allAliasCols.value.filter((c: any) => aPrefs.visibleKeys.value.includes(c.key))));
 
-const tab = ref<"rules" | "aliases">("rules");
+const tab = ref<"rules" | "aliases">(route.query.tab === "aliases" ? "aliases" : "rules");
 onMounted(async () => { await loadInstances(); await loadData(); });
 </script>
 
@@ -113,20 +127,24 @@ onMounted(async () => { await loadInstances(); await loadData(); });
         <n-space align="center" style="margin-bottom: 8px">
           <n-input v-model:value="ruleQ" :placeholder="t('common.filter')" clearable style="width: 180px" />
           <ColumnPicker :all="rPicker" :visible="rPrefs.visibleKeys.value"
-                        @update:visible="rPrefs.setVisible" @reset="rPrefs.reset" />
+                        @update:visible="rPrefs.setVisible" @reset="rPrefs.reset"
+                        :order="rPrefs.order.value" @update:order="rPrefs.setOrder" />
           <ExportButton :columns="ruleCols" :rows="rulesFiltered" filename="pfsense-rules" :title="t('pfsense_admin.rules')" />
         </n-space>
-        <n-data-table :columns="ruleCols" :data="rulesFiltered" :loading="loading" :bordered="false"
+        <FocusRowBanner :ctl="ruleFocus" :loading="loading" />
+        <n-data-table :columns="ruleCols" :data="rulesShown" :loading="loading" :bordered="false"
                       size="small" :scroll-x="930" :pagination="pg" />
       </n-tab-pane>
       <n-tab-pane name="aliases" :tab="`${t('pfsense_admin.alias')} (${aliases.length})`">
         <n-space align="center" style="margin-bottom: 8px">
           <n-input v-model:value="aliasQ" :placeholder="t('common.filter')" clearable style="width: 180px" />
           <ColumnPicker :all="aPicker" :visible="aPrefs.visibleKeys.value"
-                        @update:visible="aPrefs.setVisible" @reset="aPrefs.reset" />
+                        @update:visible="aPrefs.setVisible" @reset="aPrefs.reset"
+                        :order="aPrefs.order.value" @update:order="aPrefs.setOrder" />
           <ExportButton :columns="aliasCols" :rows="aliasesFiltered" filename="pfsense-aliases" :title="t('pfsense_admin.alias')" />
         </n-space>
-        <n-data-table :columns="aliasCols" :data="aliasesFiltered" :loading="loading" :bordered="false"
+        <FocusRowBanner :ctl="aliasFocus" :loading="loading" />
+        <n-data-table :columns="aliasCols" :data="aliasesShown" :loading="loading" :bordered="false"
                       size="small" :scroll-x="690" :pagination="pg" />
       </n-tab-pane>
     </n-tabs>

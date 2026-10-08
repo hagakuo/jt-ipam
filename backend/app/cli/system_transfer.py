@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
-import json
 import secrets as _rng
 import sys
 from datetime import UTC, datetime
@@ -30,7 +29,7 @@ from datetime import UTC, datetime
 from sqlalchemy import text
 
 from app.core.db import SessionLocal
-from app.services.system_transfer import crypto, exporter, importer, registry
+from app.services.system_transfer import crypto, exporter, importer, registry, streaming
 from app.version import __version__
 
 
@@ -55,19 +54,12 @@ async def _schema_version() -> str | None:
             return None
 
 
-async def _build_env(scope: list[str], passphrase: str) -> tuple[dict, dict[str, int]]:
+async def _build(scope: list[str]) -> tuple[bytes, dict[str, int], str | None]:
+    """串流匯出（邊讀邊壓縮）：回 (gzip 後的 inner JSON, 各表筆數, schema 版本)。"""
     schema_version = await _schema_version()
     async with SessionLocal() as session:
-        inner = await exporter.build_export(session, scope)
-    env = crypto.seal(
-        inner, passphrase,
-        metadata={
-            "app_version": __version__, "schema_version": schema_version,
-            "scope": scope, "exported_at": datetime.now(UTC).isoformat(),
-        },
-        rng=_rng,
-    )
-    return env, inner["counts"]
+        raw, counts = await exporter.export_compressed(session, scope)
+    return raw, counts, schema_version
 
 
 def _export(scope: list[str], out: str, passphrase: str) -> int:
@@ -76,45 +68,52 @@ def _export(scope: list[str], out: str, passphrase: str) -> int:
         print(f"[error] unknown scope(s): {', '.join(bad)}", file=sys.stderr)
         print(f"        valid: {', '.join(registry.SCOPES)}", file=sys.stderr)
         return 1
-    env, counts = asyncio.run(_build_env(scope, passphrase))
-    data = json.dumps(env, ensure_ascii=False).encode("utf-8")
-    with open(out, "wb") as f:
-        f.write(data)
-    try:
-        import os
-        os.chmod(out, 0o600)
-    except OSError:
-        pass
+    raw, counts, schema_version = asyncio.run(_build(scope))
+    import os
+    # 一建立就是 0600（先寫再 chmod 的話，中間有一段時間是依 umask 的權限）
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        size = crypto.write_sealed(
+            f, raw, passphrase,
+            metadata={
+                "app_version": __version__, "schema_version": schema_version,
+                "scope": scope, "exported_at": datetime.now(UTC).isoformat(),
+            },
+            rng=_rng,
+        )
     print(f"[ok] exported {sum(counts.values())} rows across {len(counts)} tables "
-          f"→ {out} ({len(data)} bytes)")
+          f"→ {out} ({size} bytes)")
     for name, n in sorted(counts.items()):
         if n:
             print(f"       {name}: {n}")
     return 0
 
 
-async def _apply(inner: dict, mode: str, dry_run: bool) -> dict:
+async def _apply(file: str, passphrase: str, scanned: streaming.ScanResult, mode: str, dry_run: bool) -> dict:
     async with SessionLocal() as session:
-        return await importer.apply_import(session, inner, mode=mode, dry_run=dry_run)
+        return await importer.import_file(session, file, passphrase, mode=mode, dry_run=dry_run,
+                                          scanned=scanned)
 
 
 def _import(file: str, mode: str, dry_run: bool, passphrase: str) -> int:
-    with open(file, "rb") as f:
-        raw = f.read()
+    # 先逐段驗證（密碼、完整性），再串流匯入 —— 不把整份檔案讀進記憶體
     try:
-        env = json.loads(raw.decode("utf-8"))
-        meta = crypto.read_metadata(env)
-        inner = crypto.open_envelope(env, passphrase)
+        scanned = streaming.scan(file, passphrase)
     except crypto.TransferCryptoError as exc:
         print(f"[error] {exc}", file=sys.stderr)
         return 1
-    except (ValueError, UnicodeDecodeError) as exc:
-        print(f"[error] not a valid export file: {exc}", file=sys.stderr)
+    except OSError as exc:
+        print(f"[error] cannot read {file}: {exc}", file=sys.stderr)
         return 1
+    meta = scanned.metadata
 
     print(f"[info] source app_version={meta.get('app_version')} schema={meta.get('schema_version')} "
           f"scope={','.join(meta.get('scope') or [])}")
-    report = asyncio.run(_apply(inner, mode, dry_run))
+    try:
+        report = asyncio.run(_apply(file, passphrase, scanned, mode, dry_run))
+    except crypto.TransferCryptoError as exc:          # 兩趟之間檔案被換掉：交易已還原
+        print(f"[error] {exc}", file=sys.stderr)
+        return 1
 
     tag = "DRY-RUN (nothing written)" if dry_run else "APPLIED"
     print(f"[ok] import {tag}  mode={mode}")
@@ -124,9 +123,11 @@ def _import(file: str, mode: str, dry_run: bool, passphrase: str) -> int:
             tot[k] += r.get(k, 0)
         if any(r.get(k) for k in tot):
             print(f"       {name}: +{r['inserted']} ~{r['updated']} skip{r['skipped']} err{r['errored']}")
-    cs = report.get("central_secrets")
-    if cs:
-        print(f"       encrypted_secrets: +{cs['inserted']} skip{cs['skipped']} err{cs['errored']}")
+    # 這裡只有筆數（加密機密一律不會出現在報告裡）；先轉成數字再印，記錄工具也看得出不是機密內容
+    counts = report.get("central_secrets") or {}
+    if counts:
+        n_ins, n_skip, n_err = (int(counts.get(k, 0)) for k in ("inserted", "skipped", "errored"))
+        print(f"       encrypted_secrets: +{n_ins} skip{n_skip} err{n_err}")
     print(f"[total] inserted={tot['inserted']} updated={tot['updated']} "
           f"skipped={tot['skipped']} errored={tot['errored']}")
     return 1 if tot["errored"] else 0

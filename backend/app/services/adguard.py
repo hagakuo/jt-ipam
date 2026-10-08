@@ -19,14 +19,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.safe_http import safe_request
 from app.core.security import decrypt_secret, encrypt_secret
-from app.models.address import IPAddress
 from app.models.adguard import AdGuardInstance
-from app.services.hostname import apply_observation
+from app.services.hostname_reports import HostnameRun, enabled_peers
+from app.services.ip_autocreate import match_existing_many
 
 
 class AdGuardError(RuntimeError):
@@ -123,6 +122,9 @@ async def sync_clients(session: AsyncSession, inst: AdGuardInstance) -> dict[str
     seen = matched = 0
     # 重疊網段：若 instance 設了 scope_subnet_ids，IP→IPAddress 比對限定在這些子網路內
     scope_ids = _scope_subnet_uuids(inst)
+    hn_run = HostnameRun(session, source="adguard", origin=f"adguard:{inst.id}:clients",
+                         peers=await enabled_peers(session, AdGuardInstance))
+    parsed: list[tuple[str | None, list[str], str | None]] = []
     for c in clients:
         name = (c.get("name") or "").strip() or None
         ids = c.get("ids") or []
@@ -138,26 +140,23 @@ async def sync_clients(session: AsyncSession, inst: AdGuardInstance) -> dict[str
             elif "." in s and any(ch.isdigit() for ch in s.split(".")[0]):
                 ips.append(s)
             # 其它（hostname）忽略
-        primary_mac = macs[0] if macs else None
+        parsed.append((name, ips, macs[0] if macs else None))
+    # 一次比對（以前每個位址各查一次）；重疊網段：同一 IP 字串可能對到多筆 → 唯一才算，多筆不猜
+    matches = await match_existing_many(session, {ip for _n, ips, _m in parsed for ip in ips}, scope_ids)
+    for name, ips, primary_mac in parsed:
         for ip in ips:
             seen += 1
-            # 重疊網段：同一 IP 字串可能對到多筆（未設 scope 時尤甚）→ 用 limit(1)+first()
-            # 取代 scalar_one_or_none()，否則 MultipleResultsFound 會炸掉整批 sync
-            ip_stmt = select(IPAddress).where(IPAddress.ip == ip)
-            if scope_ids:
-                ip_stmt = ip_stmt.where(IPAddress.subnet_id.in_(scope_ids))
-            ipa = (
-                await session.execute(ip_stmt.limit(1))
-            ).scalars().first()
+            ipa, _amb = matches.get(ip, (None, False))   # 唯一才算
             if ipa is None:
                 continue
             ipa.last_seen_dns = datetime.now(UTC)
-            if name:
-                await apply_observation(session, ip=ipa, source="adguard", hostname=name)
+            hn_run.report(ipa, name)
             if primary_mac:
                 from app.services.arp_precedence import consider_mac
                 await consider_mac(session, ip=ipa, mac=primary_mac, source="adguard")
             matched += 1
+    # 讀取失敗會往外拋；走到這裡就是完整的用戶端清單
+    await hn_run.finish(complete=True)
     return {"clients": len(clients), "ips_seen": seen, "ips_matched": matched}
 
 
@@ -175,6 +174,10 @@ async def sync_rewrites(session: AsyncSession, inst: AdGuardInstance) -> dict[st
     seen = matched = 0
     # 重疊網段：若 instance 設了 scope_subnet_ids，IP→IPAddress 比對限定在這些子網路內
     scope_ids = _scope_subnet_uuids(inst)
+    # 改寫與用戶端清單是兩個子來源：各記各的，名字不同時才不會每輪互相覆蓋
+    hn_run = HostnameRun(session, source="adguard", origin=f"adguard:{inst.id}:rewrites",
+                         peers=await enabled_peers(session, AdGuardInstance))
+    pairs: list[tuple[str, str]] = []
     for r in rewrites:
         domain = (r.get("domain") or "").strip()
         answer = (r.get("answer") or "").strip()
@@ -185,19 +188,17 @@ async def sync_rewrites(session: AsyncSession, inst: AdGuardInstance) -> dict[st
         parts = answer.split(".")
         if not (len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)):
             continue
-        # 重疊網段：同 IP 多筆 → limit(1)+first()，避免 MultipleResultsFound 炸掉整批 sync
-        ip_stmt = select(IPAddress).where(IPAddress.ip == answer)
-        if scope_ids:
-            ip_stmt = ip_stmt.where(IPAddress.subnet_id.in_(scope_ids))
-        ipa = (
-            await session.execute(ip_stmt.limit(1))
-        ).scalars().first()
+        pairs.append((domain, answer))
+    # 一次比對；重疊網段：同 IP 多筆 → 唯一才算，多筆不猜（以前任意取一筆）
+    matches = await match_existing_many(session, {a for _d, a in pairs}, scope_ids)
+    for domain, answer in pairs:
+        ipa, _amb = matches.get(answer, (None, False))   # 唯一才算
         if ipa is None:
             continue
         ipa.last_seen_dns = datetime.now(UTC)
-        if domain:
-            await apply_observation(session, ip=ipa, source="adguard", hostname=domain)
+        hn_run.report(ipa, domain)
         matched += 1
+    await hn_run.finish(complete=True)
     return {"rewrites": len(rewrites), "rewrites_seen": seen, "rewrites_matched": matched}
 
 
@@ -216,7 +217,10 @@ async def sync_instance(session: AsyncSession, inst: AdGuardInstance) -> dict[st
         inst.last_sync_at = datetime.now(UTC)
         inst.last_error = None
     except AdGuardError as exc:
+        # 連不上／認證失敗是硬失敗：寫 last_error 後往上拋，作業才會是「失敗」而不是「成功、0 筆」
+        # （issue #44 在 Proxmox 回報的同一個寫法）
         inst.last_error = str(exc)
-        summary["error"] = str(exc)
+        await session.commit()
+        raise
     await session.commit()
     return summary

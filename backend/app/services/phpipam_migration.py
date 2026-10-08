@@ -812,7 +812,7 @@ _DEVICE_TYPE_MAP = {
     "firewall": "firewall",
     "server": "server",
     "host": "server",
-    "workstation": "server",
+    "workstation": "workstation",
     "storage": "storage",
     "san": "storage",
     "nas": "storage",
@@ -906,6 +906,7 @@ async def _sync_devices(
         tname = type_name_by_tid.get(type_legacy) if type_legacy else None
         obj.name = row.get("hostname") or obj.name
         obj.type = _phpipam_device_type(tname)
+        obj.type_source = "phpipam" if obj.type != "other" else None
         obj.vendor = row.get("vendor") or None
         obj.model = row.get("model") or None
         obj.location_id = location_legacy_to_uuid.get(loc_legacy) if loc_legacy else None

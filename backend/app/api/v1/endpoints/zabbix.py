@@ -1,0 +1,234 @@
+"""Zabbix 整合 endpoints。
+
+分兩個 router，對應 CLAUDE.md 的三種資料分類：
+- 設定（實例 CRUD／測試／同步）＝純管理資料 → `require_admin`
+- 主機鏡像與涵蓋缺口＝全域基礎設施資料 → `require_global_read`
+
+缺口查詢帶 `subnet_ids` 才不會用全站資料回答某網段的問題（v0.5.194 的教訓）。
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
+from app.core.audit import append_audit
+from app.core.db import get_session
+from app.core.ui_error import detail_of, ui_detail
+from app.models.zabbix import ZabbixHost, ZabbixInstance
+from app.schemas.base import Paginated
+from app.schemas.zabbix import ZabbixCreate, ZabbixRead, ZabbixUpdate
+from app.services import zabbix as svc
+from app.services.background_tasks import spawn_task
+
+router = APIRouter(prefix="/zabbix", tags=["zabbix"],
+                   dependencies=[Depends(require_admin)])
+view_router = APIRouter(prefix="/zabbix", tags=["zabbix"],
+                        dependencies=[Depends(require_global_read)])
+
+
+def _read(inst: ZabbixInstance) -> ZabbixRead:
+    out = ZabbixRead.model_validate(inst)
+    out.has_api_token = bool(inst.api_token_enc)
+    out.has_api_password = bool(inst.api_password_enc)
+    return out
+
+
+async def _get_or_404(session: AsyncSession, inst_id: uuid.UUID) -> ZabbixInstance:
+    inst = await session.get(ZabbixInstance, inst_id)
+    if inst is None:
+        raise HTTPException(404, detail="Not found")
+    return inst
+
+
+@view_router.get("", response_model=Paginated[ZabbixRead])
+async def list_instances(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    page: int = Query(1, ge=1, le=10_000),
+    page_size: int = Query(50, ge=1, le=500),
+) -> Paginated[ZabbixRead]:
+    stmt = (select(ZabbixInstance).order_by(ZabbixInstance.name)
+            .offset((page - 1) * page_size).limit(page_size))
+    rows = list((await session.execute(stmt)).scalars().all())
+    total = int(await session.scalar(select(func.count()).select_from(ZabbixInstance)) or 0)
+    return Paginated[ZabbixRead](items=[_read(r) for r in rows],
+                                 total=total, page=page, page_size=page_size)
+
+
+def _apply_secrets(inst: ZabbixInstance, *, token: str | None, password: str | None) -> None:
+    if token:
+        inst.api_token_enc, inst.api_token_nonce = svc.encrypt_token(inst.id, token)
+    if password:
+        inst.api_password_enc, inst.api_password_nonce = svc.encrypt_password(inst.id, password)
+
+
+@router.post("", response_model=ZabbixRead, status_code=status.HTTP_201_CREATED)
+async def create_instance(
+    payload: ZabbixCreate, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ZabbixRead:
+    if not payload.api_token and not (payload.api_user and payload.api_password):
+        raise HTTPException(422, detail=ui_detail("zbx_need_token_or_login", "需要 API token，或帳號與密碼"))
+    data = payload.model_dump(exclude={"api_token", "api_password"})
+    data["api_url"] = str(data["api_url"]).rstrip("/")
+    data["scope_subnet_ids"] = [str(s) for s in (data.get("scope_subnet_ids") or [])] or None
+    inst = ZabbixInstance(**data)
+    session.add(inst)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        raise HTTPException(409, detail="Name already exists") from exc
+    # 機密的 AAD 綁 id，所以要先 flush 拿到 id 才能加密
+    _apply_secrets(inst, token=payload.api_token, password=payload.api_password)
+    await session.flush()
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="zabbix_instance", object_id=str(inst.id), action="create",
+        diff={"name": inst.name, "api_url": inst.api_url},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    await session.refresh(inst)
+    return _read(inst)
+
+
+@router.patch("/{inst_id}", response_model=ZabbixRead)
+async def update_instance(
+    inst_id: uuid.UUID, payload: ZabbixUpdate, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ZabbixRead:
+    inst = await _get_or_404(session, inst_id)
+    data = payload.model_dump(exclude_unset=True)
+    token = data.pop("api_token", None)
+    password = data.pop("api_password", None)
+    for k, v in data.items():
+        if k == "api_url" and v is not None:
+            v = str(v).rstrip("/")
+        if k == "scope_subnet_ids":
+            v = [str(s) for s in (v or [])] or None
+        setattr(inst, k, v)
+    _apply_secrets(inst, token=token, password=password)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="zabbix_instance", object_id=str(inst.id), action="update",
+        diff={k: str(v) for k, v in data.items()},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    await session.refresh(inst)
+    return _read(inst)
+
+
+@router.delete("/{inst_id}", status_code=204)
+async def delete_instance(
+    inst_id: uuid.UUID, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    inst = await _get_or_404(session, inst_id)
+    # 主機鏡像走外鍵 cascade；Zabbix 不寫任何共用表，所以沒有別的要清
+    # 它寫進共用表的主機名稱／租約／固定分配／NAT／VPN 通道一併收回（沒有外鍵會跟著刪）
+    from app.services.integration_cleanup import forget_instance
+    await forget_instance(session, source="zabbix", source_id=inst.id)
+    await session.delete(inst)
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="zabbix_instance", object_id=str(inst_id), action="delete", diff={},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+
+
+@router.post("/{inst_id}/test")
+async def test_instance(
+    inst_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """測試連線：回 Zabbix 版本、能否讀主機、可讀主機數。"""
+    inst = await _get_or_404(session, inst_id)
+    try:
+        return await svc.healthcheck(inst)
+    except svc.ZabbixError as exc:
+        raise HTTPException(502, detail=detail_of(exc, "zabbix_error")) from exc
+
+
+@router.post("/{inst_id}/sync")
+async def trigger_sync(
+    inst_id: uuid.UUID, user: CurrentUser, request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    inst = await _get_or_404(session, inst_id)
+    actor_user_id, inst_name = user.id, inst.name
+    actor_ip = request.client.host if request.client else None
+    actor_ua = request.headers.get("user-agent")
+    request_id = getattr(request.state, "request_id", None)
+
+    async def _runner(sess: AsyncSession, _task: Any) -> dict[str, Any]:
+        obj = await sess.get(ZabbixInstance, inst_id)
+        if obj is None:
+            raise RuntimeError("Zabbix instance disappeared")
+        summary = await svc.sync_instance(sess, obj)
+        await append_audit(
+            sess, actor_user_id=str(actor_user_id), actor_ip=actor_ip, actor_user_agent=actor_ua,
+            object_type="zabbix_instance", object_id=str(inst_id), action="sync",
+            diff={k: str(v) for k, v in summary.items()}, request_id=request_id,
+        )
+        await sess.commit()
+        return summary
+
+    task = await spawn_task(
+        session=session, kind="zabbix.sync", target_type="zabbix_instance",
+        target_id=inst_id, target_label=inst_name, actor_user_id=actor_user_id, runner=_runner,
+    )
+    return {"task_id": str(task.id), "status": task.status,
+            "queued_at": task.queued_at.isoformat()}
+
+
+# ─────────────────── 唯讀檢視 ───────────────────
+@view_router.get("/{inst_id}/hosts")
+async def list_hosts(
+    inst_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    q: str | None = Query(None, max_length=128),
+) -> dict[str, Any]:
+    stmt = select(ZabbixHost).where(ZabbixHost.instance_id == inst_id)
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(ZabbixHost.host.ilike(like) | ZabbixHost.name.ilike(like))
+    rows = (await session.execute(stmt.order_by(ZabbixHost.host).limit(2000))).scalars().all()
+    return {"items": [{
+        "id": str(r.id), "hostid": r.hostid, "host": r.host, "name": r.name,
+        "status": r.status, "available": r.available, "maintenance": r.maintenance,
+        "ip": str(r.ip) if r.ip else None, "dns": r.dns,
+        "groups": r.groups, "tags": r.tags,
+        "ip_address_id": str(r.jt_ipam_address_id) if r.jt_ipam_address_id else None,
+        "synced_at": r.synced_at.isoformat() if r.synced_at else None,
+    } for r in rows]}
+
+
+@view_router.get("/{inst_id}/coverage-gap")
+async def coverage_gap(
+    inst_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    subnet_ids: Annotated[list[uuid.UUID] | None, Query()] = None,
+) -> dict[str, Any]:
+    """IPAM 有主機名稱、但沒有被這台 Zabbix 監控的位址。
+
+    `subnet_ids` 沒帶＝全站；帶了就只看那些網段（避免用全域資料回答局部問題）。
+    """
+    await _get_or_404(session, inst_id)
+    rows = await svc.coverage_gap(session, instance_id=inst_id,
+                                  subnet_ids=list(subnet_ids) if subnet_ids else None)
+    return {"items": rows, "count": len(rows),
+            "scope": "subnets" if subnet_ids else "global"}

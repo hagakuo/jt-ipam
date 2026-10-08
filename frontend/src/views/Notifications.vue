@@ -3,6 +3,7 @@ import { onMounted, ref } from "vue";
 import { NCard, NList, NListItem, NSpace, NText, NTag, NButton, NPagination, NEmpty, useMessage } from "naive-ui";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
+import { notifTitle, notifBody } from "@/utils/notifText";
 import { listNotifications, markRead, markAllRead, type Notification } from "@/api/notifications";
 import { fmtDateTime, fmtRelative } from "@/utils/datetime";
 
@@ -10,13 +11,8 @@ const { t } = useI18n();
 const router = useRouter();
 const message = useMessage();
 
-// 有 i18n key 就依當前語言渲染（帶參數）；沒有則退回原字串（向下相容舊通知）
-function dispTitle(n: Notification): string {
-  return n.title_key ? t(n.title_key, (n.params || {}) as Record<string, unknown>) : n.title;
-}
-function dispBody(n: Notification): string {
-  return n.body_key ? t(n.body_key, (n.params || {}) as Record<string, unknown>) : (n.body || "");
-}
+const dispTitle = (n: Notification) => notifTitle(n, t);
+const dispBody = (n: Notification) => notifBody(n, t);
 
 const items = ref<Notification[]>([]);
 const page = ref(1);
@@ -52,7 +48,8 @@ async function clickItem(n: Notification) {
       // ignore
     }
   }
-  if (n.link) void router.push(n.link);
+  // 只接受站內路徑（不吃 //host 這種外部導向）
+  if (n.link && n.link.startsWith("/") && !n.link.startsWith("//")) void router.push(n.link);
 }
 
 async function clearAll() {
@@ -75,9 +72,10 @@ onMounted(load);
 
 <template>
   <n-card :title="t('notifications.history_title')">
-    <template #header-extra>
+    <!-- 控制列：自標題列搬到內文最上方 -->
+    <n-space align="center" justify="end" style="margin-bottom: 10px">
       <n-button size="small" @click="clearAll">{{ t("notifications.mark_all_read") }}</n-button>
-    </template>
+    </n-space>
     <n-list v-if="items.length" hoverable clickable>
       <n-list-item
         v-for="n in items"

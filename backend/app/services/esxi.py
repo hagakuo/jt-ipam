@@ -23,11 +23,13 @@ from xml.sax.saxutils import escape as _xml_escape
 
 import httpx
 from defusedxml.ElementTree import fromstring as _safe_xml
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.safe_http import UnsafeOutboundURL, safe_request
 from app.core.security import decrypt_secret, encrypt_secret
+from app.core.sqlin import in_values
+from app.core.ui_error import UiError
 from app.models.esxi import ESXiInstance
 
 VIM = "urn:vim25"
@@ -51,7 +53,7 @@ VM_PROPS = (
 )
 
 
-class ESXiError(Exception):
+class ESXiError(UiError):
     """對外可讀的錯誤（連線、認證、SOAP Fault）。"""
 
 
@@ -206,7 +208,7 @@ def parse_service_content(xml: str) -> dict[str, Any]:
     root = _safe_xml(xml)
     rv = _find(root, "returnval")
     if rv is None:
-        raise ESXiError("RetrieveServiceContent 沒有回傳內容")
+        raise ESXiError("RetrieveServiceContent 沒有回傳內容", code="esxi_no_service_content")
     out: dict[str, Any] = {"about": {}}
     for child in rv:
         name = _tag(child)
@@ -338,7 +340,7 @@ async def _call(
             content=body.encode("utf-8"), timeout=TIMEOUT, verify=inst.verify_tls,
         )
     except (UnsafeOutboundURL, httpx.HTTPError) as exc:
-        raise ESXiError(f"連線失敗：{exc}") from exc
+        raise ESXiError(f"連線失敗：{exc}", code="esxi_connect", reason=str(exc)[:200]) from exc
 
 
 async def resolve_base(inst: ESXiInstance) -> tuple[str, dict[str, Any]]:
@@ -356,9 +358,11 @@ async def resolve_base(inst: ESXiInstance) -> tuple[str, dict[str, Any]]:
         except ESXiError as exc:
             last = exc
             continue
-    raise ESXiError(
-        f"所有位址都連不上（試了 {len(urls)} 個）：{last}" if len(urls) > 1 else str(last)
-    )
+    if len(urls) > 1:
+        raise ESXiError(f"所有位址都連不上（試了 {len(urls)} 個）：{last}",
+                        code="esxi_all_urls_failed", n=len(urls), reason=str(last)[:200])
+    raise ESXiError(str(last), code=getattr(last, "code", None) or "esxi_connect",
+                    **(getattr(last, "params", {}) or {}))
 
 
 class Session:
@@ -383,7 +387,7 @@ class Session:
         raw_cookie = login.headers.get("set-cookie") or ""
         self.cookie = raw_cookie.split(";", 1)[0] or None
         if not self.cookie:
-            raise ESXiError("登入沒有取得 session cookie")
+            raise ESXiError("登入沒有取得 session cookie", code="esxi_no_cookie")
         return self
 
     async def __aexit__(self, *exc_info: Any) -> None:
@@ -408,7 +412,7 @@ class Session:
             "returnval",
         )
         if not view:
-            raise ESXiError("建立 ContainerView 失敗")
+            raise ESXiError("建立 ContainerView 失敗", code="esxi_container_view")
         collector = self.content["propertyCollector"]
         try:
             vms, token = parse_vms(await self.call(build_retrieve(collector, view)))
@@ -474,7 +478,7 @@ async def diagnose(inst: ESXiInstance) -> list[dict[str, Any]]:
         raise_for_fault(r.text)
         sess.cookie = (r.headers.get("set-cookie") or "").split(";", 1)[0] or None
         if not sess.cookie:
-            raise ESXiError("沒有取得 session cookie")
+            raise ESXiError("沒有取得 session cookie", code="esxi_no_cookie")
         return "ok"
 
     if await step("Login", _login) is None:
@@ -535,6 +539,15 @@ def pick_vm_ip(candidates: list[str | None]) -> str | None:
     return (v4 or v6 or [None])[0]
 
 
+def _canon_ip(raw: str | None) -> str | None:
+    """位址 → 與資料庫相同的標準寫法（IPv6 小寫壓縮），好拿來對 match_existing_many 的結果。"""
+    import ipaddress
+    try:
+        return ipaddress.ip_address(str(raw or "").strip()).compressed if raw else None
+    except ValueError:
+        return None
+
+
 async def sync_instance(session: AsyncSession, inst: ESXiInstance) -> dict[str, int]:
     """把 VM 清單鏡像進共用的虛擬化資料表。
 
@@ -545,22 +558,34 @@ async def sync_instance(session: AsyncSession, inst: ESXiInstance) -> dict[str, 
     """
     from app.models.address import IPAddress
     from app.models.virt import VirtCluster, VirtualMachine, VMInterface
+    from app.services.ip_autocreate import addable_subnets, match_existing_many, subnet_for_ip_str
 
     async with Session(inst) as s:
         vms = await s.list_vms()
 
     now = datetime.now(UTC)
+    # 叢集只認 vmware 類型：名稱剛好等於某個 PVE 叢集時，以前會拿 PVE 的來用，
+    # 下面的清除就把 PVE 的 VM 全刪了（2026-09-26 稽核）
     cluster = None
     if inst.cluster_id:
         cluster = await session.get(VirtCluster, inst.cluster_id)
+        if cluster is not None and cluster.type != "vmware":
+            cluster = None
+    name = inst.name
     if cluster is None:
         cluster = (await session.execute(
-            select(VirtCluster).where(VirtCluster.name == inst.name).limit(1)
+            select(VirtCluster).where(VirtCluster.name == name, VirtCluster.type == "vmware").limit(1)
+        )).scalars().first()
+    if cluster is None and (await session.execute(
+            select(VirtCluster.id).where(VirtCluster.name == name))).first():
+        name = f"{inst.name} (ESXi)"[:128]     # 名稱唯一；別的平台已經用了這個名字
+        cluster = (await session.execute(
+            select(VirtCluster).where(VirtCluster.name == name, VirtCluster.type == "vmware").limit(1)
         )).scalars().first()
     if cluster is None:
         # 用資料表 CHECK 約束早就預留的 "vmware"：ESXi 與 vCenter 都屬同一個平台家族，
         # 而且不必為了新平台改約束。
-        cluster = VirtCluster(name=inst.name, type="vmware", is_standalone=True,
+        cluster = VirtCluster(name=name, type="vmware", is_standalone=True,
                               description=inst.description)
         session.add(cluster)
         await session.flush()
@@ -569,22 +594,52 @@ async def sync_instance(session: AsyncSession, inst: ESXiInstance) -> dict[str, 
     scope = _scope_ids(inst)
     seen: set[Any] = set()
     matched_ip = 0
+    created_ip = 0
+    # 開了「信任虛擬化取得的 IP」才準備候選子網路
+    create_in = await addable_subnets(session, scope) if inst.auto_create_ips else None
 
+    # 整批（2026-09-30 大量資料測試：以前每台 VM 各查一次鏡像列、各刪一次網卡、各比對一次 IP，
+    # 新 VM 還要各 flush 一次 —— vCenter 5,000 台 VM 一輪一萬五千次以上查詢）
+    by_ext = {row.external_id: row for row in (await session.execute(
+        select(VirtualMachine).where(VirtualMachine.cluster_id == cluster.id))).scalars()}
+    cands: dict[Any, str] = {}
+    for v in vms:
+        cand = pick_vm_ip([v.get("ip"),
+                           *(ip for n in (v.get("nics") or []) for ip in (n.get("ips") or []))])
+        c = _canon_ip(cand)
+        if c:
+            cands[id(v)] = c
+    matches = await match_existing_many(session, set(cands.values()), scope) if cands else {}
+    # 先決定要新建的 IP 並寫進去（VM 的 primary_ip_id 會指向它們；分開寫，外鍵順序才確定）
+    created: dict[str, IPAddress] = {}
+    for v in vms:
+        cand = cands.get(id(v))
+        if not cand or cand in created or create_in is None:
+            continue
+        hit, ambiguous = matches.get(cand, (None, False))
+        if hit is None and not ambiguous:
+            # 開了「信任虛擬化取得的 IP」：落點唯一時才建（規則見 ip_autocreate）
+            sid = subnet_for_ip_str(create_in, cand)
+            if sid is not None:
+                created[cand] = IPAddress(id=uuid.uuid4(), subnet_id=sid, ip=cand, state="active",
+                                          discovery_source="vmware")
+    if created:
+        session.add_all(created.values())
+        await session.flush()
+        created_ip = len(created)
+
+    nics: list[VMInterface] = []
     for v in vms:
         moid = v.get("moid") or v.get("name")
         if not moid:
             continue
-        row = (await session.execute(
-            select(VirtualMachine).where(
-                VirtualMachine.cluster_id == cluster.id,
-                VirtualMachine.external_id == str(moid),
-            ).limit(1)
-        )).scalars().first()
+        row = by_ext.get(str(moid))
         if row is None:
-            row = VirtualMachine(cluster_id=cluster.id, external_id=str(moid),
+            # 主鍵先給：網卡可以直接指向它，不必為了拿 id 每台 flush 一次
+            row = VirtualMachine(id=uuid.uuid4(), cluster_id=cluster.id, external_id=str(moid),
                                  name=v.get("name") or str(moid))
             session.add(row)
-            await session.flush()
+            by_ext[str(moid)] = row
         row.name = v.get("name") or row.name
         row.node = v.get("host")
         row.kind = "vm"                      # ESXi 沒有容器的概念
@@ -596,40 +651,37 @@ async def sync_instance(session: AsyncSession, inst: ESXiInstance) -> dict[str, 
             row.description = v["notes"]
         seen.add(row.id)
 
-        # 網卡：鏡像取代（VM 換過網卡設定時舊的要消失）
-        await session.execute(
-            VMInterface.__table__.delete().where(VMInterface.vm_id == row.id)
-        )
+        # 網卡：鏡像取代（VM 換過網卡設定時舊的要消失）—— 迴圈外一次刪、一次加
         for i, nic in enumerate(v.get("nics") or []):
-            session.add(VMInterface(
+            nics.append(VMInterface(
                 vm_id=row.id, name=f"nic{i}", mac=nic.get("mac"),
                 bridge=nic.get("network"),
                 primary_ip=pick_vm_ip(list(nic.get("ips") or []))))
 
-        # 主要 IP：只比對既有的 IPAddress，不新建。位址挑選見 pick_vm_ip ——
-        # 鏈路本地（fe80::/169.254）一律不採用，IPv4 優先。
-        cand = pick_vm_ip([v.get("ip"),
-                           *(ip for n in (v.get("nics") or []) for ip in (n.get("ips") or []))])
+        # 主要 IP：預設只比對既有的 IPAddress。位址挑選見 pick_vm_ip ——
+        # 鏈路本地（fe80::/169.254）一律不採用，IPv4 優先。重疊網段：剛好一筆才採用
+        cand = cands.get(id(v))
         if cand:
-            stmt = select(IPAddress.id).where(func.host(IPAddress.ip) == cand)
-            if scope:
-                stmt = stmt.where(IPAddress.subnet_id.in_(scope))
-            # 重疊網段：取兩筆判斷，剛好一筆才採用 —— 分不出來時不猜
-            ids = (await session.execute(stmt.limit(2))).scalars().all()
-            if len(ids) == 1:
-                row.primary_ip_id = ids[0]
+            hit, _ambiguous = matches.get(cand, (None, False))
+            hit = hit or created.get(cand)
+            if hit is not None:
+                row.primary_ip_id = hit.id
                 matched_ip += 1
+    await session.flush()                    # VM 先寫，網卡的外鍵才有對象
+    if seen:
+        await session.execute(VMInterface.__table__.delete().where(in_values(VMInterface.vm_id, seen)))
+    session.add_all(nics)
 
     # 這次沒看到的 VM → 從清單移除（VM 被刪掉了）
-    stale = (await session.execute(
-        select(VirtualMachine).where(VirtualMachine.cluster_id == cluster.id)
-    )).scalars().all()
     removed = 0
-    for row in stale:
+    for row in list(by_ext.values()):
         if row.id not in seen:
             await session.delete(row)
             removed += 1
 
     inst.last_sync_at = now
     inst.last_error = None
-    return {"vms": len(vms), "matched_ip": matched_ip, "removed": removed}
+    out = {"vms": len(vms), "matched_ip": matched_ip, "removed": removed}
+    if created_ip:
+        out["created_ip"] = created_ip      # 自動建了幾筆，別讓它靜悄悄發生
+    return out

@@ -25,7 +25,17 @@ describe("admin API", () => {
       await listAudit({ object_type: "user", action: "create", limit: 50, offset: 0 });
       expect(getSpy).toHaveBeenCalledWith("/api/v1/audit", {
         params: { object_type: "user", action: "create", limit: 50, offset: 0 },
+        // action 可複選 → 陣列要序列化成重複的同一個 key（?action=a&action=b），
+        // axios 預設會寫成 action[]=，那樣後端讀不到
+        paramsSerializer: { indexes: null },
       });
+    });
+
+    it("多個動作序列化成重複的 key，而不是 action[]", async () => {
+      getSpy.mockResolvedValueOnce({ data: { items: [], total: 0, page: 1, page_size: 100 } });
+      await listAudit({ action: ["create", "delete"] });
+      const opts = getSpy.mock.calls.at(-1)?.[1] as { paramsSerializer?: { indexes: null } };
+      expect(opts.paramsSerializer).toEqual({ indexes: null });
     });
 
     it("verifyAuditChain 走 POST 並回傳 { ok, broken_at_id, checked }", async () => {

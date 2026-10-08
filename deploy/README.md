@@ -12,7 +12,7 @@
 
 - Debian 12 / Ubuntu 22.04+ (a Proxmox LXC template is fine)
 - 2 vCPU / 4 GB RAM / 20 GB disk (minimum)
-- Python 3.12, PostgreSQL 16, Redis 7, Node 20+
+- Python 3.12, PostgreSQL 16, Redis 7, Node 22 LTS (frontend build only)
 - **TLS enforced** (pick one of two modes, see §1.3)
 
 ### 1.2 One-click install

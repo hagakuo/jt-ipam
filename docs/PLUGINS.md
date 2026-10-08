@@ -1,6 +1,6 @@
 # jt-ipam Plugin Development Guide
 
-> 繁體中文版：[PLUGINS_zh-TW.md](PLUGINS_zh-TW.md)
+> 繁體中文版：[PLUGINS_zh-TW.md](PLUGINS_zh-TW.md) · 日本語：[PLUGINS_ja.md](PLUGINS_ja.md)
 
 Third-party packages can extend jt-ipam via `entry_points`, without forking the main repo.
 
@@ -71,7 +71,6 @@ curl -fsS https://ipam.example.com/api/v1/plugins -H "Authorization: Bearer ..."
 - `app.include_router(...)` to add REST endpoints
 - `app.middleware(...)` to add middleware
 - Start background tasks (`asyncio.create_task`)
-- Register GraphQL types (compose after reading `app.state.graphql_schema`)
 
 `on_shutdown(app)` is the matching cleanup hook.
 
@@ -93,8 +92,7 @@ curl -fsS https://ipam.example.com/api/v1/plugins -H "Authorization: Bearer ..."
 
 - No managed database migrations: a plugin's own tables must be managed with its own
   alembic (recommended: a separate alembic env, kept apart from jt-ipam's main alembic).
-- No automatic OpenAPI schema merge: plugin endpoints appear in `/openapi.json`,
-  but the GraphQL union schema must be handled manually.
+- Plugin endpoints appear in `/openapi.json` automatically.
 - No hot plugin uninstall; disabling currently means `pip uninstall && systemctl restart`.
 
 These limitations will be improved in Phase 4.x.

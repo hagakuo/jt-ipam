@@ -223,12 +223,12 @@ async def approver_users(session: AsyncSession) -> list[User]:
             gids |= {uuid.UUID(x) for x in s["group_ids"] if _is_uuid(x)}
     if gids:
         member_rows = (await session.execute(
-            select(UserGroupMember.user_id).where(UserGroupMember.group_id.in_(gids))
+            select(UserGroupMember.user_id).where(UserGroupMember.group_id.in_(gids))  # bounded: approver groups
         )).all()
         uids.update(r[0] for r in member_rows)
     if uids:
         for u in (await session.execute(
-            select(User).where(User.id.in_(uids), User.is_active.is_(True))
+            select(User).where(User.id.in_(uids), User.is_active.is_(True))  # bounded: approver groups
         )).scalars().all():
             out[u.id] = u
     return list(out.values())

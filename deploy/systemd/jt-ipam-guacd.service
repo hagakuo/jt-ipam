@@ -1,0 +1,57 @@
+# =============================================================================
+# jt-ipam guacd —— Apache Guacamole 的伺服器端，RDP／VNC／SSH 主控台的選用引擎
+#
+# 由 scripts/jt-ipam.sh install|upgrade --with-guacd 安裝（預編檔見 scripts/guacd/）。
+# 裝好之後到「管理 → 系統設定」把各協定的連線引擎改成 guacd 才會用到。
+#
+# 安全：
+#   * 只綁 127.0.0.1 —— guacd 的埠**沒有任何驗證**，誰連得到它就能叫它去連任何主機。
+#     只有同一台機器上的 jt-ipam 後端會連它（app/services/guacd.py）。
+#   * 動態使用者、唯讀檔案系統、沒有任何 capability；它只需要往外連目標主機。
+#
+# 語系：一定要是 UTF-8。guacd 用 wcwidth() 算終端機裡一個字佔幾格，非 UTF-8 的 locale
+# 會把中文當成一格寬、縮小塞進去（SSH 走 guacd 時中文會變成很小的字，2026-09-25 實測）。
+# =============================================================================
+
+[Unit]
+Description=jt-ipam guacd (console engine for RDP / VNC / SSH)
+Documentation=https://github.com/jasoncheng7115/jt-ipam
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=LANG=C.UTF-8
+# FreeRDP 會在 HOME 底下找設定；給它一個自己的、可寫的地方（動態使用者沒有家目錄）
+Environment=HOME=/var/lib/jt-ipam-guacd
+StateDirectory=jt-ipam-guacd
+ExecStart=/opt/jt-ipam-guacd/sbin/guacd -f -b 127.0.0.1 -l 4822 -L info
+Restart=on-failure
+RestartSec=3s
+
+# ── Sandbox / hardening ────────────────────────────────────────────────────
+DynamicUser=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

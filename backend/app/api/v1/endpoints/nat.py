@@ -47,6 +47,20 @@ def _parse_origin(
             return "pfsense", None, "pfSense (unknown)"
         name = fw_names.get(fw_id) or "unknown"
         return "pfsense", fw_id, f"pfSense: {name}"
+    if origin.startswith("mikrotik:"):
+        try:
+            fw_id = uuid.UUID(origin.split(":", 1)[1])
+        except ValueError:
+            return "mikrotik", None, "MikroTik (unknown)"
+        name = fw_names.get(fw_id) or "unknown"
+        return "mikrotik", fw_id, f"MikroTik: {name}"
+    if origin.startswith("paloalto:"):
+        try:
+            fw_id = uuid.UUID(origin.split(":", 1)[1])
+        except ValueError:
+            return "paloalto", None, "Palo Alto (unknown)"
+        name = fw_names.get(fw_id) or "unknown"
+        return "paloalto", fw_id, f"Palo Alto: {name}"
     if origin.startswith("fortigate:"):
         try:
             fw_id = uuid.UUID(origin.split(":", 1)[1])
@@ -64,7 +78,7 @@ async def list_nat(
     type: str | None = Query(None),
     device_id: uuid.UUID | None = Query(None),
     ip_id: uuid.UUID | None = Query(None, description="篩選 src 或 dst 指向此 IP 的規則"),
-    source_kind: list[str] | None = Query(None, description="可複選：opnsense | pfsense | fortigate | phpipam | manual"),
+    source_kind: list[str] | None = Query(None, description="可複選：opnsense | pfsense | fortigate | paloalto | mikrotik | phpipam | manual"),
     source_firewall_id: uuid.UUID | None = Query(None),
     page: int = Query(1, ge=1, le=10_000),
     page_size: int = Query(50, ge=1, le=500),
@@ -84,7 +98,8 @@ async def list_nat(
         cstmt = cstmt.where(ipc)
     # 來源可複選：phpipam / manual / opnsense / pfsense（OR）
     kinds = {k for k in (source_kind or [])
-             if k in ("phpipam", "manual", "opnsense", "pfsense", "fortigate")}
+             if k in ("phpipam", "manual", "opnsense", "pfsense", "fortigate", "paloalto",
+                      "mikrotik")}
     if kinds:
         from sqlalchemy import or_
         conds = []
@@ -102,6 +117,16 @@ async def list_nat(
                 conds.append(NATTranslation.source_origin == f"pfsense:{source_firewall_id}")
             else:
                 conds.append(NATTranslation.source_origin.like("pfsense:%"))
+        if "paloalto" in kinds:
+            if source_firewall_id is not None and kinds == {"paloalto"}:
+                conds.append(NATTranslation.source_origin == f"paloalto:{source_firewall_id}")
+            else:
+                conds.append(NATTranslation.source_origin.like("paloalto:%"))
+        if "mikrotik" in kinds:
+            if source_firewall_id is not None and kinds == {"mikrotik"}:
+                conds.append(NATTranslation.source_origin == f"mikrotik:{source_firewall_id}")
+            else:
+                conds.append(NATTranslation.source_origin.like("mikrotik:%"))
         if "fortigate" in kinds:
             if source_firewall_id is not None and kinds == {"fortigate"}:
                 conds.append(NATTranslation.source_origin == f"fortigate:{source_firewall_id}")
@@ -122,6 +147,12 @@ async def list_nat(
     from app.models.fortigate import FortiGateFirewall
     fg_rows = (await session.execute(select(FortiGateFirewall.id, FortiGateFirewall.name))).all()
     fw_names.update({r[0]: r[1] for r in fg_rows})
+    from app.models.paloalto import PaloAltoFirewall
+    pa_rows = (await session.execute(select(PaloAltoFirewall.id, PaloAltoFirewall.name))).all()
+    fw_names.update({r[0]: r[1] for r in pa_rows})
+    from app.models.mikrotik import MikroTikRouter
+    mt_rows = (await session.execute(select(MikroTikRouter.id, MikroTikRouter.name))).all()
+    fw_names.update({r[0]: r[1] for r in mt_rows})
 
     items: list[NATRead] = []
     for r in rows:
@@ -130,6 +161,7 @@ async def list_nat(
         m.source_kind = kind
         m.source_firewall_id = fw_id
         m.source_label = label
+        m.source_firewall_name = fw_names.get(fw_id) if fw_id else None
         items.append(m)
     return Paginated[NATRead](items=items, total=total, page=page, page_size=page_size)
 

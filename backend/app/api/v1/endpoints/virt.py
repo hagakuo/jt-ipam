@@ -7,13 +7,15 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import Field, HttpUrl, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import String, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.sqlin import in_values
+from app.core.ui_error import detail_of
 from app.models.virt import (
     ProxmoxInstance,
     VirtCluster,
@@ -98,6 +100,8 @@ class ProxmoxInstanceCreate(StrictModel):
     enabled: bool = True
     sync_interval_seconds: Annotated[int, Field(ge=60, le=86400)] = 600
     scope_subnet_ids: list[str] | None = None
+    # 信任虛擬化回報的 IP：IPAM 沒有時自動建立（預設關閉；風險見模型註解）
+    auto_create_ips: bool | None = None
 
 
 class ProxmoxInstanceUpdate(StrictModel):
@@ -110,6 +114,8 @@ class ProxmoxInstanceUpdate(StrictModel):
     enabled: bool | None = None
     sync_interval_seconds: Annotated[int | None, Field(ge=60, le=86400)] = None
     scope_subnet_ids: list[str] | None = None
+    # 信任虛擬化回報的 IP：IPAM 沒有時自動建立（預設關閉；風險見模型註解）
+    auto_create_ips: bool | None = None
 
 
 class ProxmoxInstanceRead(StrictModel):
@@ -123,6 +129,8 @@ class ProxmoxInstanceRead(StrictModel):
     enabled: bool
     sync_interval_seconds: int
     scope_subnet_ids: list[str] | None = None
+    # 信任虛擬化回報的 IP：IPAM 沒有時自動建立（預設關閉；風險見模型註解）
+    auto_create_ips: bool | None = None
     last_sync_at: Any
     last_error: str | None
 
@@ -155,7 +163,7 @@ async def list_clusters(
     if cust_ids:
         from app.models.customer import Customer
         cust_names = dict((await session.execute(  # type: ignore[arg-type]
-            select(Customer.id, Customer.name).where(Customer.id.in_(cust_ids))
+            select(Customer.id, Customer.name).where(Customer.id.in_(cust_ids))  # bounded: customers on one page
         )).all())
     items = []
     for r in rows:
@@ -300,7 +308,7 @@ async def list_vms(
     vm_ids = [r.id for r in rows]
     if vm_ids:
         ifaces = (await session.execute(
-            select(VMInterface).where(VMInterface.vm_id.in_(vm_ids))
+            select(VMInterface).where(in_values(VMInterface.vm_id, vm_ids))
             .order_by(VMInterface.name)
         )).scalars().all()
         by_vm: dict[uuid.UUID, dict[str, list[str]]] = {}
@@ -324,7 +332,7 @@ async def list_vms(
         if wanted:
             seen: dict[str, list[str]] = {}
             for aid, ahost in (await session.execute(
-                select(_IPA.id, func.host(_IPA.ip)).where(func.host(_IPA.ip).in_(wanted))
+                select(_IPA.id, func.host(_IPA.ip)).where(in_values(func.host(_IPA.ip), wanted, type_=String()))
             )).all():
                 seen.setdefault(str(ahost), []).append(str(aid))
             unique = {ip: ids[0] for ip, ids in seen.items() if len(ids) == 1}
@@ -371,6 +379,7 @@ async def create_proxmox(
         enabled=payload.enabled,
         sync_interval_seconds=payload.sync_interval_seconds,
         scope_subnet_ids=payload.scope_subnet_ids,
+        auto_create_ips=bool(payload.auto_create_ips),
     )
     session.add(obj)
     await session.flush()
@@ -434,7 +443,7 @@ async def update_proxmox(
         urls = data["extra_api_urls"] or []
         obj.extra_api_urls = "\n".join(str(u).rstrip("/") for u in urls) or None
     for k in ("auth_username", "auth_token_id", "verify_tls", "enabled",
-              "sync_interval_seconds", "scope_subnet_ids"):
+              "sync_interval_seconds", "scope_subnet_ids", "auto_create_ips"):
         if k in data and data[k] is not None:
             setattr(obj, k, data[k])
 
@@ -479,7 +488,7 @@ async def test_proxmox(
     try:
         info = await proxmox_service.healthcheck(session, obj)
     except proxmox_service.ProxmoxError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "proxmox_error")) from exc
     return {"ok": True, "version": info}
 
 
@@ -558,5 +567,96 @@ async def delete_proxmox(
         object_type="proxmox_instance", object_id=str(obj.id), action="delete",
         diff={"api_url": obj.api_url}, request_id=getattr(request.state, "request_id", None),
     )
+    # 它回報的主機名稱與（叢集沒有別的實例時）VM 鏡像一併收回
+    from app.services.integration_cleanup import forget_proxmox_instance
+    await forget_proxmox_instance(session, obj)
     await session.delete(obj)
     await session.commit()
+
+# ─────────────────── PVE 防火牆（東西向分段）───────────────────
+@router.get("/pve-firewall")
+async def pve_firewall(
+    _user: CurrentUser,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    vmid: int | None = Query(None),
+    posture: str | None = Query(None),
+    limit: int = Query(500, ge=1, le=2000),
+) -> dict[str, Any]:
+    """PVE 防火牆的規則與各 guest 的實際姿態。
+
+    **這是東西向／主機層的管制，不代表對外可達**，因此不併入對外開放服務清單。
+    回傳的 `posture` 已經把三個生效開關與預設政策合併判定過，呼叫端不要自己重算。
+    """
+    from app.models.pve_firewall import (
+        PVEFirewallGroup,
+        PVEFirewallIPSet,
+        PVEFirewallRule,
+        PVEFirewallState,
+    )
+
+    st_stmt = select(PVEFirewallState)
+    if vmid is not None:
+        st_stmt = st_stmt.where(PVEFirewallState.vmid == vmid)
+    if posture:
+        st_stmt = st_stmt.where(PVEFirewallState.posture == posture)
+    states = list((await session.execute(st_stmt.limit(limit))).scalars().all())
+
+    r_stmt = select(PVEFirewallRule)
+    if vmid is not None:
+        # 該 guest 的規則 ＋ 上層（叢集／節點）規則都要看得到，否則會以為它沒有任何管制
+        r_stmt = r_stmt.where(
+            (PVEFirewallRule.vmid == vmid) | (PVEFirewallRule.scope != "guest"))
+    rules = list((await session.execute(
+        r_stmt.order_by(PVEFirewallRule.scope, PVEFirewallRule.pos).limit(limit)
+    )).scalars().all())
+
+    # 叢集名稱：多叢集時 VMID 會重複，沒有這一欄就分不出「212 是哪一台的 212」。
+    # ⚠️ `proxmox_instances` 沒有 name 欄位 —— 名稱在 `virt_clusters`（同步時依 PVE
+    # 叢集名稱自動指派）。還沒對應到叢集的實例退回顯示 API 位址的主機名。
+    from urllib.parse import urlsplit
+
+    from app.models.virt import ProxmoxInstance, VirtCluster
+    inst_names: dict[uuid.UUID, str | None] = {}
+    for i_id, cname, api_url in (await session.execute(
+        select(ProxmoxInstance.id, VirtCluster.name, ProxmoxInstance.api_url)
+        .join(VirtCluster, VirtCluster.id == ProxmoxInstance.cluster_id, isouter=True)
+    )).all():
+        inst_names[i_id] = cname or (urlsplit(str(api_url)).hostname or None)
+
+    groups = list((await session.execute(select(PVEFirewallGroup))).scalars().all())
+    ipsets = list((await session.execute(select(PVEFirewallIPSet).limit(limit))).scalars().all())
+
+    counts: dict[str, int] = {}
+    for s_ in (await session.execute(
+            select(PVEFirewallState.posture, func.count())
+            .group_by(PVEFirewallState.posture))).all():
+        counts[str(s_[0])] = int(s_[1])
+
+    return {
+        "posture_counts": counts,          # 全域分布（不隨篩選縮放，才看得出比例）
+        "states": [{
+            "instance_id": str(s_.instance_id),
+            "cluster": inst_names.get(s_.instance_id),
+            "vmid": s_.vmid, "guest_kind": s_.guest_kind, "node": s_.node_name,
+            "effective": s_.effective, "posture": s_.posture,
+            "cluster_enabled": s_.cluster_enabled, "guest_enabled": s_.guest_enabled,
+            "nic_firewall": s_.nic_firewall,
+            "cluster_policy_in": s_.cluster_policy_in,
+            "guest_policy_in": s_.guest_policy_in,
+            "guest_policy_in_explicit": s_.guest_policy_in_explicit,
+            "guest_enabled_explicit": s_.guest_enabled_explicit,
+        } for s_ in states],
+        "rules": [{
+            # 規則要跟著叢集走：前端用 (instance_id, vmid) 配對，只比 vmid 會把
+            # 另一座叢集同號 guest 的規則混進來
+            "instance_id": str(r.instance_id),
+            "cluster": inst_names.get(r.instance_id),
+            "scope": r.scope, "node": r.node_name, "vmid": r.vmid, "pos": r.pos,
+            "direction": r.direction, "action": r.action, "enabled": r.enabled,
+            "proto": r.proto, "dport": r.dport, "source": r.source, "dest": r.dest,
+            "macro": r.macro, "group_ref": r.group_ref, "comment": r.comment,
+        } for r in rules],
+        "groups": [{"name": g.name, "comment": g.comment, "rules": g.rules} for g in groups],
+        "ipsets": [{"scope": i.scope, "vmid": i.vmid, "kind": i.kind, "name": i.name,
+                    "members": i.members_resolved} for i in ipsets],
+    }

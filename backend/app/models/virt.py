@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB, MACADDR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -71,7 +72,9 @@ class VirtualMachine(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # Proxmox 用整數 VMID、VMware 用字串 MoRef，兩者不共用同一欄。
     external_id: Mapped[str | None] = mapped_column(String(64), index=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    node: Mapped[str | None] = mapped_column(String(128))   # 所在 PVE 節點（host）
+    # 所在節點（PVE 是節點名、ESXi 是主機 FQDN）。不設長度上限：長度是對方平台決定的，
+    # 猜一個上限的代價是整批同步中斷（issue #25）。
+    node: Mapped[str | None] = mapped_column(Text)
     kind: Mapped[str | None] = mapped_column(String(8))      # "vm"（qemu）/ "ct"（lxc）
     status: Mapped[str] = mapped_column(String(16), default="unknown", nullable=False)
     vcpus: Mapped[int | None] = mapped_column(Integer)
@@ -118,7 +121,9 @@ class VMInterface(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     mac: Mapped[str | None] = mapped_column(MACADDR)
     primary_ip: Mapped[str | None] = mapped_column(INET)
-    bridge: Mapped[str | None] = mapped_column(String(64))
+    # 橋接／連接的網段名稱。Proxmox 是 vmbr0 這種短名，但 NSX-T 會產生嵌著 UUID 的
+    # 長名稱（實測 78 字元）——外部名稱一律不設上限（issue #25）。
+    bridge: Mapped[str | None] = mapped_column(Text)
     vlan_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("vlans.id", ondelete="SET NULL"),
@@ -151,6 +156,16 @@ class ProxmoxInstance(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # 限定 sync 解析 IP 的子網路範圍（解決重疊網段）。空 = 全域比對。存 subnet UUID 字串陣列。
     scope_subnet_ids: Mapped[list[Any] | None] = mapped_column(JSONB)
+    # 信任虛擬化回報的 IP：IPAM 沒有該筆位址時自動建立。**預設關閉** ——
+    # 自動收錄會讓那些位址不再出現在「未授權 IP」異常偵測裡（該偵測的判定是
+    # 「ARP 看得到、IPAM 沒有」），要不要放棄那道訊號應該由使用者明示。
+    auto_create_ips: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
+    # 防火牆同步可獨立關閉（讀取失敗時比照 FortiGate 做區段隔離，不影響 VM／網路同步）
+    sync_firewall: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False, server_default=text("true")
+    )
     sync_interval_seconds: Mapped[int] = mapped_column(Integer, default=600, nullable=False)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)

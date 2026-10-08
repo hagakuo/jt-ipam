@@ -12,6 +12,7 @@ from app.api.v1.dependencies import CurrentUser
 from app.core.config import get_settings
 from app.core.db import get_session
 from app.core.rate_limit import limit_per_ip
+from app.core.ui_error import detail_of
 from app.models.user import User
 from app.schemas.auth import (
     ChangePasswordRequest,
@@ -53,7 +54,10 @@ async def list_realms(
         get_oidc_config,
         get_saml_config,
     )
-    realms: list[dict[str, str]] = [{"value": "local", "label": "本機"}]
+    # `label_key` 才是畫面上顯示的那一份：登入頁有語言切換，而且使用者還沒登入，
+    # 後端無從得知要用哪個語言。`label` 留著給沒有 i18n 的用戶端（以及舊快取）。
+    realms: list[dict[str, str]] = [
+        {"value": "local", "label": "本機", "label_key": "login.realm_local"}]
     try:
         cfg = await get_ldap_config(session)
         if cfg.enabled:
@@ -309,6 +313,7 @@ async def logout(
 @router.get("/me", response_model=UserMe)
 async def me(
     user: CurrentUser,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> UserMe:
     out = UserMe.model_validate(user)
@@ -324,6 +329,10 @@ async def me(
     # 全域 LLM/AI 是否啟用 → 前端據此決定要不要顯示 AI 對話小工具（未設定就別讓人輸入/送出）
     from app.services.system_config import get_llm_config
     out.ai_enabled = (await get_llm_config(session)).enabled
+    if user.is_admin:
+        # 啟動時算好的（見 main.lifespan）—— /me 是每次載入都會打的，不適合在這裡
+        # 讀 migration 目錄
+        out.schema_behind = bool(getattr(request.app.state, "schema_behind", False))
     # has_visibility：任一類型有可見範圍即 True（零權限→False）
     # has_global_read：管理員或任一類型有「萬用」授權（visible_ids 回 None）→ True
     if user.is_admin:
@@ -361,7 +370,7 @@ async def ldap_test(
     try:
         return await ldap_auth.test_connection(cfg)
     except ldap_auth.LDAPNotConfigured as exc:
-        raise HTTPException(503, detail=str(exc)) from exc
+        raise HTTPException(503, detail=detail_of(exc, "ldap_not_configured")) from exc
     except ldap_auth.LDAPAuthError as exc:
         raise HTTPException(502, detail=f"LDAP error: {exc}") from exc
 

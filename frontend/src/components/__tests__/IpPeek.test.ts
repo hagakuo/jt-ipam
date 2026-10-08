@@ -51,7 +51,7 @@ describe("IpPeek 的狀態顯示", () => {
 describe("角色與配發方式是兩件事", () => {
   it("落在 DHCP 發放範圍不算「角色」", () => {
     // 客戶指出的：一個 DHCP 配來的位址，欄位卻寫「角色：DHCP」——
-    // 那台機器並沒有扮演任何 DHCP 職務，只是它的位址從池子裡配出來的。
+    // 那台機器並沒有扮演任何 DHCP 職務，只是它的位址從集區裡配出來的。
     const w = render({ state: "active", in_dhcp_range: true });
     const rows = w.findAll(".peek-row").map((r) => r.text());
     const roleRow = rows.find((t) => t.includes("角色"));

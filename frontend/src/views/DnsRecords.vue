@@ -50,7 +50,7 @@ async function loadTypeCounts() {
 }
 
 const ALL_KEYS = ["name", "type", "value", "matched_ip_id", "consistency_state", "ttl", "source"];
-const { visibleKeys, setVisible, reset, isVisible } = useColumnPrefs(
+const { visibleKeys, setVisible, reset, isVisible, order, setOrder, orderColumns } = useColumnPrefs(
   "dns_records", ALL_KEYS, ALL_KEYS,
 );
 const pickerCols = computed(() => [
@@ -131,7 +131,7 @@ const allColumns = computed<DataTableColumns<DnsRecord>>(() => [
 ]);
 
 const columns = computed<DataTableColumns<DnsRecord>>(() =>
-  autoSort(allColumns.value.filter((c) => isVisible((c as any).key))));
+  autoSort(orderColumns(allColumns.value.filter((c) => isVisible((c as any).key)))));
 
 onMounted(() => {
   // 從全域搜尋點 DNS 記錄進來時，帶 ?q= 把該記錄名稱代入搜尋欄
@@ -178,11 +178,12 @@ onMounted(() => {
           {{ t("common.refresh") }}
         </n-button>
         <ColumnPicker :all="pickerCols" :visible="visibleKeys"
-                      @update:visible="setVisible" @reset="reset" />
+                      @update:visible="setVisible" @reset="reset"
+                      :order="order" @update:order="setOrder" />
       </n-space>
 
       <n-data-table
-        :columns="columns" :data="rows" :loading="loading" size="small"
+        :columns="columns" :data="rows" :loading="loading" size="small" :scroll-x="900"
         :pagination="pg" :row-key="(r: DnsRecord) => r.id"
       />
     </n-space>

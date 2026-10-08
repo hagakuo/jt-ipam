@@ -67,6 +67,9 @@ export interface SubnetCreate {
   scan_method?: string[];
   threshold_pct?: number | null;
   customer_id?: string | null;
+  /** 主控台的連線出口（issue #24）：空＝繼承上層或直連 */
+  jump_host_id?: string | null;
+  console_agent_id?: string | null;
   scan_agent_id?: string | null;
   gateway?: string | null;
   dns_servers?: string | null;
@@ -88,6 +91,9 @@ export interface SubnetUpdate {
   scan_method?: string[] | null;
   threshold_pct?: number | null;
   customer_id?: string | null;
+  /** 主控台的連線出口（issue #24）：空＝繼承上層或直連 */
+  jump_host_id?: string | null;
+  console_agent_id?: string | null;
   scan_agent_id?: string | null;
   gateway?: string | null;
   dns_servers?: string | null;

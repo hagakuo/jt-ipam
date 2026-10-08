@@ -18,6 +18,8 @@ export interface PfSense {
   sync_rules: boolean;
   expose_dsv: boolean;
   scope_subnet_ids: string[] | null;
+  /** DHCP 有、IPAM 沒有的位址是否自動建立（預設關閉） */
+  auto_create_ips: boolean;
   description: string | null;
   alias_count: number;
   rule_count: number;

@@ -19,6 +19,8 @@ import re
 import socket
 from typing import Any
 
+from app.core.ui_error import UiError
+
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}$|^[0-9A-Fa-f]{12}$")
 _FQDN_LABEL = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
 
@@ -26,7 +28,7 @@ IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 IPAddr = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
-class NetToolError(ValueError):
+class NetToolError(UiError, ValueError):
     """輸入不合法 / 無法計算（人讀訊息）。"""
 
 
@@ -141,7 +143,7 @@ def ip_in_cidr(ip: str, cidr: str) -> dict[str, Any]:
     addr = parse_addr(ip)
     net = parse_net(cidr)
     if addr.version != net.version:
-        raise NetToolError("IP 與 CIDR 的位址家族不一致 (IPv4/IPv6)")
+        raise NetToolError("IP 與 CIDR 的位址家族不一致 (IPv4/IPv6)", code="nt_family_ip_cidr")
     return {
         "ip": str(addr), "cidr": str(net), "contains": addr in net,
         "network_address": str(net.network_address),
@@ -153,7 +155,7 @@ def ip_in_cidr(ip: str, cidr: str) -> dict[str, Any]:
 def cidr_relation(a: str, b: str) -> dict[str, Any]:
     na, nb = parse_net(a), parse_net(b)
     if na.version != nb.version:
-        raise NetToolError("兩個 CIDR 位址家族不一致")
+        raise NetToolError("兩個 CIDR 位址家族不一致", code="nt_family_two_cidr")
     if na == nb:
         rel = "equal"
     elif na.supernet_of(nb):  # type: ignore[arg-type]  # 同版本已保證同型
@@ -170,9 +172,9 @@ def cidr_relation(a: str, b: str) -> dict[str, Any]:
 def range_to_cidr(start: str, end: str) -> dict[str, Any]:
     s, e = parse_addr(start), parse_addr(end)
     if s.version != e.version:
-        raise NetToolError("起訖 IP 位址家族不一致")
+        raise NetToolError("起訖 IP 位址家族不一致", code="nt_family_range")
     if int(s) > int(e):
-        raise NetToolError("起始 IP 不可大於結束 IP")
+        raise NetToolError("起始 IP 不可大於結束 IP", code="nt_range_reversed")
     try:
         cidrs = [str(n) for n in ipaddress.summarize_address_range(s, e)]
     except (ValueError, TypeError) as exc:
@@ -194,7 +196,7 @@ def aggregate(cidrs: str | list[str] | tuple[str, ...]) -> dict[str, Any]:
     raw = " ".join(str(c) for c in cidrs) if isinstance(cidrs, (list, tuple)) else str(cidrs)
     parts = [p for p in re.split(r"[,\s]+", raw.strip()) if p]
     if not parts:
-        raise NetToolError("未提供任何 CIDR")
+        raise NetToolError("未提供任何 CIDR", code="nt_no_cidr")
     nets = [parse_net(p) for p in parts]
     try:
         collapsed = [str(n) for n in ipaddress.collapse_addresses(nets)]  # type: ignore[type-var]
@@ -216,7 +218,7 @@ def netmask(value: str) -> dict[str, Any]:
             base = "0.0.0.0" if plen <= 32 else "::"  # noqa: S104  # nosec B104 — 子網計算用字串
             net = ipaddress.ip_network(f"{base}/{plen}", strict=False)
     except ValueError as exc:
-        raise NetToolError(f"無法解析遮罩/首碼：{exc}") from exc
+        raise NetToolError(f"無法解析遮罩/首碼：{exc}", code="nt_bad_netmask", reason=str(exc)[:120]) from exc
     return {
         "prefixlen": net.prefixlen, "netmask": str(net.netmask),
         "hostmask": str(net.hostmask), "wildcard": str(net.hostmask), "version": net.version,
@@ -255,7 +257,7 @@ async def dns_lookup_live(name: str, type: str = "ANY") -> dict[str, Any]:
     """以系統解析器查 A / AAAA / PTR（stdlib，無外部相依）。"""
     type = type.upper()
     if type not in ("A", "AAAA", "PTR", "ANY"):
-        raise NetToolError("type 須為 A / AAAA / PTR / ANY")
+        raise NetToolError("type 須為 A / AAAA / PTR / ANY", code="nt_bad_dns_type")
     name = name.strip().rstrip(".")
     out: dict[str, Any] = {"name": name, "type": type}
     try:
@@ -281,7 +283,7 @@ async def dns_lookup_live(name: str, type: str = "ANY") -> dict[str, Any]:
             if type in ("AAAA", "ANY"):
                 out["AAAA"] = aaaa
     except TimeoutError:
-        raise NetToolError("DNS 查詢逾時") from None
+        raise NetToolError("DNS 查詢逾時", code="nt_dns_timeout") from None
     except (socket.gaierror, socket.herror) as exc:
         out["error"] = f"解析失敗：{exc}"
     return out
@@ -324,7 +326,7 @@ async def dns_mail(domain: str, dkim_selector: str = "") -> dict[str, Any]:
     try:
         out.update(await asyncio.wait_for(asyncio.to_thread(_work), timeout=20))
     except TimeoutError:
-        raise NetToolError("DNS 查詢逾時") from None
+        raise NetToolError("DNS 查詢逾時", code="nt_dns_timeout") from None
     return out
 
 
@@ -348,7 +350,7 @@ def power_calc(
     - pdu_safe_amps：pdu_a × 0.8（PDU 80% 安全載量）
     """
     if str(phase) not in ("1", "3"):
-        raise NetToolError("phase 須為 '1'（單相）或 '3'（三相）")
+        raise NetToolError("phase 須為 '1'（單相）或 '3'（三相）", code="nt_bad_phase")
     factor = 3 ** 0.5 if str(phase) == "3" else 1.0
     load_watts = round(factor * (volts or 0) * (amps or 0) * (pf or 0))
     heat = heat_watts if heat_watts is not None else load_watts

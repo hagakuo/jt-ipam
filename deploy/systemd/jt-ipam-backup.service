@@ -15,7 +15,12 @@ TimeoutStartSec=600
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/backups/jt-ipam
+# 目錄不存在時，systemd 會在「掛載命名空間」這一步就失敗（226/NAMESPACE），而且訊息是
+# 「Failed at step NAMESPACE spawning /usr/local/bin/jt-ipam-backup.sh: No such file or
+# directory」—— 看起來像腳本不見了，實際上是這個路徑不存在（客戶實際踩到）。
+# 加上 `-` 讓它容忍不存在；再把父目錄設為可寫，腳本開頭的 install -d 就能自己補建。
+ReadWritePaths=-/var/backups
+ReadWritePaths=-/var/backups/jt-ipam
 ReadOnlyPaths=/etc/jt-ipam
 PrivateTmp=true
 ProtectKernelTunables=true

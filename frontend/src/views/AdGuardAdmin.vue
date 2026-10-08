@@ -22,7 +22,8 @@ import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { apiErrMsg } from "@/api/client";
 const { t } = useI18n();
 
-const { visibleKeys: agVis, setVisible: agSet, reset: agReset } = useColumnPrefs(
+const { visibleKeys: agVis, setVisible: agSet, reset: agReset,
+  order: agOrder, setOrder: agSetOrder, orderColumns: agOrderCols } = useColumnPrefs(
   "adguard",
   ["name", "api_url", "enabled", "sync_flags", "last_sync_at", "last_error", "actions"],
   ["name", "api_url", "enabled", "sync_flags", "last_sync_at", "last_error", "actions"],
@@ -199,7 +200,7 @@ const allCols = computed<DataTableColumns<AdGuardInstance>>(() => autoSort([
 ]));
 
 const cols = computed<DataTableColumns<AdGuardInstance>>(() =>
-  allCols.value.filter((c: any) => agVis.value.includes(c.key)),
+  agOrderCols(allCols.value.filter((c: any) => agVis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); void loadSubnetOptions(); });
@@ -223,7 +224,8 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         {{ t("common.create") }}
       </n-button>
       <ColumnPicker :all="agPicker" :visible="agVis"
-                    @update:visible="agSet" @reset="agReset" />
+                    @update:visible="agSet" @reset="agReset"
+                    :order="agOrder" @update:order="agSetOrder" />
     </n-space>
     <n-data-table :columns="cols" :data="rows" :loading="loading" :bordered="false" :scroll-x="1126" />
 

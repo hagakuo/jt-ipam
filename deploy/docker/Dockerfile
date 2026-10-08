@@ -5,7 +5,7 @@
 # (scripts/jt-ipam.sh). See deploy/docker/README.md.
 
 # ---------- stage: build the frontend (static dist) ----------
-FROM node:20-bookworm-slim AS frontend
+FROM node:22-bookworm-slim AS frontend
 WORKDIR /app/frontend
 COPY frontend/package.json ./
 RUN npm install --no-audit --no-fund

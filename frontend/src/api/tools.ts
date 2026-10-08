@@ -2,12 +2,19 @@ export interface TraceHopEvent {
   type: "hop" | "done" | "error";
   hop?: number;
   host?: string | null;
+  fqdn?: string | null;
   rtt_ms?: number | null;
   note?: string | null;
+  /** 我們自己造的 note（例如「無回應」）帶代碼，讓前端翻得動；路由器回的旗標原文不帶。 */
+  note_code?: string | null;
   tool?: string;
   path_mtu?: number | null;
   truncated?: boolean;
+  reached?: boolean;
   detail?: string;
+  /** 錯誤事件：代碼＋參數（errors.<code>）；底層原因只有管理員拿得到（params.reason） */
+  code?: string;
+  params?: Record<string, unknown>;
 }
 
 /**

@@ -19,7 +19,8 @@ import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { apiErrMsg } from "@/api/client";
 const { t } = useI18n();
 
-const { visibleKeys: cfVis, setVisible: cfSet, reset: cfReset } = useColumnPrefs(
+const { visibleKeys: cfVis, setVisible: cfSet, reset: cfReset,
+  order: cfOrder, setOrder: cfSetOrder, orderColumns: cfOrderCols } = useColumnPrefs(
   "custom_fields",
   ["object_type", "name", "field_type", "label_zh_tw", "required", "display_order", "actions"],
   ["object_type", "name", "field_type", "label_zh_tw", "required", "display_order", "actions"],
@@ -190,7 +191,7 @@ const allCols = computed<DataTableColumns<CustomField>>(() => autoSort([
 ]));
 
 const cols = computed<DataTableColumns<CustomField>>(() =>
-  allCols.value.filter((c: any) => cfVis.value.includes(c.key)),
+  cfOrderCols(allCols.value.filter((c: any) => cfVis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); });
@@ -214,7 +215,8 @@ onMounted(() => { void refresh(); });
         {{ t("common.create") }}
       </n-button>
       <ColumnPicker :all="cfPicker" :visible="cfVis"
-                    @update:visible="cfSet" @reset="cfReset" />
+                    @update:visible="cfSet" @reset="cfReset"
+                    :order="cfOrder" @update:order="cfSetOrder" />
     </n-space>
     <n-data-table :columns="cols" :data="rows" :loading="loading" :bordered="false" :scroll-x="826" />
 

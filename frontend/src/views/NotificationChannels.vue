@@ -176,7 +176,7 @@ onMounted(() => { void load(); void loadMatrix(); });
     <!-- 通知矩陣：哪些事件、走哪些管道（總覽，放所有管道設定之上）-->
     <n-card :title="t('notify_ch.matrix_title')">
       <p class="nmx-hint">{{ t("notify_ch.matrix_hint") }}</p>
-      <table class="nmx">
+      <table v-col-resize class="nmx">
         <thead>
           <tr>
             <th>{{ t("notify_ch.matrix_event") }}</th>
@@ -419,4 +419,9 @@ onMounted(() => { void load(); void loadMatrix(); });
 .nmx-ev { font-weight: 500; }
 .nmx-key { font-size: 11px; opacity: .5; }
 .nmx-hint { font-size: 12px; opacity: .65; line-height: 1.5; margin: 4px 0 10px; }
+@media (max-width: 640px) {
+  .nmx th, .nmx td { padding: 8px 6px; }
+  .nmx-c { width: 56px; }
+  .nmx-key { word-break: break-all; }
+}
 </style>

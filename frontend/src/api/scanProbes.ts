@@ -12,7 +12,7 @@ export interface ProbeDef {
   min_interval_seconds: number;
   needs: string;
 }
-export interface OsFamily { key: string; label_en: string; label_zh: string; }
+export interface OsFamily { key: string; label_en: string; label_zh: string; label_ja?: string; }
 
 interface ProbeCatalog { probes: ProbeDef[]; os_families: OsFamily[]; }
 
@@ -45,5 +45,8 @@ export function probeLabel(p: ProbeDef, locale: string): string {
 export function osFamilyLabel(fams: OsFamily[], key: string | null | undefined, locale: string): string {
   const f = fams.find((x) => x.key === (key || "unknown"));
   if (!f) return key || "";
-  return locale.startsWith("zh") ? f.label_zh : f.label_en;
+  if (locale.startsWith("zh")) return f.label_zh;
+  // 日文：後端有給就用（以前一律退回英文，例如「Network device」）
+  if (locale.startsWith("ja") && f.label_ja) return f.label_ja;
+  return f.label_en;
 }

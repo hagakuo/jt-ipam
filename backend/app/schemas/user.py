@@ -37,5 +37,8 @@ class UserMe(StrictModel):
     vnc_supported: bool = False
     bmc_supported: bool = False   # 後端是否具備 IPMI 工具鏈（BMC SOL 主控台）
     ai_enabled: bool = False   # 全域 LLM/AI 是否啟用（前端據此顯示/隱藏 AI 對話小工具）
+    # 資料庫結構落後於程式（只給 admin）。落後時畫面會到處 500，而系統其實早就知道 ——
+    # 這個旗標讓管理員在踩到之前就看得見（客戶回報過：儀表板正常、裝置清單 500）。
+    schema_behind: bool = False
     last_login_at: datetime | None
     created_at: datetime

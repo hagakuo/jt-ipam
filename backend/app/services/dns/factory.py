@@ -78,7 +78,8 @@ async def get_adapter(session: AsyncSession, server: DNSServer) -> DNSAdapter:
             # 同步會安靜地跑完、一筆記錄都不會有 —— 那看起來就像整合壞了。
             raise DNSAdapterError(
                 "BIND 9 需要指定要同步的 zone（設定頁的「Zone 清單」），"
-                "因為 DNS 協定沒有列舉所有 zone 的方法"
+                "因為 DNS 協定沒有列舉所有 zone 的方法",
+                code="dns_bind_zones_required",
             )
         return Bind9Adapter(
             server_address=server.server_address or "",

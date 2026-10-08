@@ -26,6 +26,7 @@ from app.core.audit import append_audit
 from app.core.config import get_settings
 from app.core.db import get_session
 from app.core.security import create_access_token, decode_access_token
+from app.core.ui_error import detail_of
 from app.services import oidc as oidc_service
 from app.services import saml as saml_service
 from app.services.auth import issue_access_token, issue_refresh_token
@@ -240,9 +241,9 @@ async def oidc_login(
         nonce = oidc_service.make_nonce()
         url = await oidc_service.build_auth_url(cfg, state, nonce)
     except oidc_service.OIDCNotConfigured as exc:
-        raise HTTPException(503, detail=str(exc)) from exc
+        raise HTTPException(503, detail=detail_of(exc, "oidc_not_configured")) from exc
     except oidc_service.OIDCError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "oidc_error")) from exc
 
     flow_token = _state_token(state, nonce)
     resp = RedirectResponse(url, status_code=302)
@@ -281,7 +282,7 @@ async def oidc_callback(
     try:
         token_data = await oidc_service.exchange_code(cfg, code)
     except oidc_service.OIDCError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "oidc_error")) from exc
 
     access_token = token_data.get("access_token")
     if not access_token:
@@ -301,7 +302,7 @@ async def oidc_callback(
     try:
         claims = await oidc_service.fetch_userinfo(cfg, access_token)
     except oidc_service.OIDCError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "oidc_error")) from exc
     claims.update(id_claims)
 
     try:
@@ -310,7 +311,7 @@ async def oidc_callback(
             actor_ip=request.client.host if request.client else None,
         )
     except oidc_service.OIDCError as exc:
-        raise HTTPException(409, detail=str(exc)) from exc
+        raise HTTPException(409, detail=detail_of(exc, "oidc_error")) from exc
 
     await append_audit(
         session,
@@ -343,9 +344,9 @@ async def oidc_test(
     try:
         info = await oidc_service.discover(cfg)
     except oidc_service.OIDCNotConfigured as exc:
-        raise HTTPException(503, detail=str(exc)) from exc
+        raise HTTPException(503, detail=detail_of(exc, "oidc_not_configured")) from exc
     except oidc_service.OIDCError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "oidc_error")) from exc
     return {
         "issuer": info.issuer,
         "authorization_endpoint": info.authorization_endpoint,
@@ -384,9 +385,9 @@ async def saml_metadata(
     try:
         xml = await saml_service.metadata_xml(cfg)
     except saml_service.SAMLNotConfigured as exc:
-        raise HTTPException(503, detail=str(exc)) from exc
+        raise HTTPException(503, detail=detail_of(exc, "saml_not_configured")) from exc
     except saml_service.SAMLError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "saml_error")) from exc
     return Response(content=xml, media_type="application/samlmetadata+xml")
 
 
@@ -410,9 +411,9 @@ async def saml_login(
     try:
         url = await saml_service.build_auth_url(request, cfg, return_to=safe_return_to)
     except saml_service.SAMLNotConfigured as exc:
-        raise HTTPException(503, detail=str(exc)) from exc
+        raise HTTPException(503, detail=detail_of(exc, "saml_not_configured")) from exc
     except saml_service.SAMLError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "saml_error")) from exc
 
     flow = _saml_state_token(safe_return_to)
     resp = RedirectResponse(url, status_code=302)
@@ -446,7 +447,7 @@ async def saml_acs(
     try:
         claims = await saml_service.process_acs(request, cfg, post_data)
     except saml_service.SAMLError as exc:
-        raise HTTPException(401, detail=str(exc)) from exc
+        raise HTTPException(401, detail=detail_of(exc, "saml_error")) from exc
 
     try:
         user = await saml_service.upsert_user_from_saml(
@@ -454,7 +455,7 @@ async def saml_acs(
             actor_ip=request.client.host if request.client else None,
         )
     except saml_service.SAMLError as exc:
-        raise HTTPException(409, detail=str(exc)) from exc
+        raise HTTPException(409, detail=detail_of(exc, "saml_error")) from exc
 
     await append_audit(
         session,
@@ -511,9 +512,9 @@ async def saml_sls(
             request, cfg, name_id=name_id, session_index=session_index,
         )
     except saml_service.SAMLNotConfigured as exc:
-        raise HTTPException(503, detail=str(exc)) from exc
+        raise HTTPException(503, detail=detail_of(exc, "saml_not_configured")) from exc
     except saml_service.SAMLError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "saml_error")) from exc
 
     if not url:
         # IdP 沒提供 SLO endpoint — 本地登出即可
@@ -531,9 +532,9 @@ async def saml_test(
         cfg = await get_saml_config(session)
         idp = await saml_service._fetch_idp_metadata(cfg)
     except saml_service.SAMLNotConfigured as exc:
-        raise HTTPException(503, detail=str(exc)) from exc
+        raise HTTPException(503, detail=detail_of(exc, "saml_not_configured")) from exc
     except saml_service.SAMLError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "saml_error")) from exc
     return {
         "entity_id": idp.entity_id,
         "sso_url": idp.sso_url,

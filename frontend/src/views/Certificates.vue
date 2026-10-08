@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
+import { apiErrMsg } from "@/api/client";
+import { srvText } from "@/utils/wsError";
 import { fmtDateTime } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
 import { useEntityLinks } from "@/composables/useEntityLinks";
@@ -15,7 +17,9 @@ import {
   PlusIcon, RefreshIcon, CopyIcon, LockIcon, InfoIcon, SaveIcon, SearchIcon,
   ImportIcon, TokenIcon, SettingsIcon, SyncIcon, DeleteIcon, TestIcon, EyeIcon, ToolsIcon, CancelIcon, EditIcon,
   ExportIcon, WarnIcon, UpgradeIcon, CheckIcon,
+  BellIcon,
 } from "@/icons";
+import { getCertExpiryDays } from "@/api/basic";
 import { autoSort } from "@/composables/useTableSort";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { useTablePagination } from "@/composables/useTablePagination";
@@ -23,8 +27,9 @@ import { SUDO } from "@/utils/sudo";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import {
-  listCertificates, createCertificate, deleteCertificate, uploadVersion, generateSelfSigned,
-  setCertSource, fetchCertNow, testCertSource, genCertSourceSshKey, listVersions, downloadVersionFile, rebuildChain,
+  listCertificates, createCertificate, updateCertificate, deleteCertificate, uploadVersion, generateSelfSigned,
+  setCertSource, fetchCertNow, testCertSource, genCertSourceSshKey, forgetCertSourceHostKey, listVersions,
+  downloadVersionFile, rebuildChain,
   listCertAgents, createCertAgent, rotateCertAgentKey, deleteCertAgent, getCertAgentKey, updateCertAgent,
   getServerAgentVersion,
   type Certificate, type CertAgent, type CertVersion,
@@ -78,6 +83,10 @@ const agentsFiltered = computed(() => {
   });
 });
 
+async function loadGlobalWarnDays() {
+  globalWarnDays.value = await getCertExpiryDays();
+}
+
 async function loadCerts() {
   loading.value = true;
   try { certs.value = (await listCertificates()).items; }
@@ -97,7 +106,8 @@ async function loadServerVersion() {
     serverAgentVersionWin.value = sv.windows_version ?? null; }
   catch { /* 非致命 */ }
 }
-onMounted(() => { loadCerts(); loadAgents(); loadServerVersion(); loadDeviceOptions(); });
+onMounted(() => {
+  void loadGlobalWarnDays(); loadCerts(); loadAgents(); loadServerVersion(); loadDeviceOptions(); });
 
 // 代理有兩支（Linux 純 bash / Windows PowerShell）。這個選擇貫穿安裝說明、
 // 支援清單、profile 選項與設定檔產生器 —— 宣告放最前面，因為底下多個 computed 都靠它。
@@ -163,19 +173,19 @@ function profileFiles(profile: string, cert: string): { kind: string; path: stri
   if (isWin.value) {
     switch (profile) {
       case "iis": return [
-        { kind: "匯入憑證存放區", path: "LocalMachine\\My" },
-        { kind: "換上 HTTPS 繫結的憑證", path: genWinBinding.value },
+        { kind: t("certs.win_import_store"), path: "LocalMachine\\My" },
+        { kind: t("certs.win_bind_https"), path: genWinBinding.value },
       ];
       case "winrm": return [
-        { kind: "匯入憑證存放區", path: "LocalMachine\\My" },
-        { kind: "換上 WinRM HTTPS 接聽器憑證", path: "連接埠 5986" },
+        { kind: t("certs.win_import_store"), path: "LocalMachine\\My" },
+        { kind: t("certs.win_bind_winrm"), path: t("certs.win_port", { port: 5986 }) },
       ];
       case "rdp": return [
-        { kind: "匯入憑證存放區", path: "LocalMachine\\My" },
-        { kind: "換上遠端桌面憑證", path: "連接埠 3389" },
+        { kind: t("certs.win_import_store"), path: "LocalMachine\\My" },
+        { kind: t("certs.win_bind_rdp"), path: t("certs.win_port", { port: 3389 }) },
       ];
-      case "store": return [{ kind: "只匯入憑證存放區（可指定，LDAPS 用 NTDS\\My）", path: "LocalMachine\\My" }];
-      case "files": return [{ kind: "寫檔（路徑在下方「進階」自訂）", path: "C:\\...\\site.pem / site.key" }];
+      case "store": return [{ kind: t("certs.win_store_only"), path: "LocalMachine\\My" }];
+      case "files": return [{ kind: t("certs.win_files_only"), path: "C:\\...\\site.pem / site.key" }];
       default: return [];
     }
   }
@@ -196,7 +206,11 @@ function profileFiles(profile: string, cert: string): { kind: string; path: stri
     case "jitsi": return [{ kind: "cert+chain (docker restart jitsi web)", path: "/root/.jitsi-meet-cfg/web/keys/cert.crt" }, { kind: "key", path: "/root/.jitsi-meet-cfg/web/keys/cert.key" }];
     case "coturn": return [{ kind: "cert+chain (root:65534 644)", path: "/etc/coturn/certs/turn.crt" }, { kind: "key (root:65534 640)", path: "/etc/coturn/certs/turn.key" }];
     case "zimbra": return [{ kind: "zmcertmgr deploycrt comm + zmcontrol restart", path: "/opt/zimbra/ssl/zimbra/commercial/commercial.{key,crt}" }];
-    case "files": return [{ kind: "cert+chain（僅換檔，不 reload）", path: `${b}/${cert}.fullchain.pem` }, { kind: "key（僅換檔，不 reload）", path: `${b}/${cert}.key` }];
+    case "files": {
+      const only = t("certs.files_no_reload");
+      return [{ kind: `cert+chain（${only}）`, path: `${b}/${cert}.fullchain.pem` },
+              { kind: `key（${only}）`, path: `${b}/${cert}.key` }];
+    }
     default: return [];
   }
 }
@@ -206,7 +220,7 @@ function serviceSnippet(profile: string, cert: string): string {
   if (isWin.value) {
     // Windows 這邊不需要改設定檔（IIS 綁的是存放區裡的憑證），給的是驗證指令
     if (profile === "iis") {
-      return `# 確認繫結目前用的是哪張憑證：\nnetsh http show sslcert | findstr /i "${genWinBinding.value}"`;
+      return `# ${t("certs.win_check_binding")}：\nnetsh http show sslcert | findstr /i "${genWinBinding.value}"`;
     }
     return "";
   }
@@ -292,10 +306,28 @@ async function openFiles(c: Certificate) {
   try { filesVersions.value = await listVersions(c.id); }
   catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
-async function doDownload(v: CertVersion, fmt: string) {
+// PFX 內含私鑰：匯出前先問保護密碼。以前一律不加密碼 —— 後端支援，畫面從來沒給地方填，
+// 匯出的 PFX 任何人拿到都打得開。留空仍可匯出（有些舊軟體只吃無密碼的），但會警告。
+const pfxAsk = ref<CertVersion | null>(null);
+const pfxPw = ref("");
+const pfxPw2 = ref("");
+const pfxMismatch = computed(() => pfxPw.value !== pfxPw2.value);
+async function doDownload(v: CertVersion, fmt: string, password = "") {
   if (!filesTarget.value) return;
-  try { await downloadVersionFile(filesTarget.value.id, v.id, fmt); }
-  catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+  if (fmt === "pfx" && pfxAsk.value === null && !password) {
+    pfxPw.value = ""; pfxPw2.value = ""; pfxAsk.value = v;
+    return;
+  }
+  try { await downloadVersionFile(filesTarget.value.id, v.id, fmt, password); }
+  catch (e: any) { msg.error(apiErrMsg(e)); }
+}
+async function confirmPfx() {
+  const v = pfxAsk.value;
+  if (!v || pfxMismatch.value) return;
+  const pw = pfxPw.value;
+  await doDownload(v, "pfx", pw || "");
+  pfxAsk.value = null;
+  pfxPw.value = ""; pfxPw2.value = "";
 }
 async function doRebuildChain(v: CertVersion) {
   if (!filesTarget.value) return;
@@ -310,6 +342,34 @@ async function doRebuildChain(v: CertVersion) {
 // ── 新增憑證 ──
 const showNew = ref(false);
 const newForm = ref({ name: "", description: "" });
+
+// ── 到期通知天數（逐張）──────────────────────────────────
+// 不同憑證的更新流程長短差很多：手動申請的商業憑證要提前一個月準備，
+// 自動續簽的提前七天就夠。同一個門檻套在所有憑證上，不是太吵就是太晚。
+const showWarn = ref(false);
+const warnCert = ref<Certificate | null>(null);
+const warnUseDefault = ref(true);
+const warnDays = ref<number>(21);
+const globalWarnDays = ref<number>(21);
+
+function openWarn(c: Certificate) {
+  warnCert.value = c;
+  warnUseDefault.value = c.expiry_warn_days === null;
+  warnDays.value = c.expiry_warn_days ?? globalWarnDays.value;
+  showWarn.value = true;
+}
+
+async function saveWarn() {
+  const c = warnCert.value;
+  if (!c) return;
+  try {
+    await updateCertificate(c.id, warnUseDefault.value
+      ? { clear_expiry_warn_days: true }
+      : { expiry_warn_days: warnDays.value });
+    showWarn.value = false;
+    await loadCerts();
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
+}
 async function doCreate() {
   if (!newForm.value.name.trim()) { msg.warning(t("certs.name_required")); return; }
   try {
@@ -420,6 +480,7 @@ function openSource(c: Certificate) {
   };
   sshPubKey.value = "";
   sshInstalled.value = false;
+  testedFingerprint.value = "";
   showSource.value = true;
 }
 function buildSourcePayload() {
@@ -447,10 +508,30 @@ async function testSource() {
   testing.value = true;
   try {
     const r = await testCertSource(sourceTarget.value.id, buildSourcePayload());
-    if (r.ok) msg.success(r.message || t("certSource.test_ok"));
-    else msg.error(r.message || t("certSource.test_fail"));
+    if (r.ok) {
+      msg.success(r.message || t("certSource.test_ok"));
+      if (r.host_key_fingerprint) testedFingerprint.value = r.host_key_fingerprint;
+    } else {
+      msg.error(srvText({ code: r.code ?? undefined, params: r.params, message: r.message },
+                        t("certSource.test_fail")), { duration: 10000 });
+    }
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
   finally { testing.value = false; }
+}
+// SFTP 主機金鑰：已記住的指紋（存在來源設定裡）與這次測試看到的指紋
+const testedFingerprint = ref("");
+const pinnedFingerprint = computed(() =>
+  String(((sourceTarget.value?.source_config ?? {}) as any).host_key_fingerprint ?? ""));
+async function forgetHostKey() {
+  if (!sourceTarget.value) return;
+  try {
+    await forgetCertSourceHostKey(sourceTarget.value.id);
+    await loadCerts();
+    const fresh = certs.value.find((c) => c.id === sourceTarget.value?.id);
+    if (fresh) sourceTarget.value = fresh;
+    testedFingerprint.value = "";
+    msg.success(t("certSource.host_key_forgotten"));
+  } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
 const sshPubKey = ref("");
 const sshInstalled = ref(false);
@@ -473,7 +554,10 @@ async function doFetchNow(c: Certificate) {
     const r = await fetchCertNow(c.id);
     if (r.status === "updated") msg.success(t("certSource.fetched_updated"));
     else if (r.status === "skipped") msg.info(t("certSource.fetched_skipped"));
-    else if (r.status === "error") msg.error(r.error ?? t("errors.server"));
+    else if (r.status === "error") {
+      msg.error(srvText({ code: r.code ?? undefined, params: r.params, message: r.error ?? "" }, t("errors.server")),
+                { duration: 10000 });
+    }
     else msg.info(String(r.status));
     await loadCerts();
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
@@ -557,7 +641,7 @@ const showConfigHelp = ref(false);
 const serverOrigin = window.location.origin;
 // sudo 只在非 root 時加（見 utils/sudo）；帶環境變數一定要透過 env，否則 root 時 VAR=val 會被當成指令。
 const installerOneLiner = computed(() => {
-  const key = newKey.value || "<建立代理時的-KEY>";
+  const key = newKey.value || `<${t("certs.key_placeholder")}>`;
   if (isWin.value) {
     // iex 收不到 -switch，所以旗標一律走環境變數；自簽憑證要先關掉驗證才抓得到 installer
     return `[Net.ServicePointManager]::ServerCertificateValidationCallback={$true}\n`
@@ -615,7 +699,8 @@ const radioGreen = {
 function actBtn(icon: any, label: string, onClick: () => void, props: Record<string, any> = {}) {
   return h(NTooltip, null, {
     trigger: () => h(NButton, {
-      size: "small", quaternary: true, ...props,
+      // 只有圖示的按鈕：說明在 tooltip 裡，螢幕報讀與自動化測試都讀不到 —— 補一個可讀的名稱
+      size: "small", quaternary: true, "aria-label": label, ...props,
       onClick: (e: MouseEvent) => { e.stopPropagation(); onClick(); },
     }, { icon: () => h(NIcon, null, () => h(icon)) }),
     default: () => label,
@@ -685,6 +770,9 @@ const certColsAll = computed<DataTableColumns<Certificate>>(() => autoSort([
           ? actBtn(TokenIcon, t("certs.self_signed_blocked"), () => {}, { disabled: true })
           : actBtn(TokenIcon, t("certs.self_signed"), () => openSelf(c)),
       actBtn(SettingsIcon, t("certSource.source"), () => openSource(c)),
+      actBtn(BellIcon, c.expiry_warn_days === null
+        ? t("certs.warn_days_default", { n: globalWarnDays.value })
+        : t("certs.warn_days_set", { n: c.expiry_warn_days }), () => openWarn(c)),
       c.source_type !== "none"
         ? actBtn(SyncIcon, t("certSource.fetch_now"), () => doFetchNow(c), { type: "primary", ghost: true })
         : null,
@@ -694,7 +782,7 @@ const certColsAll = computed<DataTableColumns<Certificate>>(() => autoSort([
     ])) },
 ]));
 const certCols = computed<DataTableColumns<Certificate>>(() =>
-  certColsAll.value.filter((c: any) => certPrefs.visibleKeys.value.includes(c.key)));
+  certPrefs.orderColumns(certColsAll.value.filter((c: any) => certPrefs.visibleKeys.value.includes(c.key))));
 
 // ── 派送代理表格欄位 + 顯示偏好 ──
 const AGENT_KEYS = ["name", "enabled", "scope", "agent_version", "source_ip", "last_seen_at", "reported", "actions"];
@@ -826,7 +914,7 @@ const agentColsAll = computed<DataTableColumns<CertAgent>>(() => autoSort([
     ])) },
 ]));
 const agentCols = computed<DataTableColumns<CertAgent>>(() =>
-  agentColsAll.value.filter((c: any) => agentPrefs.visibleKeys.value.includes(c.key)));
+  agentPrefs.orderColumns(agentColsAll.value.filter((c: any) => agentPrefs.visibleKeys.value.includes(c.key))));
 </script>
 
 <template>
@@ -855,7 +943,8 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
             <ExportButton :columns="certExportCols" :rows="certExportRows" filename="certificates"
                           :title="t('certs.tab_certs')" />
             <ColumnPicker :all="certPickerItems" :visible="certPrefs.visibleKeys.value"
-                          @update:visible="certPrefs.setVisible" @reset="certPrefs.reset" />
+                          @update:visible="certPrefs.setVisible" @reset="certPrefs.reset"
+                          :order="certPrefs.order.value" @update:order="certPrefs.setOrder" />
             <n-button size="small" quaternary @click="loadCerts">
               <template #icon><n-icon :component="RefreshIcon" /></template>{{ t("common.refresh") }}
             </n-button>
@@ -892,7 +981,8 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
             <ExportButton :columns="agentExportCols" :rows="agentExportRows" filename="cert-agents"
                           :title="t('certs.tab_agents')" />
             <ColumnPicker :all="agentPickerItems" :visible="agentPrefs.visibleKeys.value"
-                          @update:visible="agentPrefs.setVisible" @reset="agentPrefs.reset" />
+                          @update:visible="agentPrefs.setVisible" @reset="agentPrefs.reset"
+                          :order="agentPrefs.order.value" @update:order="agentPrefs.setOrder" />
             <n-button size="small" quaternary @click="loadAgents">
               <template #icon><n-icon :component="RefreshIcon" /></template>{{ t("common.refresh") }}
             </n-button>
@@ -917,6 +1007,33 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
       <n-button type="primary" @click="doCreate">
         <template #icon><n-icon :component="SaveIcon" /></template>{{ t("common.save") }}
       </n-button>
+    </template>
+  </n-modal>
+
+  <!-- PFX 匯出密碼 -->
+  <n-modal :show="pfxAsk !== null" preset="card" :title="t('certFiles.pfx_title')"
+           style="width: 440px; max-width: 94vw" @update:show="(v: boolean) => { if (!v) pfxAsk = null; }">
+    <n-form label-placement="top" size="small">
+      <n-form-item :label="t('certFiles.pfx_password')">
+        <n-input v-model:value="pfxPw" type="password" show-password-on="click" :input-props="{ autocomplete: 'new-password' }" />
+      </n-form-item>
+      <n-form-item :label="t('certFiles.pfx_password2')"
+                   :validation-status="pfxMismatch ? 'error' : undefined"
+                   :feedback="pfxMismatch ? t('certFiles.pfx_mismatch') : undefined">
+        <n-input v-model:value="pfxPw2" type="password" show-password-on="click" :input-props="{ autocomplete: 'new-password' }"
+                 @keyup.enter="confirmPfx" />
+      </n-form-item>
+    </n-form>
+    <n-alert :type="pfxPw ? 'info' : 'warning'" :bordered="false" :show-icon="true">
+      {{ pfxPw ? t("certFiles.pfx_hint") : t("certFiles.pfx_no_password") }}
+    </n-alert>
+    <template #footer>
+      <n-space justify="end">
+        <n-button size="small" @click="pfxAsk = null">{{ t("common.cancel") }}</n-button>
+        <n-button size="small" type="primary" :disabled="pfxMismatch" @click="confirmPfx">
+          <template #icon><n-icon :component="ExportIcon" /></template>{{ t("certFiles.download") }}
+        </n-button>
+      </n-space>
     </template>
   </n-modal>
 
@@ -1006,7 +1123,7 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
       </n-form-item>
       <n-form-item :label="t('certs.chain_file')">
         <n-input v-model:value="pasteChain" type="textarea" :rows="3"
-                 placeholder="-----BEGIN CERTIFICATE-----（選填）" />
+                 :placeholder="t('certs.chain_ph')" />
       </n-form-item>
     </n-form>
     <n-checkbox v-model:checked="upAllowExpired">{{ t("certs.allow_expired") }}</n-checkbox>
@@ -1091,6 +1208,23 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
         <n-divider style="margin: 4px 0 10px" title-placement="left">
           <span style="font-size: 12px; opacity: .7">{{ t("certSource.remote_files") }}</span>
         </n-divider>
+        <!-- SFTP 主機金鑰：第一次連線記住，之後每次都要相同（防止有人冒充主機騙走密碼） -->
+        <n-form-item :label="t('certSource.host_key')">
+          <n-space vertical :size="4" style="width:100%">
+            <span v-if="pinnedFingerprint" style="font-family:monospace;font-size:12px" data-testid="cert-src-host-key">
+              {{ pinnedFingerprint }}
+            </span>
+            <span v-else style="font-size:12px;opacity:.7">
+              {{ testedFingerprint ? t("certSource.host_key_seen", { fp: testedFingerprint }) : t("certSource.host_key_none") }}
+            </span>
+            <n-popconfirm v-if="pinnedFingerprint" @positive-click="forgetHostKey">
+              <template #trigger>
+                <n-button size="tiny" secondary data-testid="cert-src-forget-host-key">{{ t("certSource.host_key_forget") }}</n-button>
+              </template>
+              {{ t("certSource.host_key_forget_confirm") }}
+            </n-popconfirm>
+          </n-space>
+        </n-form-item>
         <n-form-item label="cert_path"><n-input v-model:value="sourceForm.cert_path" placeholder="/etc/ssl/cert.pem" /></n-form-item>
         <n-form-item label="key_path"><n-input v-model:value="sourceForm.key_path" :placeholder="t('certSource.optional_reuse_key')" /></n-form-item>
         <n-form-item label="chain_path"><n-input v-model:value="sourceForm.chain_path" :placeholder="t('certSource.optional')" /></n-form-item>
@@ -1343,7 +1477,7 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
         </n-space>
         <n-space :size="10">
           <n-input v-model:value="genManual.combined" placeholder="COMBINED" />
-          <n-input v-model:value="genManual.test" placeholder="TEST（config-test 指令）" />
+          <n-input v-model:value="genManual.test" :placeholder="t('certGen.test_ph')" />
         </n-space>
       </n-collapse-item>
     </n-collapse>
@@ -1399,6 +1533,29 @@ const agentCols = computed<DataTableColumns<CertAgent>>(() =>
       <n-button size="small" secondary @click="copy(runCmd)"><template #icon><n-icon :component="CopyIcon" /></template>{{ t("certHelp.copy") }}</n-button>
     </n-space>
   </n-modal>
+
+    <!-- 到期通知天數（逐張） -->
+    <n-modal v-model:show="showWarn" preset="card" style="max-width: 460px"
+             :title="t('certs.warn_days_title', { name: warnCert?.name ?? '' })">
+      <n-space vertical :size="12">
+        <n-checkbox v-model:checked="warnUseDefault">
+          {{ t("certs.warn_days_use_default", { n: globalWarnDays }) }}
+        </n-checkbox>
+        <n-form-item :label="t('certs.warn_days_label')" label-placement="left">
+          <n-input-number v-model:value="warnDays" :min="1" :max="365"
+                          :disabled="warnUseDefault" style="width: 140px" />
+        </n-form-item>
+        <n-alert type="info" :bordered="false" :show-icon="false">
+          {{ t("certs.warn_days_hint") }}
+        </n-alert>
+      </n-space>
+      <template #footer>
+        <n-space justify="end">
+          <n-button size="small" @click="showWarn = false">{{ t("common.cancel") }}</n-button>
+          <n-button size="small" type="primary" @click="saveWarn">{{ t("common.save") }}</n-button>
+        </n-space>
+      </template>
+    </n-modal>
 </template>
 
 <style scoped>

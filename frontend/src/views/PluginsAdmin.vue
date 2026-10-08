@@ -13,7 +13,8 @@ import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { apiErrMsg } from "@/api/client";
 const { t } = useI18n();
 
-const { visibleKeys: plVis, setVisible: plSet, reset: plReset } = useColumnPrefs(
+const { visibleKeys: plVis, setVisible: plSet, reset: plReset,
+  order: plOrder, setOrder: plSetOrder, orderColumns: plOrderCols } = useColumnPrefs(
   "plugins",
   ["name", "version", "description", "error", "error_msg"],
   ["name", "version", "description", "error", "error_msg"],
@@ -56,7 +57,7 @@ const allCols = computed<DataTableColumns<PluginInfo>>(() => autoSort([
 ]));
 
 const cols = computed<DataTableColumns<PluginInfo>>(() =>
-  allCols.value.filter((c: any) => plVis.value.includes(c.key)),
+  plOrderCols(allCols.value.filter((c: any) => plVis.value.includes(c.key))),
 );
 onMounted(() => { void refresh(); });
 </script>
@@ -75,7 +76,8 @@ onMounted(() => { void refresh(); });
         {{ t("common.refresh") }}
       </n-button>
       <ColumnPicker :all="plPicker" :visible="plVis"
-                    @update:visible="plSet" @reset="plReset" />
+                    @update:visible="plSet" @reset="plReset"
+                    :order="plOrder" @update:order="plSetOrder" />
     </n-space>
     <n-data-table :columns="cols" :data="rows" :loading="loading" :bordered="false" :scroll-x="810">
       <template #empty>

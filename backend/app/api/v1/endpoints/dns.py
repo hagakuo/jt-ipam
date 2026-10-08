@@ -6,7 +6,7 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import String, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,8 @@ from app.api.v1.dependencies import CurrentUser, require_admin, require_global_r
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.security import encrypt_secret
+from app.core.sqlin import in_values
+from app.core.ui_error import detail_of
 from app.models.dns import DNSRecord, DNSServer, DNSZone
 from app.models.encrypted_secret import EncryptedSecret
 from app.schemas.base import Paginated
@@ -213,6 +215,9 @@ async def delete_server(
         diff={"name": obj.name},
         request_id=getattr(request.state, "request_id", None),
     )
+    # 它寫進共用表的主機名稱／租約／固定分配／NAT／VPN 通道一併收回（沒有外鍵會跟著刪）
+    from app.services.integration_cleanup import forget_instance
+    await forget_instance(session, source="dns", source_id=obj.id)
     await session.delete(obj)
     await session.commit()
 
@@ -228,11 +233,11 @@ async def test_server(
     try:
         adapter = await get_adapter(session, obj)
     except DNSAdapterError as exc:
-        raise HTTPException(400, detail=str(exc)) from exc
+        raise HTTPException(400, detail=detail_of(exc, "dns_adapter_error")) from exc
     try:
         info = await adapter.healthcheck()
     except DNSAdapterError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "dns_adapter_error")) from exc
     except Exception as exc:
         # 安全網：任何 adapter 漏接的連線例外（winrm/dnspython/json…）都轉成可懂的 502，
         # 不讓連線測試變成無訊息的 500。
@@ -377,7 +382,7 @@ async def list_records(
     val_to_id: dict[str, uuid.UUID] = {}
     if ip_vals:
         for rid, host in (await session.execute(
-            select(_IPA.id, func.host(_IPA.ip)).where(func.host(_IPA.ip).in_(ip_vals))
+            select(_IPA.id, func.host(_IPA.ip)).where(in_values(func.host(_IPA.ip), ip_vals, type_=String()))
         )).all():
             val_to_id[str(host)] = rid
     # zone → 來源 DNS 伺服器（名稱 / id）對照（來源欄顯示用）
@@ -387,7 +392,7 @@ async def list_records(
         for zid, sid, sname in (await session.execute(
             select(DNSZone.id, DNSServer.id, DNSServer.name)
             .join(DNSServer, DNSServer.id == DNSZone.server_id)
-            .where(DNSZone.id.in_(zone_ids))
+            .where(in_values(DNSZone.id, zone_ids))
         )).all():
             zone_to_srv[zid] = (sid, sname)
     items = []

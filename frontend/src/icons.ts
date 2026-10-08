@@ -19,6 +19,8 @@ import { NIcon } from "naive-ui";
 import {
   // 通用動作
   Plus,
+  FingerprintScan,
+  Barcode,
   Copy,
   Archive,
   Undo,
@@ -48,11 +50,16 @@ import {
   IpAddressTag,
   Server,
   Windows,
+  DataTransferBoth,
+  DatabaseScript,
   Text,
   ServerConnection,
   Settings,
   GraphUp,
   ScaleFrameEnlarge,
+  ModernTv,
+  HdDisplay,
+  FrameSimple,
   SendDiagonal,
   Hammer,
   Terminal,
@@ -60,6 +67,7 @@ import {
   Reduce,
   NavArrowDown,
   OpenNewWindow,
+  DoubleCheck,
   // Admin / 安全
   ShieldCheck,
   Shield,
@@ -88,6 +96,7 @@ import {
   CheckCircle,
   XmarkCircle,
   ClockRotateRight,
+  Timer,
   Pin,
   MapPin,
   MultiplePages,
@@ -103,11 +112,18 @@ import {
   Filter,
   ArrowRight,
   ArrowUp,
+  HelpCircle,
   PasteClipboard,
+  Menu,
+  TestTube,
 } from "@iconoir/vue";
 
 // ── 通用 ──
 export const PlusIcon = Plus;
+/** 手機版左上角：打開側欄選單 */
+export const MenuIcon = Menu;
+/** 拖拉把手（欄位選單調整欄位順序）：三條橫線是常見的「抓這裡拖」圖示 */
+export const DragHandleIcon = Menu;
 export const CloneIcon = Copy;
 export const ArchiveIcon = Archive;
 export const RestoreIcon = Undo;
@@ -132,6 +148,8 @@ export const DismissIcon = EyeClosed;
 export const OkIcon = CheckCircle;
 export const FailIcon = XmarkCircle;
 export const PendingIcon = ClockRotateRight;
+/** 主控台狀態列的連線時間 */
+export const ElapsedIcon = Timer;
 export const TasksIcon = ClockRotateRight;
 export const MissingIcon = WarningTriangle;
 export const BellIcon = Bell;
@@ -140,6 +158,7 @@ export const BellIcon = Bell;
 export const UsageIcon = StatsReport;
 export const GridIcon = GridPlus;
 export const ListIcon = List;
+export const SelectAllIcon = DoubleCheck;
 
 // ── Customers / 管理單位 ──
 export const CustomersIcon = Group;  // 借用 Group icon，視覺上「一群人」
@@ -167,6 +186,14 @@ export const DhcpServerIcon = Server;
 // 「整合 Windows DHCP」選單用。不共用 DhcpServerIcon —— 那個是 IP 清單上的「DHCP 伺服器
 // 角色」標記，語意不同；而且 Server 這顆與 Proxmox／VMware 長得一樣，三個選單分不出來。
 export const WindowsDhcpIcon = Windows;
+// 獨立 Kea（jt-ipam 拉 API）／ISC DHCP（代理讀設定與租約檔）—— 兩個選單要分得出來，也不能跟 Server 撞
+export const KeaDhcpIcon = DataTransferBoth;
+export const IscDhcpIcon = DatabaseScript;
+// RustDesk Server（開源版）：選單與 IP 詳細資料的「以 RustDesk 連線」。不用 R 字螢幕 —— 那顆是 RDP
+// RustDesk 網頁連線的工具列：「螢幕」選單（多螢幕切換）、「畫質」選單、螢幕選單裡的「解析度」子選單
+export const ScreensIcon = ModernTv;
+export const QualityIcon = HdDisplay;
+export const ResolutionIcon = FrameSimple;
 export const LocationsIcon = MapPin;
 // DHCP 固定分配：這個位址被綁給某張網卡，不會被回收給別台
 export const ReservedIcon = Lock;
@@ -196,6 +223,8 @@ export const AnomalyIcon = ShieldAlert;
 // AI 巡檢：跟異常偵測分開的圖示 —— 一個是量到的事實、一個是模型的推測，
 // 選單上並排時要一眼分得出來
 export const AiAuditIcon = BrainResearch;
+/** 變更影響預演：試管＝預演、不會真的改 */
+export const ChangeImpactIcon = TestTube;
 export const DnsIcon = Globe;
 export const LibreNMSIcon = Cloud;
 export const FirewallIcon = Shield;
@@ -220,6 +249,10 @@ export const LoginIcon = LogIn;
 export const LogoutIcon = LogOut;
 export const TokenIcon = Key;
 export const TestIcon = CheckCircle;
+// IP 詳細頁的「探測」：辨識這個位址是什麼主機
+export const IdentifyIcon = FingerprintScan;
+/** MAC 位址（網卡的硬體識別碼）：選單的「MAC 位址」 */
+export const MacIcon = Barcode;
 
 /**
  * 把 Iconoir icon 包成 NMenu / NDropdown / NTabs 認得的 render function。
@@ -233,6 +266,7 @@ export const NewFolderIcon = FolderPlus;
 export const FilterIcon = Filter;
 export const MoveIcon = ArrowRight;   // 搬移到其他目錄
 export const UpLevelIcon = ArrowUp;   // 回上一層目錄
+export const UnregisteredIcon = HelpCircle;   // 自動收錄、未經登記的位址
 export const PasteIcon = PasteClipboard;
 export const CopyIcon = Copy;
 export const TerminalIcon = Terminal;
@@ -258,6 +292,21 @@ function screenLetterIcon(letter: string) {
 export const DisplayIcon = screenLetterIcon("R");  // RDP
 export const VncIcon = screenLetterIcon("V");      // VNC
 export const NoVncIcon = screenLetterIcon("N");    // noVNC（PVE 圖形主控台）
+// RustDesk：同一個螢幕外框，裡面兩個上下錯開的半圓（取 RustDesk 標誌的意象但不照抄；使用者 2026-10-06）。
+// 以前用一般的電腦圖示，跟 RDP／VNC 的「螢幕＋符號」不同一家族
+export const RustDeskIcon = () => h("svg", {
+  xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 24 24",
+  width: "1em", height: "1em", fill: "none",
+}, [
+  h("rect", { x: 1.75, y: 3, width: 20.5, height: 15, rx: 2.4,
+    stroke: "currentColor", "stroke-width": 1.4 }),
+  h("path", { d: "M12 18v2.6", stroke: "currentColor", "stroke-width": 1.5 }),
+  h("path", { d: "M8 20.6h8", stroke: "currentColor", "stroke-width": 1.5, "stroke-linecap": "round" }),
+  h("path", { d: "M10.6 6.3A3.3 3.3 0 0 0 10.6 12.9", stroke: "currentColor", "stroke-width": 2.3,
+    "stroke-linecap": "round" }),
+  h("path", { d: "M13.4 8.1A3.3 3.3 0 0 1 13.4 14.7", stroke: "currentColor", "stroke-width": 2.3,
+    "stroke-linecap": "round" }),
+]);
 export const ExpandIcon = Expand;                  // 重新調整大小 / 自動縮放
 export const ReduceIcon = Reduce;                  // 原始解析度（1:1）
 export const KeyIcon = Key;                        // 送出按鍵

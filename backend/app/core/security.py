@@ -72,7 +72,14 @@ def _derive_key() -> bytes:
         key = base64.b64decode(raw, validate=True)
     except Exception:
         # 退回：當作 hex
-        key = bytes.fromhex(raw)
+        try:
+            key = bytes.fromhex(raw)
+        except ValueError:
+            # 兩種都不是：講清楚要什麼、怎麼產生。以前只丟出 fromhex 的「non-hexadecimal number」，
+            # CI 的測試用金鑰就是這樣讓所有測試在收集階段失敗了三週，而沒人看得出原因
+            raise ValueError(
+                "ENCRYPTION_KEY must be base64 (or hex) of 32 random bytes; "
+                "generate one with: openssl rand -base64 32") from None
     if len(key) != 32:
         # 最後保險：用 SHA-256 派生 32 bytes（仍需 raw 為 ≥32 bytes 高熵）
         if len(raw) < 32:

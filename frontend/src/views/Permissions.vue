@@ -9,6 +9,7 @@
 import { computed, h, onMounted, ref } from "vue";
 import {
   NButton, NCard, NSpace, NSelect, NIcon, NTag, NInput, NSwitch, NDrawer, NDrawerContent,
+  NTooltip,
   NDataTable, NEmpty, NCollapse, NCollapseItem, NList, NListItem, NThing, useMessage,
   type DataTableColumns,
 } from "naive-ui";
@@ -23,7 +24,7 @@ import {
   listPermissions, upsertPermission, deletePermission, listRoles,
   type PermissionGrant, type PermObjectType, type PermLevel,
 } from "@/api/permissions";
-import { UsersIcon, DeleteIcon, PlusIcon, AdminIcon } from "@/icons";
+import { UsersIcon, DeleteIcon, PlusIcon, AdminIcon, EditIcon } from "@/icons";
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
 import { useTablePagination } from "@/composables/useTablePagination";
 const pg = useTablePagination();
@@ -163,8 +164,15 @@ const userCols = computed<DataTableColumns<User>>(() => [
   { title: "Email", key: "email", minWidth: 160, ellipsis: { tooltip: true } },
   { title: t("cols.admin"), key: "is_admin", width: 90,
     render: (u) => u.is_admin ? h(NTag, { size: "small", type: "error" }, () => t("perm.superuser")) : "—" },
-  { title: t("common.actions"), key: "actions", width: 90, className: "col-actions",
-    render: (u) => h(NButton, { size: "small", quaternary: true, onClick: () => openUser(u) }, () => t("common.edit")) },
+  // 與使用者頁一致：icon 按鈕 + tooltip（文字按鈕在窄視窗會被欄寬切掉，且全站只有這裡是文字）
+  { title: t("common.actions"), key: "actions", width: 72, align: "center",
+    className: "col-actions",
+    render: (u) => h(NTooltip, null, {
+      trigger: () => h(NButton, { size: "small", quaternary: true,
+        onClick: (e: MouseEvent) => { e.stopPropagation(); openUser(u); } },
+        { icon: () => h(NIcon, null, () => h(EditIcon)) }),
+      default: () => t("common.edit"),
+    }) },
 ]);
 
 const grantCols = computed<DataTableColumns<PermissionGrant>>(() => [
@@ -202,7 +210,9 @@ onMounted(async () => {
       <span style="opacity:.6; font-size:12px">{{ t("perm.users_hint") }}</span>
     </n-space>
 
+    <!-- scroll-x：欄寬總和放不下時要水平捲動，而不是把最後一欄（操作）擠掉看不見 -->
     <n-data-table :columns="userCols" :data="filteredUsers" :loading="loading" :bordered="false"
+                  :scroll-x="480"
                   :row-props="(u: User) => ({ style: 'cursor:pointer', onClick: () => openUser(u) })"
                   :pagination="pg" />
 

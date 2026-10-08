@@ -1,0 +1,24 @@
+# 可丟棄的 RustDesk 伺服器（hbbs＋hbbr，官方 1.1.16 執行檔），給「相容 RustDesk 的網頁連線」做端到端驗證。
+# 用法見同目錄的 README.md 與 run.sh。⚠️ 只綁 127.0.0.1，不可以對外開。
+FROM debian:12-slim
+
+ARG RD_SERVER_VERSION=1.1.16
+ARG RD_SERVER_SHA256=0565c41affe6c3f409b0bddfaf5a24ccbf3f64f5f8e3fec250b69a0d5f6bdbcf
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 官方 GitHub release 的執行檔（只當黑箱跑）
+RUN curl -fsSL -o /tmp/s.zip \
+        "https://github.com/rustdesk/rustdesk-server/releases/download/${RD_SERVER_VERSION}/rustdesk-server-linux-amd64.zip" \
+    && echo "${RD_SERVER_SHA256}  /tmp/s.zip" | sha256sum -c - \
+    && python3 -c "import zipfile; zipfile.ZipFile('/tmp/s.zip').extractall('/opt/rd')" \
+    && chmod +x /opt/rd/amd64/* && ln -s /opt/rd/amd64/hbbs /usr/local/bin/hbbs \
+    && ln -s /opt/rd/amd64/hbbr /usr/local/bin/hbbr && ln -s /opt/rd/amd64/rustdesk-utils /usr/local/bin/rustdesk-utils \
+    && rm /tmp/s.zip
+
+COPY server-start.sh /usr/local/bin/server-start.sh
+RUN chmod +x /usr/local/bin/server-start.sh
+WORKDIR /data
+EXPOSE 21116 21116/udp 21117 21118 21119
+CMD ["/usr/local/bin/server-start.sh"]

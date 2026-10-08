@@ -13,7 +13,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, Integer, String
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -22,7 +22,8 @@ from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 # 允許的來源整合（source_type）。新增 DHCP 來源整合時要一起加進來，
 # 否則這份清單會跟實際寫進 source_type 的值脫節（目前沒有 CHECK 約束在讀它，
 # 但它是這張表「有哪些來源」的唯一書面依據）。
-DHCP_SOURCE_TYPES = ("opnsense", "pfsense", "windows_dhcp", "fortigate")
+DHCP_SOURCE_TYPES = ("opnsense", "pfsense", "windows_dhcp", "fortigate", "mikrotik", "paloalto",
+                     "kea_dhcp", "isc_dhcp")
 
 
 class DHCPPoolRange(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -75,4 +76,35 @@ class DHCPReservation(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     __table_args__ = (
         Index("ix_dhcp_reservations_source", "source_type", "source_id"),
+    )
+
+
+class DHCPLeaseSighting(Base, UUIDPrimaryKeyMixin):
+    """某個 DHCP 來源的**某一台實例**目前發著這個位址的租約。
+
+    `ip_addresses.in_dhcp_lease` 由這裡推導（還有任何一列＝有租約），推導集中在
+    app/services/dhcp_leases.py。以前那個布林是六個 DHCP 來源共用、清除各寫各的：
+    沒設關聯子網路就永遠不清、Palo Alto 從來不清、有設範圍時會清掉別的來源還發著的租約
+    （2026-09-26 稽核）。
+
+    source_type＝`legacy`／source_id＝全零：遷移前就是 True、不知道是誰設的旗標；
+    真實同步看到就被認領，沒人認領的在寬限期後清掉。
+    """
+
+    __tablename__ = "dhcp_lease_sightings"
+
+    ip_address_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("ip_addresses.id", ondelete="CASCADE"),
+        nullable=False, index=True)
+    source_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("ip_address_id", "source_type", "source_id",
+                         name="uq_dhcp_lease_sightings_ip_source"),
+        Index("ix_dhcp_lease_sightings_source", "source_type", "source_id"),
     )

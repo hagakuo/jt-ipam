@@ -35,7 +35,8 @@ import { useTablePagination } from "@/composables/useTablePagination";
 const pg = useTablePagination();
 const { t } = useI18n();
 
-const { visibleKeys: rqVis, setVisible: rqSet, reset: rqReset } = useColumnPrefs(
+const { visibleKeys: rqVis, setVisible: rqSet, reset: rqReset,
+  order: rqOrder, setOrder: rqSetOrder, orderColumns: rqOrderCols } = useColumnPrefs(
   "ip_requests",
   ["status", "subnet_id", "hostname", "purpose", "created_at"],
   ["status", "subnet_id", "hostname", "purpose", "created_at"],
@@ -113,7 +114,7 @@ const allColumns = computed<DataTableColumns<IPRequest>>(() => autoSort([
 ]));
 
 const columns = computed<DataTableColumns<IPRequest>>(() =>
-  allColumns.value.filter((c: any) => c.key === "__act" || rqVis.value.includes(c.key)),
+  rqOrderCols(allColumns.value.filter((c: any) => c.key === "__act" || rqVis.value.includes(c.key))),
 );
 
 // ── 核准 / 駁回（審核人專用，可逐列操作）──
@@ -224,26 +225,26 @@ onMounted(() => {
         <span>{{ t("requests.title") }}</span>
       </n-space>
     </template>
-    <template #header-extra>
-      <n-space align="center">
-        <n-checkbox v-model:checked="showMine" style="align-self: center" @update:checked="refresh">
-          {{ t("requests.only_mine") }}
-        </n-checkbox>
-        <n-select
-          :value="filterStatus ?? ''"
-          :options="statusOptions"
-          :placeholder="t('requests.col_status')"
-          style="width: 140px"
-          @update:value="(v: string) => { filterStatus = v || null; refresh(); }"
-        />
-        <n-button type="primary" @click="showCreate = true">
-          <template #icon><n-icon><RequestsIcon /></n-icon></template>
-          {{ t("requests.create") }}
-        </n-button>
-        <ColumnPicker :all="rqPicker" :visible="rqVis"
-                      @update:visible="rqSet" @reset="rqReset" />
-      </n-space>
-    </template>
+<!-- 控制元件移到卡片內文最上方（標題列不放控制元件） -->
+    <n-space align="center" justify="end" style="margin-bottom: 10px">
+      <n-checkbox v-model:checked="showMine" style="align-self: center" @update:checked="refresh">
+        {{ t("requests.only_mine") }}
+      </n-checkbox>
+      <n-select
+        :value="filterStatus ?? ''"
+        :options="statusOptions"
+        :placeholder="t('requests.col_status')"
+        style="width: 140px"
+        @update:value="(v: string) => { filterStatus = v || null; refresh(); }"
+      />
+      <n-button type="primary" @click="showCreate = true">
+        <template #icon><n-icon><RequestsIcon /></n-icon></template>
+        {{ t("requests.create") }}
+      </n-button>
+      <ColumnPicker :all="rqPicker" :visible="rqVis"
+                    @update:visible="rqSet" @reset="rqReset"
+                    :order="rqOrder" @update:order="rqSetOrder" />
+    </n-space>
 
     <n-data-table
       :columns="columns"

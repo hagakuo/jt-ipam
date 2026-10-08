@@ -73,8 +73,30 @@ def _genesis_hash() -> bytes:
     return hashlib.sha256(raw.encode("utf-8")).digest()
 
 
+def _pending_last_hash(session: AsyncSession) -> bytes | None:
+    """同一交易內尚未 flush 的稽核記錄中，最後寫入的那一筆的 this_hash。
+
+    正式 session 是 `autoflush=False`，所以同一交易連寫多筆時（批次刪除是典型），
+    後面幾筆用 SELECT 是看不到前面幾筆的 —— 於是它們全部接到同一個前置雜湊，
+    鏈就此斷掉。prod 上因此累積了 28 個斷點。改成先看自己交易裡的待寫入項目，
+    比強制 flush 安全：不會連帶把呼叫端還沒準備好的其他物件一起寫出去。
+    """
+    from app.models.audit import AuditLog
+
+    pending = [o for o in session.new if isinstance(o, AuditLog)]
+    if not pending:
+        return None
+    return max(pending, key=lambda o: getattr(o, "_chain_seq", 0)).this_hash
+
+
 async def _get_prev_hash(session: AsyncSession) -> bytes:
-    """取出最後一筆的 this_hash；空表時用 genesis。"""
+    """取出最後一筆的 this_hash；空表時用 genesis。
+
+    先看同一交易內待寫入的（`_pending_last_hash`），再看資料庫。
+    """
+    inflight = _pending_last_hash(session)
+    if inflight is not None:
+        return inflight
     from app.models.audit import AuditLog  # local import 避免循環
 
     stmt = select(AuditLog.this_hash).order_by(AuditLog.id.desc()).limit(1)
@@ -135,6 +157,10 @@ async def append_audit(
         prev_hash=prev,
         this_hash=this_hash,
     )
+    # 交易內序號：同一交易可能連寫多筆，`_pending_last_hash` 靠它決定誰是最後一筆
+    seq = session.info.get("_audit_seq", 0) + 1
+    session.info["_audit_seq"] = seq
+    entry._chain_seq = seq        # 只在同一交易內用的暫時屬性
     session.add(entry)
 
     # best-effort 轉送到 Graylog（syslog / CEF / GELF）；任何錯誤都不影響主交易
@@ -145,20 +171,53 @@ async def append_audit(
         pass
 
 
-async def verify_chain(session: AsyncSession, *, limit: int | None = None) -> tuple[bool, int | None]:
-    """驗證整條鏈；回傳 (是否完整, 第一個出錯的 audit id)。
+async def verify_chain(
+    session: AsyncSession, *, limit: int | None = None,
+    after_id: int | None = None, expected_prev: str | None = None,
+) -> tuple[bool, int | None]:
+    """驗證鏈；回傳 (是否完整, 第一個出錯的 audit id)。
 
     管理 / 排程定期執行；發現 false 立即發告警。
+
+    `after_id` + `expected_prev`：**增量驗證**。從上次錨定的位置往後驗即可，
+    不必每輪重走整條鏈（實機已有數千筆，且只會愈長）。兩者要一起給——
+    只給 after_id 卻不給起始雜湊，等於從一個未經驗證的點開始信任。
     """
     from app.models.audit import AuditLog
 
-    stmt = select(AuditLog).order_by(AuditLog.id.asc())
-    if limit is not None:
-        stmt = stmt.limit(limit)
-    result = await session.execute(stmt)
+    expected_prev = expected_prev or _genesis_hash()
+    # 一批一批往後驗（2026-09-30 大量資料測試）：以前一次把整條鏈載進記憶體 —— 第一次驗證或錨定檔
+    # 遺失時，跑了幾年、上百萬筆帶 JSONB 的稽核記錄會一口氣吃掉好幾 GB
+    last = after_id if after_id is not None else None
+    remaining = limit
+    while True:
+        size = _VERIFY_BATCH if remaining is None else min(_VERIFY_BATCH, remaining)
+        if size <= 0:
+            return True, None
+        stmt = select(AuditLog).order_by(AuditLog.id.asc()).limit(size)
+        if last is not None:
+            stmt = stmt.where(AuditLog.id > last)
+        rows = list((await session.execute(stmt)).scalars())
+        if not rows:
+            return True, None
+        ok, bad, expected_prev = _verify_rows(rows, expected_prev)
+        if not ok:
+            return False, bad
+        last = rows[-1].id
+        for r in rows:
+            session.expunge(r)
+        if remaining is not None:
+            remaining -= len(rows)
+        if len(rows) < size:
+            return True, None
 
-    expected_prev = _genesis_hash()
-    for row in result.scalars():
+
+#: verify_chain 每批驗幾筆
+_VERIFY_BATCH = 5000
+
+
+def _verify_rows(rows: list[Any], expected_prev: Any) -> tuple[bool, int | None, Any]:
+    for row in rows:
         record = {
             "ts": row.ts.isoformat(),
             "actor_user_id": str(row.actor_user_id) if row.actor_user_id else None,
@@ -172,8 +231,8 @@ async def verify_chain(session: AsyncSession, *, limit: int | None = None) -> tu
         }
         canonical = _canonical_json(record)
         if row.prev_hash != expected_prev:
-            return False, row.id
+            return False, row.id, expected_prev
         if _hash(expected_prev, canonical) != row.this_hash:
-            return False, row.id
+            return False, row.id, expected_prev
         expected_prev = row.this_hash
-    return True, None
+    return True, None, expected_prev

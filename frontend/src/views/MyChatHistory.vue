@@ -89,12 +89,13 @@ const columns = computed<DataTableColumns<ConversationSummary>>(() => autoSort<C
         <span>{{ t("my_chat_history.title") }}</span>
       </n-space>
     </template>
-    <template #header-extra>
+    <!-- 控制列：自標題列搬到內文最上方 -->
+    <n-space align="center" justify="end" style="margin-bottom: 10px">
       <n-button size="small" :loading="loading" @click="load">
         <template #icon><n-icon><RefreshIcon /></n-icon></template>
         {{ t("common.refresh") }}
       </n-button>
-    </template>
+    </n-space>
 
     <n-spin :show="loading">
       <n-data-table :columns="columns" :data="rows" :bordered="false" :scroll-x="640"

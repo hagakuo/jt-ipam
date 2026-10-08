@@ -17,33 +17,48 @@ from app.api.v1.endpoints import (
     bmc_console,
     cert_agents,
     certificates,
+    client_diag,
     custom_fields,
     customers,
     dashboard,
+    device_import,
     devices,
     dhcp,
+    dhcp_standalone,
     dns,
     esxi,
+    event_rules,
     firewall,
     fortigate,
     import_external,
     investigate,
     ip_changes,
+    ip_identify,
+    ip_ranges,
     ip_requests,
+    jump_hosts,
     librenms,
     locations,
+    macs,
     migration,
+    mikrotik,
     nat,
     notifications,
     novnc_console,
+    ocs,
     oui,
+    paloalto,
     pfsense,
     physical,
     plugins,
     preferences,
     rack_diagram,
     rdp_console,
+    rustdesk,
+    rustdesk_agent,
+    rustdesk_console,
     scan,
+    scan_agent_relay,
     scan_agents,
     search,
     sections,
@@ -62,12 +77,16 @@ from app.api.v1.endpoints import (
     vrfs,
     wazuh,
     windows_dhcp,
+    zabbix,
 )
 from app.api.v1.endpoints import (
     audit_admin as audit_admin_ep,
 )
 from app.api.v1.endpoints import (
     background_tasks as bg_tasks_endpoint,
+)
+from app.api.v1.endpoints import (
+    change_impact as change_impact_ep,
 )
 from app.api.v1.endpoints import (
     graylog_dsv as graylog_dsv_ep,
@@ -90,17 +109,23 @@ api_v1_router.include_router(preferences.router)
 api_v1_router.include_router(dashboard.router)
 api_v1_router.include_router(sections.router)
 api_v1_router.include_router(subnets.router)
+api_v1_router.include_router(ip_ranges.router)
 api_v1_router.include_router(system_logs.router)
 api_v1_router.include_router(addresses.router)
+api_v1_router.include_router(ip_identify.router)
+api_v1_router.include_router(ip_identify.ip_router)
 api_v1_router.include_router(ssh_console.router)
 api_v1_router.include_router(sftp_console.router)
 api_v1_router.include_router(ssh_credentials.router)
+api_v1_router.include_router(jump_hosts.router)
 api_v1_router.include_router(rdp_console.router)
 api_v1_router.include_router(vnc_console.router)
 api_v1_router.include_router(novnc_console.router)
 api_v1_router.include_router(bmc_console.router)
 api_v1_router.include_router(vlans.router)
 api_v1_router.include_router(vrfs.router)
+# device_import 要在 devices 之前：`/devices/import-template` 不能被 `/devices/{device_id}` 吃掉
+api_v1_router.include_router(device_import.router)
 api_v1_router.include_router(devices.router)
 api_v1_router.include_router(locations.router)
 api_v1_router.include_router(nat.router)
@@ -114,12 +139,14 @@ api_v1_router.include_router(search.router)
 api_v1_router.include_router(ip_requests.router)
 api_v1_router.include_router(ip_changes.router)
 api_v1_router.include_router(rack_diagram.router)
+api_v1_router.include_router(rack_diagram.admin_router)
 api_v1_router.include_router(migration.router)
 api_v1_router.include_router(ai_audit.router)
 api_v1_router.include_router(investigate.router)
 api_v1_router.include_router(esxi.router)
 api_v1_router.include_router(import_external.router)
 api_v1_router.include_router(scan_agents.router)
+api_v1_router.include_router(scan_agent_relay.router)
 api_v1_router.include_router(certificates.router)
 api_v1_router.include_router(cert_agents.router)
 api_v1_router.include_router(dns.router)
@@ -135,10 +162,25 @@ api_v1_router.include_router(firewall.router)
 api_v1_router.include_router(dhcp.router)
 api_v1_router.include_router(pfsense.router)
 api_v1_router.include_router(pfsense.view_router)
+api_v1_router.include_router(event_rules.router)
 api_v1_router.include_router(fortigate.router)
+api_v1_router.include_router(paloalto.router)
+api_v1_router.include_router(macs.router)
+api_v1_router.include_router(mikrotik.router)
 api_v1_router.include_router(fortigate.view_router)
+api_v1_router.include_router(paloalto.view_router)
+api_v1_router.include_router(mikrotik.view_router)
+api_v1_router.include_router(ocs.router)
+api_v1_router.include_router(ocs.view_router)
 api_v1_router.include_router(wazuh.router)
+api_v1_router.include_router(zabbix.router)
+api_v1_router.include_router(zabbix.view_router)
 api_v1_router.include_router(windows_dhcp.router)
+api_v1_router.include_router(dhcp_standalone.kea_router)
+api_v1_router.include_router(dhcp_standalone.isc_router)
+api_v1_router.include_router(rustdesk.router)
+api_v1_router.include_router(rustdesk_agent.router)
+api_v1_router.include_router(rustdesk_console.router)
 api_v1_router.include_router(audit.router)
 api_v1_router.include_router(users.router)
 api_v1_router.include_router(bg_tasks_endpoint.router)
@@ -147,10 +189,12 @@ api_v1_router.include_router(system_settings_ep.router)
 api_v1_router.include_router(system_settings_ep.public_router)
 api_v1_router.include_router(system_settings_ep.view_router)
 api_v1_router.include_router(system_transfer_ep.router)
+api_v1_router.include_router(client_diag.router)
 api_v1_router.include_router(graylog_dsv_ep.admin_router)
 api_v1_router.include_router(graylog_dsv_ep.public_router)
 api_v1_router.include_router(ldap_admin_ep.admin_router)
 api_v1_router.include_router(audit_admin_ep.admin_router)
+api_v1_router.include_router(change_impact_ep.router)
 
 # Phase 3 [DONE] Tenancy/Contacts/ASN/Circuits/Wireless、Virtualization/Proxmox、
 #           Cabling/Power/VPN、Topology、OIDC SSO（SAML stub）

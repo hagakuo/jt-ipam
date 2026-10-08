@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { wsErrorText } from "@/utils/wsError";
+import ConnElapsed from "@/components/ConnElapsed.vue";
+import ConsoleRouteNote from "@/components/ConsoleRouteNote.vue";
 /**
  * VNC 畫面（原生 canvas）。先換 ticket → 開 WebSocket → 橋接後端 aardwolf VNCConnection。
  * 密碼只在連線時送出，前端不保存（或選已存密碼以 reference 連線）。
@@ -14,7 +17,9 @@ import {
   requestVncTicket, buildVncWsUrl,
   listVncCredentials, createVncCredential, deleteVncCredential, type VncCredential,
 } from "@/api/vnc";
-import { buildSendKeysMenu, makeSendCombo } from "@/composables/useSendKeys";
+import { buildSendKeysMenu, makeSendCombo, KEY_COMBOS } from "@/composables/useSendKeys";
+import GuacView from "@/components/GuacView.vue";
+import { consoleEngineLabel } from "@/utils/consoleEngine";
 import { VncIcon, CancelIcon, RefreshIcon, DeleteIcon, ChevronDownIcon, KeyIcon, ExpandIcon, ReduceIcon } from "@/icons";
 import ConsoleDisconnectedOverlay from "@/components/ConsoleDisconnectedOverlay.vue";
 
@@ -38,7 +43,9 @@ const credOptions = ref<{ label: string; value: string }[]>([]);
 async function loadCreds() {
   try {
     savedCreds.value = await listVncCredentials(props.addressId);
-    credOptions.value = savedCreds.value.map((c) => ({ label: c.label, value: c.id }));
+    credOptions.value = [
+    { label: t('ssh.cred_manual'), value: null as unknown as string },
+    ...savedCreds.value.map((c) => ({ label: c.username ? `${c.label} · ${c.username}` : c.label, value: c.id }))];
     if (!selectedCredId.value && savedCreds.value.length) {
       selectedCredId.value = savedCreds.value[0].id;
     }
@@ -57,9 +64,12 @@ onMounted(loadCreds);
 
 type Phase = "form" | "connecting" | "connected" | "closed" | "error";
 const phase = ref<Phase>("form");
+// 這條連線是否經由跳板（issue #24）：畫面上的位址是目標，實際路徑多了一跳
+const viaJump = ref("");
+const viaKind = ref("jump");   // "jump"／"agent"（經由掃描代理中繼，issue #24 階段二）
 const errorMsg = ref("");
 
-const form = reactive({ password: "", port: 5900 });
+const form = reactive({ username: "", password: "", port: 5900 });
 
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 const canvasBoxEl = ref<HTMLElement | null>(null);
@@ -76,6 +86,11 @@ const MOVE_THROTTLE = 30;
 // 畫面縮放：fit=自動縮放符合視窗（CSS 縮放、不出捲軸）、native=原始解析度（1:1，超出可捲）
 const scaleMode = ref<"fit" | "native">("fit");
 let srvW = 0, srvH = 0;     // 伺服器 framebuffer 尺寸
+// guacd 引擎（系統設定選的）：畫面與鍵鼠交給 GuacView，這個元件只留表單與工具列
+const guacRef = ref<InstanceType<typeof GuacView> | null>(null);
+// 狀態列的「引擎」標示（這次連線實際用的引擎，來自票證）
+const engineLabel = ref("");
+const guacSession = ref<{ key: number; url: string; config: Record<string, unknown> } | null>(null);
 let ro: ResizeObserver | null = null;
 
 function applyScale() {
@@ -110,7 +125,10 @@ function wsSend(obj: Record<string, unknown>) {
 // 送出特殊按鍵（VNC 目標可能是 Win/Mac/Linux → 含 macOS 組合）
 const sendKeysMenu = buildSendKeysMenu(true);
 const _sendCombo = makeSendCombo(wsSend);
-function onSendKey(key: string) { _sendCombo(key); canvasEl.value?.focus(); }
+function onSendKey(key: string) {
+  if (guacSession.value) { guacRef.value?.sendCombo(KEY_COMBOS[key] || []); return; }
+  _sendCombo(key); canvasEl.value?.focus();
+}
 function onVisibility() {
   // 分頁切回前景：重置計時窗，避免背景期間 lastRecv 變舊 → 一回前景就被 watchdog 誤判斷線
   if (!document.hidden) lastRecv = Date.now();
@@ -137,6 +155,7 @@ function startHeartbeat() {
 }
 function teardown() {
   stopHeartbeat();
+  guacRef.value?.disconnect();
   try { ws?.close(); } catch { /* noop */ }
   ws = null;
   ro?.disconnect(); ro = null;
@@ -177,6 +196,7 @@ async function connect() {
       const saved = await createVncCredential({
         label: rememberLabel.value.trim() || `vnc@${props.ip}`,
         target_ip_id: props.addressId,
+        username: form.username,
         password: form.password,
       });
       credId = saved.id;
@@ -200,6 +220,17 @@ async function connect() {
     return;
   }
 
+  engineLabel.value = consoleEngineLabel(ticket.engine || "builtin");
+  if (ticket.engine === "guacd") {
+    guacSession.value = {
+      key: Date.now(), url: buildVncWsUrl(ticket.ws_path, ticket.ticket),
+      config: credId ? { credential_id: credId, port: form.port }
+        : { username: form.username.trim(), password: form.password, port: form.port },
+    };
+    form.password = "";
+    return;
+  }
+  guacSession.value = null;
   await nextTick();
   if (!canvasEl.value) { phase.value = "error"; errorMsg.value = t("vnc.err_ticket"); return; }
   ctx = canvasEl.value.getContext("2d");
@@ -209,7 +240,7 @@ async function connect() {
     if (credId) {
       wsSend({ type: "config", credential_id: credId, port: form.port });
     } else {
-      wsSend({ type: "config", password: form.password, port: form.port });
+      wsSend({ type: "config", username: form.username.trim(), password: form.password, port: form.port });
     }
     form.password = "";
     startHeartbeat();
@@ -227,7 +258,8 @@ async function connect() {
         break;
       }
       case "status":
-        if (payload.state === "connected") {
+        if (payload.state === "via_jump") { viaJump.value = payload.via || ""; viaKind.value = payload.via_kind || "jump"; }
+        else if (payload.state === "connected") {
           phase.value = "connected";
           // VNC 桌面尺寸由伺服器決定 → 依回傳尺寸設定 canvas，並套用縮放
           if (canvasEl.value && payload.width && payload.height) {
@@ -245,7 +277,7 @@ async function connect() {
         break;
       case "error":
         phase.value = "error";
-        errorMsg.value = payload.message || payload.code || t("vnc.err_generic");
+        errorMsg.value = wsErrorText(payload, t("vnc.err_generic"));
         break;
     }
   };
@@ -265,8 +297,10 @@ function disconnect() {
 }
 function backToForm() {
   teardown();
+  guacSession.value = null;
   phase.value = "form";
 }
+function onGuacError(text: string) { phase.value = "error"; errorMsg.value = text; }
 
 onBeforeUnmount(teardown);
 </script>
@@ -280,14 +314,10 @@ onBeforeUnmount(teardown);
           <span style="display:flex;align-items:center;gap:8px">
             <n-icon :component="VncIcon" :size="18" />
             <span>{{ t("vnc.connect_to", { ip }) }}</span>
-            <n-tag size="small" type="warning" :bordered="false" round>{{ t("vnc.beta") }}</n-tag>
           </span>
         </template>
-        <n-alert :show-icon="true" type="warning" :bordered="false" style="margin-bottom:12px">
-          {{ t("vnc.beta_hint") }}
-        </n-alert>
         <!-- 已存密碼 -->
-        <div v-if="credOptions.length" class="vnc-saved-row">
+        <div v-if="savedCreds.length" class="vnc-saved-row">
           <span class="vnc-saved-label">{{ t("vnc.saved_cred") }}</span>
           <n-select v-model:value="selectedCredId" :options="credOptions" clearable size="small"
                     :placeholder="t('vnc.saved_cred_ph')" style="flex:1" />
@@ -302,6 +332,10 @@ onBeforeUnmount(teardown);
         </div>
 
         <n-form label-placement="left" :label-width="92" size="small">
+          <n-form-item v-if="!selectedCredId" :label="t('vnc.username')">
+            <n-input v-model:value="form.username" :placeholder="t('vnc.username_ph')"
+                     :input-props="{ autocomplete: 'off' }" @keyup.enter="connect" />
+          </n-form-item>
           <n-form-item v-if="!selectedCredId" :label="t('vnc.password')">
             <n-space vertical :size="2" style="width:100%">
               <n-input v-model:value="form.password" type="password" show-password-on="click"
@@ -320,6 +354,10 @@ onBeforeUnmount(teardown);
                        :placeholder="t('vnc.remember_label_ph')" />
             </n-space>
           </n-form-item>
+
+          <!-- 按連線之前就看得到會走哪條路（直連／跳板／掃描代理）、走不通的話原因 -->
+
+          <ConsoleRouteNote :address-id="props.addressId" />
 
           <n-alert :show-icon="false" type="info" style="margin-bottom:10px">
             {{ selectedCredId ? t("vnc.use_saved_hint") : (remember ? t("vnc.store_hint") : t("vnc.no_store_hint")) }}
@@ -344,8 +382,13 @@ onBeforeUnmount(teardown);
           <span class="vnc-ip">{{ ip }}</span>
           <n-tag v-if="hostname" size="small" :bordered="false" round>{{ hostname }}</n-tag>
           <span class="conn-proto conn-proto--vnc">VNC</span>
+          <n-tag v-if="viaJump" size="small" type="warning" :bordered="false" round>
+            {{ viaKind === "agent" ? t("relay.via_agent") : t("jump_hosts.via") }}：{{ viaJump }}
+          </n-tag>
           <n-tag v-if="deviceName" size="small" type="info" :bordered="false" round>{{ deviceName }}</n-tag>
-          <n-tag size="small" type="warning" :bordered="false" round>{{ t("vnc.beta") }}</n-tag>
+          <n-tag v-if="engineLabel" size="small" :bordered="false" round class="conn-engine"
+                 :title="t('common.console_engine_title')">{{ engineLabel }}</n-tag>
+          <ConnElapsed :active="phase === 'connected'" />
         </span>
         <n-space :size="8" align="center">
           <!-- 送出特殊按鍵 -->
@@ -378,8 +421,13 @@ onBeforeUnmount(teardown);
       </n-alert>
       <div class="vnc-disp" :class="{ 'vnc-full': fullHeight }">
       <div ref="canvasBoxEl" class="vnc-canvas-box"
-           :class="{ 'vnc-full': fullHeight, 'vnc-fit': scaleMode === 'fit', 'vnc-native': scaleMode !== 'fit', 'term-dim': phase === 'closed' }">
-        <canvas ref="canvasEl" class="vnc-canvas" tabindex="0"
+           :class="{ 'vnc-full': fullHeight, 'vnc-fit': scaleMode === 'fit', 'vnc-native': scaleMode !== 'fit', 'term-dim': phase === 'closed', 'vnc-guac-box': !!guacSession }">
+        <GuacView v-if="guacSession" :key="guacSession.key" ref="guacRef" class="vnc-guac"
+                  :ws-url="guacSession.url" :config="guacSession.config" protocol="vnc"
+                  :scale-mode="scaleMode"
+                  @connected="phase = 'connected'" @closed="phase = 'closed'" @error="onGuacError"
+                  @via-jump="(v: string, k: string) => { viaJump = v; viaKind = k || 'jump'; }" />
+        <canvas v-else ref="canvasEl" class="vnc-canvas" tabindex="0"
                 @mousemove="onMouseMove" @mousedown="onMouseDown" @mouseup="onMouseUp"
                 @wheel.prevent="onWheel" @contextmenu.prevent
                 @keydown="onKey($event, true)" @keyup="onKey($event, false)" />
@@ -400,10 +448,14 @@ onBeforeUnmount(teardown);
 .vnc-disp { position: relative; }
 .vnc-disp.vnc-full { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .vnc-screen-area.vnc-full { flex: 1; min-height: 0; }
-.vnc-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 2px; gap: 8px; }
+.vnc-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; padding: 4px 2px; gap: 8px; }
 .vnc-status { font-size: 13px; display: inline-flex; align-items: center; gap: 7px;
   padding: 3px 11px; border-radius: 999px; font-weight: 500;
   background: rgba(128, 128, 128, .12); color: #888; }
+/* 手機：內容放不下時整顆標籤換到下一行，不要把「連線錯誤」擠成直排、也不要超出畫面 */
+.vnc-status { flex-wrap: wrap; row-gap: 4px; max-width: 100%; min-width: 0; }
+.vnc-status > * { flex: none; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 640px) { .vnc-status { border-radius: 14px; } }
 .vnc-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
 .vnc-ip { opacity: .7; font-variant-numeric: tabular-nums; }
 .vnc-status[data-state="connected"] { color: #18a058; background: rgba(24, 160, 88, .14); }
@@ -424,6 +476,10 @@ onBeforeUnmount(teardown);
 .conn-proto--vnc { color: #8a63d2; background: rgba(138,99,210,.16); }
 .vnc-canvas-box.vnc-full { flex: 1; min-height: 0; display: block; }
 .vnc-canvas { display: block; outline: none; background: #000; }
+/* guacd：畫面大小由容器決定（GuacView 自己縮放），容器要有高度 */
+.vnc-canvas-box.vnc-guac-box { display: block; width: 100%; height: 70vh; }
+.vnc-canvas-box.vnc-guac-box.vnc-full { height: auto; }
+.vnc-guac { width: 100%; height: 100%; }
 /* 自動縮放：置中、不出捲軸（canvas 由 JS 設 CSS 尺寸符合容器）。原始解析度：1:1、超出可捲。 */
 .vnc-canvas-box.vnc-fit { overflow: hidden; display: flex; align-items: center; justify-content: center; }
 .vnc-canvas-box.vnc-native { overflow: auto; }

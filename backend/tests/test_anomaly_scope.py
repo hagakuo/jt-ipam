@@ -103,3 +103,34 @@ async def test_excluded_subnet_ips_are_not_ghost_reported(db_session):
     out = {o["ip"] for o in await detect_ghost_ips(db_session)}
     assert "10.67.0.3" in out
     assert "10.66.0.3" not in out
+
+
+async def test_large_arp_tables_are_not_sampled(db_session, monkeypatch):
+    """以前只任取 2,000 個 ARP 位址、清單再切 200 筆（照字串排序），大站台的未授權位址大多看不到。
+
+    現在差集在資料庫做；超過上限時依最後看到時間取最近的，總數另外回報，畫面才講得出「還有多少」。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.address import IPAddress
+    from app.services import anomaly
+    from sqlalchemy import insert
+
+    sub = await _subnet(db_session, "10.66.0.0/20")
+    now = datetime.now(UTC)
+    rows = [{"ip": f"10.66.{i // 250}.{i % 250 + 1}", "mac": f"00:00:5e:00:{i // 256:02x}:{i % 256:02x}",
+             "first_seen_at": now, "last_seen_at": now - timedelta(minutes=i)} for i in range(2500)]
+    await db_session.execute(insert(ARPEntry), rows)
+    # 前 2,400 個已登記；只剩最後 100 個（最舊的那批）沒有
+    await db_session.execute(insert(IPAddress), [{"subnet_id": sub.id, "ip": r["ip"]} for r in rows[:2400]])
+    await db_session.flush()
+
+    meta: dict = {}
+    out = await detect_unauthorized_ips(db_session, meta=meta)
+    assert {o["ip"] for o in out} == {r["ip"] for r in rows[2400:]}
+    assert meta == {"total": 100, "truncated": False}
+
+    monkeypatch.setattr(anomaly, "MAX_UNAUTHORIZED", 10)
+    out = await detect_unauthorized_ips(db_session, meta=meta)
+    assert [o["ip"] for o in out] == [r["ip"] for r in rows[2400:2410]]    # 最近看到的在前
+    assert meta == {"total": 100, "truncated": True}

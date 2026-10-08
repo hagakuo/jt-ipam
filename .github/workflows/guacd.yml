@@ -1,0 +1,77 @@
+name: guacd prebuilt
+
+# 預編 guacd（RDP／VNC／SSH 主控台的選用引擎），每個支援中的作業系統版本一份。
+#
+# 為什麼在 GitHub 上編而不是維護者的機器：發佈出去的二進位檔要有可查證的來歷 ——
+# 誰都可以從這個 workflow 的紀錄看到它是從哪份原始碼、用哪些指令編出來的（另附 build provenance）。
+# 步驟與本機完全相同（scripts/guacd/*），本機綠＝這裡綠。
+#
+# 手動觸發（Actions → guacd prebuilt → Run workflow）。publish 勾起來才會建 release；
+# 發佈後要把 release 裡的 SHA256SUMS 放進 scripts/guacd/SHA256SUMS 一起 commit，
+# 安裝腳本下載後以它核對（TEST_CHECKLIST 5h）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Create the GitHub release guacd-<version>-<rev> with the builds"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write        # 只有 publish 時用到（建 release）
+      id-token: write        # build provenance
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # 有支援中的 OS 版本沒列在 targets.txt 就不發 —— 客戶升級到那一版會沒有 guacd 可用
+      - name: Every supported OS version has a target
+        run: scripts/guacd/check-new-os.sh
+
+      - name: Build
+        run: scripts/guacd/build.sh
+
+      # 乾淨容器只裝執行期套件，並且真的連 RDP／VNC／SSH 測試靶各一次（外掛載得到不算數）
+      - name: Verify
+        run: scripts/guacd/verify.sh
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/guacd/*/*.tar.gz
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: guacd
+          path: |
+            dist/guacd/*/*.tar.gz
+            dist/guacd/*/*.deps
+            dist/guacd/*/*.png
+            dist/guacd/*/SHA256SUMS
+
+      - name: Publish release
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . scripts/guacd/source.env
+          tag="guacd-${GUACD_VERSION}-${GUACD_BUILD_REV}"
+          dir="dist/guacd/${GUACD_VERSION}-${GUACD_BUILD_REV}"
+          {
+            echo "Prebuilt guacd for the jt-ipam RDP/VNC/SSH console, built from Apache Guacamole (guacamole-server) source."
+            echo "This is not an official Apache release."
+            echo
+            echo "- Source: ${GUACD_SRC_URL}"
+            echo "- Source SHA-256: ${GUACD_SRC_SHA256}"
+            echo "- Build scripts: scripts/guacd/ at ${GITHUB_SHA}"
+            echo "- Each archive contains LICENSE, NOTICE and SOURCE. Runtime libraries (FreeRDP, libvncclient, …) come from the OS; see the .deps files."
+          } > notes.md
+          gh release create "$tag" --title "guacd ${GUACD_VERSION} (build ${GUACD_BUILD_REV})" \
+            --notes-file notes.md --target "$GITHUB_SHA" \
+            "$dir"/*.tar.gz "$dir"/*.deps "$dir"/SHA256SUMS

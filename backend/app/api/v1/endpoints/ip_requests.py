@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.ui_error import detail_of
 from app.models.ip_request import IPRequest, IPRequestEvent
 from app.models.subnet import Subnet
 from app.schemas.base import Paginated
@@ -180,7 +181,7 @@ async def create(
             expires_at=payload.expires_at,
         )
     except IPRequestError as exc:
-        raise HTTPException(400, detail=str(exc)) from exc
+        raise HTTPException(400, detail=detail_of(exc, "ip_request_error")) from exc
 
     await append_audit(
         session,
@@ -229,9 +230,9 @@ async def approve(
             await approve_request(session, request=obj, subnet=subnet, approver=user,
                                   override_ip=override_ip)
     except InvalidStateTransition as exc:
-        raise HTTPException(409, detail=str(exc)) from exc
+        raise HTTPException(409, detail=detail_of(exc, "ip_request_bad_transition")) from exc
     except IPRequestError as exc:
-        raise HTTPException(409, detail=str(exc)) from exc
+        raise HTTPException(409, detail=detail_of(exc, "ip_request_error")) from exc
 
     await append_audit(
         session,
@@ -263,7 +264,7 @@ async def reject(
     try:
         await reject_request(session, request=obj, approver=user, reason=payload.reason)
     except InvalidStateTransition as exc:
-        raise HTTPException(409, detail=str(exc)) from exc
+        raise HTTPException(409, detail=detail_of(exc, "ip_request_bad_transition")) from exc
 
     await append_audit(
         session,
@@ -292,9 +293,9 @@ async def cancel(
     try:
         await cancel_request(session, request=obj, actor=user)
     except InvalidStateTransition as exc:
-        raise HTTPException(409, detail=str(exc)) from exc
+        raise HTTPException(409, detail=detail_of(exc, "ip_request_bad_transition")) from exc
     except IPRequestError as exc:
-        raise HTTPException(403, detail=str(exc)) from exc
+        raise HTTPException(403, detail=detail_of(exc, "ip_request_error")) from exc
 
     await append_audit(
         session,

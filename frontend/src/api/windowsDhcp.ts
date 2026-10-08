@@ -1,4 +1,5 @@
 import { apiClient } from "@/api/client";
+import { LONG_OP_TIMEOUT_MS } from "@/api/integrations";
 import type { Paginated } from "@/types";
 
 // Windows DHCP Server 整合（Beta）。路徑帶 /api/v1 前綴（baseURL 為 /）。
@@ -59,7 +60,9 @@ export async function deleteWindowsDhcp(id: string): Promise<void> {
 }
 
 export async function testWindowsDhcp(id: string): Promise<{ host: string; scopes: number }> {
-  const { data } = await apiClient.post(`/api/v1/windows-dhcp/servers/${id}/test`);
+  // WinRM 連不上時要等後端的連線逾時才有原因可講；預設 15 秒只會看到前端自己的逾時
+  const { data } = await apiClient.post(`/api/v1/windows-dhcp/servers/${id}/test`, undefined,
+                                        { timeout: LONG_OP_TIMEOUT_MS });
   return data;
 }
 

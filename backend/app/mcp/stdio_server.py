@@ -16,6 +16,9 @@ import os
 import sys
 from typing import Any
 
+#: stdio 模式的稽核來源（跑在 jt-ipam 主機上，沒有遠端位址）
+_ORIGIN = {"channel": "mcp-stdio", "ip": None, "user_agent": None}
+
 
 def _write(obj: Any) -> None:
     sys.stdout.write(json.dumps(obj, ensure_ascii=False, default=str) + "\n")
@@ -47,11 +50,12 @@ async def _amain() -> int:
             _write({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
             continue
         if isinstance(body, list):           # batch
-            outs = [r for m in body if (r := await process_message(m, user, readonly=readonly)) is not None]
+            outs = [r for m in body
+                    if (r := await process_message(m, user, readonly=readonly, origin=_ORIGIN)) is not None]
             if outs:
                 _write(outs)
         else:
-            resp = await process_message(body, user, readonly=readonly)
+            resp = await process_message(body, user, readonly=readonly, origin=_ORIGIN)
             if resp is not None:
                 _write(resp)
     return 0

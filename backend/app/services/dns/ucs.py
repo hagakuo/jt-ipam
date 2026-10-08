@@ -19,7 +19,7 @@ import base64
 
 import httpx
 
-from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.services.dns.base import DNSAdapter, DNSAdapterError, DNSRecordOp, DNSZoneInfo
 
 
@@ -43,7 +43,8 @@ class UniventionUCSAdapter(DNSAdapter):
         if not self.username or not self.password:
             raise DNSAdapterError(
                 "UCS 認證不完整（帳號或密碼為空）；basic auth 需要帳號與密碼，"
-                "請到「DNS 伺服器」設定重新輸入 UCS 帳號密碼。"
+                "請到「DNS 伺服器」設定重新輸入 UCS 帳號密碼。",
+                code="dns_ucs_incomplete_auth",
             )
         token = base64.b64encode(f"{self.username}:{self.password}".encode()).decode("ascii")
         return {"Accept": "application/json", "Authorization": f"Basic {token}"}
@@ -56,13 +57,19 @@ class UniventionUCSAdapter(DNSAdapter):
                 timeout=20.0, verify=self.verify_tls,
             )
         except UnsafeOutboundURL as exc:
-            raise DNSAdapterError(f"SSRF guard rejected URL: {exc}") from exc
+            raise DNSAdapterError(f"SSRF guard rejected URL: {exc}",
+                                  code="dns_ssrf", reason=str(exc)[:200]) from exc
         except httpx.HTTPError as exc:
-            raise DNSAdapterError(f"transport: {exc.__class__.__name__}") from exc
+            raise DNSAdapterError(f"transport: {transport_detail(exc)}",
+                                  code="dns_transport",
+                                  reason=transport_detail(exc)) from exc
         if resp.status_code == 401:
-            raise DNSAdapterError("UCS UDM REST 401 — 帳號/密碼或權限不足")
+            raise DNSAdapterError("UCS UDM REST 401 —— 帳號／密碼或權限不足",
+                                  code="dns_ucs_401")
         if resp.status_code != 200:
-            raise DNSAdapterError(f"UCS UDM REST {resp.status_code}: {resp.text[:200]}")
+            raise DNSAdapterError(f"UCS UDM REST {resp.status_code}: {resp.text[:200]}",
+                                  code="dns_ucs_http", status=resp.status_code,
+                                  body=resp.text[:200])
         return resp.json()  # type: ignore[no-any-return]
 
     @staticmethod
@@ -145,18 +152,23 @@ class UniventionUCSAdapter(DNSAdapter):
                 json=body, timeout=30.0, verify=self.verify_tls,
             )
         except UnsafeOutboundURL as exc:
-            raise DNSAdapterError(f"SSRF guard rejected URL: {exc}") from exc
+            raise DNSAdapterError(f"SSRF guard rejected URL: {exc}",
+                                  code="dns_ssrf", reason=str(exc)[:200]) from exc
         if resp.status_code not in (200, 201, 204):
-            raise DNSAdapterError(f"UCS UDM {method} {resp.status_code}: {resp.text[:200]}")
+            raise DNSAdapterError(f"UCS UDM {method} {resp.status_code}: {resp.text[:200]}",
+                                  code="dns_ucs_http_method", method=method,
+                                  status=resp.status_code, body=resp.text[:200])
         return resp.json() if resp.content else {}
 
     async def upsert_record(self, zone_name: str, op: DNSRecordOp) -> None:
         if op.type not in ("A", "AAAA"):
-            raise DNSAdapterError(f"UCS adapter 目前只支援推送 A/AAAA（收到 {op.type}）")
+            raise DNSAdapterError(f"UCS adapter 目前只支援推送 A/AAAA（收到 {op.type}）",
+                                  code="dns_ucs_type_unsupported", value=op.type)
         zone = zone_name.rstrip(".")
         dn = await self._zone_dn(zone)
         if not dn:
-            raise DNSAdapterError(f"UCS 找不到 forward zone {zone}")
+            raise DNSAdapterError(f"UCS 找不到 forward zone {zone}",
+                                  code="dns_ucs_zone_not_found", zone=zone)
         label = op.name.rstrip(".")
         label = label[: -len(zone) - 1] if label.endswith("." + zone) else label
         if label == zone:
@@ -182,5 +194,6 @@ class UniventionUCSAdapter(DNSAdapter):
                         await safe_request("DELETE", self_link, headers=self._headers,
                                            timeout=30.0, verify=self.verify_tls)
                     except UnsafeOutboundURL as exc:
-                        raise DNSAdapterError(f"SSRF guard rejected URL: {exc}") from exc
+                        raise DNSAdapterError(f"SSRF guard rejected URL: {exc}",
+                                  code="dns_ssrf", reason=str(exc)[:200]) from exc
                 return

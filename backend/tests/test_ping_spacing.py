@@ -44,7 +44,7 @@ async def test_the_native_path_takes_at_least_the_spacing():
 
 
 @pytest.mark.anyio
-async def test_a_single_ping_does_not_wait_for_nothing(anyio_backend):
+async def test_a_single_ping_does_not_wait_for_nothing():
     """次數 1 沒有「之間」，不該為了間隔多等一輪。"""
     t0 = time.monotonic()
     await netdiag.ping_many(["127.0.0.1"], count=1, timeout=1.0)

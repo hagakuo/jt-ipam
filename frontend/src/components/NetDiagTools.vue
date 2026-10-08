@@ -4,6 +4,27 @@
          「封包從伺服器送出、不是從你的電腦」，那件事不會因為換了位置就不用講） -->
     <div class="nd-note">{{ t("netdiag.section_note") }}</div>
 
+    <!-- 執行來源：預設從伺服器送出；選代理則由該網段的代理在當地執行 -->
+    <n-space align="center" :size="10" style="margin-bottom: 10px">
+      <span style="font-size: 13px; opacity: .75">{{ t("netdiag.source") }}</span>
+      <n-select v-model:value="source" :options="sourceOptions" size="small"
+                style="width: 260px" />
+      <n-spin v-if="agentBusy" :size="14" />
+      <span v-if="agentBusy" style="font-size: 12.5px; opacity: .7">
+        {{ t("netdiag.agent_running") }}
+      </span>
+    </n-space>
+    <n-alert v-if="source !== 'server'" type="info" :bordered="false" size="small"
+             style="margin-bottom: 10px">
+      {{ t("netdiag.agent_note") }}
+    </n-alert>
+    <n-card v-if="agentOut" size="small" style="margin-bottom: 12px">
+      <template #header>
+        <span style="font-size: 13.5px">{{ agentOut.agent }} · {{ agentOut.kind }}</span>
+      </template>
+      <pre class="nd-agent-out">{{ agentOut.text }}</pre>
+    </n-card>
+
     <div class="nd-grid">
       <!-- Ping -->
       <div class="nd-wide">
@@ -55,9 +76,14 @@
             <span class="nd-lbl">{{ t("netdiag.max_hops") }}
               <n-input-number v-model:value="trace.maxHops" :min="1" :max="30" size="small" style="width:92px" />
             </span>
-            <n-button type="primary" :loading="trace.busy"
+            <!-- 執行中變成「取消」：長作業不能只有轉圈，要給使用者反悔的路。
+                 loading 轉圈拿掉——轉圈中的按鈕看起來不可按，跟「可以按取消」矛盾。 -->
+            <n-button :type="trace.busy ? 'warning' : 'primary'"
                       :disabled="caps ? !(caps.tracepath || caps.traceroute) : false" @click="runTrace">
-              <template #icon><n-icon><SearchIcon /></n-icon></template>{{ t("netdiag.run") }}
+              <template #icon>
+                <n-icon><CancelIcon v-if="trace.busy" /><SearchIcon v-else /></n-icon>
+              </template>
+              {{ trace.busy ? t("common.cancel") : t("netdiag.run") }}
             </n-button>
             <!-- 路徑追蹤要跑數十秒（沒有回應的躍點必須等滿逾時才知道它不會回）。
                  不顯示已等待時間的話，畫面只有轉圈，看起來像當掉。 -->
@@ -70,6 +96,8 @@
           <div v-if="trace.res?.tool" class="nd-sum">
             {{ t("netdiag.trace_tool", { tool: trace.res.tool }) }}
             <template v-if="trace.res.path_mtu"> · {{ t("netdiag.path_mtu", { n: trace.res.path_mtu }) }}</template>
+            <n-tag v-if="trace.res.reached === false && !trace.busy" size="small" type="warning" :bordered="false"
+                   style="margin-left:6px" :title="t('netdiag.not_reached_tip')">{{ t("netdiag.not_reached") }}</n-tag>
             <n-tag v-if="trace.res.truncated" size="small" type="warning" :bordered="false"
                    style="margin-left:8px">{{ t("netdiag.truncated") }}</n-tag>
           </div>
@@ -247,9 +275,9 @@ import { computed, h, onMounted, reactive, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NAlert, NButton, NCard, NDataTable, NDescriptions, NDescriptionsItem, NModal,
-  NIcon, NTooltip, NInput, NInputNumber, NSpace, NTag, useMessage,
+  NIcon, NTooltip, NInput, NInputNumber, NSelect, NSpace, NSpin, NTag, useMessage,
 } from "naive-ui";
-import { DnsIcon, InfoIcon, LinkIcon, LockIcon, NetDiagIcon as LiveIcon, SearchIcon, TopologyIcon } from "@/icons";
+import { DnsIcon, InfoIcon, LinkIcon, LockIcon, NetDiagIcon as LiveIcon, SearchIcon, TopologyIcon, CancelIcon } from "@/icons";
 import { MAX_PORTS, parsePorts } from "@/utils/ports";
 import CardTitle from "@/components/CardTitle.vue";
 import { apiClient, apiErrMsg } from "@/api/client";
@@ -265,8 +293,9 @@ interface PingRow {
   loss_pct: number | null; rtt_avg_ms: number | null; error: string | null;
   error_code?: string | null;
 }
-interface Hop { hop: number; host: string | null; rtt_ms: number | null; note: string | null }
-interface TraceRes { target: string; tool: string; path_mtu: number | null; truncated: boolean; hops: Hop[] }
+interface Hop { hop: number; host: string | null; fqdn?: string | null; rtt_ms: number | null;
+                note: string | null; note_code?: string | null }
+interface TraceRes { target: string; tool: string; path_mtu: number | null; truncated: boolean; reached?: boolean; hops: Hop[] }
 interface TcpRow { target: string; port: number; open: boolean; latency_ms: number | null; error: string | null }
 interface TlsRow {
   target: string; port: number; ok: boolean; subject: string | null; issuer: string | null;
@@ -340,10 +369,18 @@ const pingCols = computed(() => [
 const hopCols = computed(() => [
   { title: "#", key: "hop", width: 60 },
   { title: t("netdiag.hop_host"), key: "host",
-    render: (h2: Hop) => h2.host || h("span", { style: "opacity:.5" }, t("netdiag.no_reply")) },
+    // 有反查到名稱就一起顯示（fqdn ＋ 淡色 IP）—— 跟終端機 traceroute 的閱讀體驗一致
+    render: (h2: Hop) => h2.host
+      ? (h2.fqdn
+          ? h("span", null, [h2.fqdn, h("span", { style: "opacity:.55;margin-left:6px" }, `(${h2.host})`)])
+          : h2.host)
+      : h("span", { style: "opacity:.5" }, t("netdiag.no_reply")) },
   { title: t("netdiag.rtt"), key: "rtt_ms", width: 120,
     render: (h2: Hop) => (h2.rtt_ms === null ? "—" : `${h2.rtt_ms} ms`) },
-  { title: t("netdiag.note"), key: "note", render: (h2: Hop) => h2.note || "" },
+  // note 可能是路由器回的旗標原文（`!H`…），也可能是我們自己造的句子；後者帶代碼，
+  // 要翻譯後再顯示，否則英文與日文介面上會冒出一句中文
+  { title: t("netdiag.note"), key: "note",
+    render: (h2: Hop) => (h2.note_code ? t(`errors.${h2.note_code}`) : h2.note) || "" },
 ]);
 
 const tcpCols = computed(() => [
@@ -450,6 +487,10 @@ async function runHttp() {
 }
 
 async function runRdns() {
+  if (source.value !== "server") {
+    await runViaAgent("rdns", { targets: rdns.targets });
+    return;
+  }
   if (!rdns.targets.trim()) { msg.error(t("netdiag.need_target")); return; }
   rdns.busy = true;
   try {
@@ -459,8 +500,68 @@ async function runRdns() {
   } catch (e) { msg.error(apiErrMsg(e)); } finally { rdns.busy = false; }
 }
 
+// ── 執行來源：伺服器本身，或某個掃描代理 ──
+// 伺服器只看得到自己那一段網路。要確認「客戶站台內部通不通」就得從那個網段裡面打，
+// 而掃描代理本來就裝在各網段。代理只由內往外連，所以請求走工作佇列：
+// 建立工作 → 代理長輪詢領取 → 當地執行 → 回報 → 這裡輪詢取回。
+const source = ref<string>("server");
+const agents = ref<{ label: string; value: string }[]>([]);
+const agentBusy = ref(false);
+const agentOut = ref<{ agent: string; kind: string; text: string } | null>(null);
+
+const sourceOptions = computed(() => [
+  { label: t("netdiag.source_server"), value: "server" },
+  ...agents.value,
+]);
+
+async function loadAgents() {
+  try {
+    const { data } = await apiClient.get("/api/v1/scan-agents", { params: { page_size: 100 } });
+    agents.value = (data.items ?? [])
+      .filter((a: any) => a.enabled)
+      .map((a: any) => ({ label: `${t("netdiag.source_agent")}：${a.name}`, value: a.id }));
+  } catch {
+    agents.value = [];      // 非管理員看不到代理清單 → 只留「伺服器」，不是錯誤
+  }
+}
+onMounted(loadAgents);
+
+/** 指派給代理執行並等結果。回傳格式化後的文字（不同探測形狀不同，統一以純文字呈現）。 */
+async function runViaAgent(kind: string, params: Record<string, unknown>): Promise<void> {
+  agentBusy.value = true;
+  agentOut.value = null;
+  try {
+    const { data } = await apiClient.post("/api/v1/tools/net/agent-probe",
+                                          { agent_id: source.value, kind, ...params });
+    const jobId = data.job_id;
+    const deadline = Date.now() + 90_000;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 800));
+      const { data: j } = await apiClient.get(`/api/v1/tools/net/agent-probe/${jobId}`);
+      if (j.status === "done" || j.status === "failed" || j.status === "expired") {
+        const label = sourceOptions.value.find((o) => o.value === source.value)?.label ?? "";
+        agentOut.value = {
+          agent: label, kind,
+          text: j.error ? `${t("netdiag.agent_failed")}：${j.error}`
+                        : JSON.stringify(j.result, null, 2),
+        };
+        return;
+      }
+      if (Date.now() > deadline) {
+        agentOut.value = { agent: "", kind, text: t("netdiag.agent_timeout") };
+        return;
+      }
+    }
+  } catch (e) { msg.error(apiErrMsg(e)); } finally { agentBusy.value = false; }
+}
+
 async function runPing() {
   if (!ping.targets.trim()) { msg.error(t("netdiag.need_target")); return; }
+  if (source.value !== "server") {
+    await runViaAgent("ping", { targets: ping.targets, count: ping.count,
+                                timeout: ping.timeout });
+    return;
+  }
   ping.busy = true;
   try {
     const { data } = await apiClient.post("/api/v1/tools/net/ping", {
@@ -472,32 +573,52 @@ async function runPing() {
 }
 
 let traceTimer: ReturnType<typeof setInterval> | null = null;
+// 取消用：長作業（15 跳可能 30～60 秒）跑著的時候，按鈕要能取消而不是只能等。
+// abort 會讓 fetch 中斷 → 後端 StreamingResponse 收到斷線，netdiag 的 finally 會 kill 子行程。
+let traceAbort: AbortController | null = null;
+
+function cancelTrace() {
+  traceAbort?.abort();
+}
 
 async function runTrace() {
+  if (trace.busy) { cancelTrace(); return; }
   if (!trace.target.trim()) { msg.error(t("netdiag.need_target")); return; }
+  if (source.value !== "server") {
+    await runViaAgent("traceroute", { targets: trace.target, max_hops: trace.maxHops });
+    return;
+  }
   trace.busy = true;
   trace.elapsed = 0;
   // 邊跑邊長：先給一個空殼，每收到一跳就 push 一列進去
   trace.res = { target: trace.target, tool: "", path_mtu: null, truncated: false, hops: [] };
   traceTimer = setInterval(() => { trace.elapsed += 1; }, 1000);
+  traceAbort = new AbortController();
   try {
     await traceStream(trace.target, trace.maxHops, (ev) => {
       if (ev.type === "hop") {
         trace.res!.hops.push({
-          hop: ev.hop!, host: ev.host ?? null,
-          rtt_ms: ev.rtt_ms ?? null, note: ev.note ?? null,
+          hop: ev.hop!, host: ev.host ?? null, fqdn: ev.fqdn ?? null,
+          rtt_ms: ev.rtt_ms ?? null, note: ev.note ?? null, note_code: ev.note_code ?? null,
         });
       } else if (ev.type === "done") {
         trace.res!.tool = ev.tool ?? "";
         trace.res!.path_mtu = ev.path_mtu ?? null;
         trace.res!.truncated = !!ev.truncated;
+        trace.res!.reached = ev.reached;
       } else if (ev.type === "error") {
-        msg.error(ev.detail ?? t("errors.server"));
+        // 後端給代碼，照語系翻譯（以前直接送中文句子）；舊後端沒有代碼才退回 detail
+        msg.error(ev.code ? t(`errors.${ev.code}`, ev.params ?? {}) : (ev.detail ?? t("errors.server")));
       }
-    });
-  } catch (e) { msg.error(apiErrMsg(e)); }
+    }, traceAbort.signal);
+  } catch (e: any) {
+    // 使用者自己按的取消不是錯誤，跳紅色訊息只會讓人以為壞了
+    if (e?.name === "AbortError") msg.info(t("netdiag.trace_cancelled"));
+    else msg.error(apiErrMsg(e));
+  }
   finally {
     trace.busy = false;
+    traceAbort = null;
     if (traceTimer) { clearInterval(traceTimer); traceTimer = null; }
   }
 }
@@ -509,6 +630,11 @@ async function runTcp() {
   if (parsed.overflow) { msg.warning(t("netdiag.port_overflow", { n: MAX_PORTS })); }
   const ports = parsed.ports;
   if (!ports.length) { msg.error(t("netdiag.need_port")); return; }
+  if (source.value !== "server") {
+    await runViaAgent("tcp", { targets: tcp.targets, ports: ports.join(","),
+                               timeout: tcp.timeout });
+    return;
+  }
   tcp.busy = true;
   try {
     const { data } = await apiClient.post("/api/v1/tools/net/tcp", {
@@ -525,6 +651,12 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.nd-agent-out {
+  margin: 0; max-height: 320px; overflow: auto; font-size: 12.5px; line-height: 1.55;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(127, 127, 127, .07); padding: 10px 12px; border-radius: 8px;
+  white-space: pre-wrap; word-break: break-word;
+}
 .howto-p { margin: 10px 0 6px; font-size: 13px; line-height: 1.8; }
 .howto-pre {
   margin: 0; padding: 10px 12px; font-size: 12px; line-height: 1.7;

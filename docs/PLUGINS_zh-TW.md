@@ -1,6 +1,6 @@
 # jt-ipam Plugin 開發指南
 
-> English: [PLUGINS.md](PLUGINS.md)
+> English: [PLUGINS.md](PLUGINS.md) · 日本語：[PLUGINS_ja.md](PLUGINS_ja.md)
 
 第三方套件可透過 `entry_points` 擴充 jt-ipam，無需 fork 主 repo。
 
@@ -71,7 +71,6 @@ curl -fsS https://ipam.example.com/api/v1/plugins -H "Authorization: Bearer ..."
 - `app.include_router(...)` 加 REST endpoint
 - `app.middleware(...)` 加 middleware
 - 啟動 background task（`asyncio.create_task`）
-- 註冊 GraphQL types（取 `app.state.graphql_schema` 後組合）
 
 `on_shutdown(app)` 對應的 cleanup hook。
 
@@ -93,8 +92,7 @@ curl -fsS https://ipam.example.com/api/v1/plugins -H "Authorization: Bearer ..."
 
 - 沒有資料庫 migration 託管：plugin 自有資料表需自行管理 alembic（建議放
   自己的 alembic env，與 jt-ipam 主 alembic 分流）。
-- 沒有自動 OpenAPI schema 合併：plugin endpoint 會出現在 `/openapi.json` 內，
-  但 GraphQL union schema 需要手動處理。
+- plugin endpoint 會自動出現在 `/openapi.json` 內。
 - 沒有 plugin uninstall 熱拔除；目前停用 = `pip uninstall && systemctl restart`。
 
 這些限制將在 Phase 4.x 改善。

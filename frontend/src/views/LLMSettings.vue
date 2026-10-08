@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { srvText } from "@/utils/wsError";
 /**
  * LLM / AI 全域設定 (管理員)。
  *
@@ -12,14 +13,14 @@ import {
 } from "naive-ui";
 import {
   getLLMConfig, patchLLMConfig, listOllamaModels, revealMcpKey, rotateMcpKey, checkEmbedding,
-  reindexEmbeddings,
-  type LLMConfig, type LLMConfigPatch, type OllamaModel, type EmbeddingCheck,
+  reindexEmbeddings, checkThinking,
+  type LLMConfig, type LLMConfigPatch, type OllamaModel, type EmbeddingCheck, type ThinkingCheck,
   type ReindexResult,
 } from "@/api/system";
 import { listMcpTools, type McpTool } from "@/api/chat";
 import { listSubnets, setAIAuditScope } from "@/api/subnets";
 import type { Subnet } from "@/types";
-import { SettingsIcon, RefreshIcon, ToolsIcon, KeyIcon, CopyIcon, EyeIcon, EyeOffIcon, AnomalyIcon, PlusIcon, DeleteIcon } from "@/icons";
+import { SettingsIcon, RefreshIcon, ToolsIcon, KeyIcon, CopyIcon, EyeIcon, EyeOffIcon, AnomalyIcon, PlusIcon, DeleteIcon, TestIcon } from "@/icons";
 import { apiErrMsg } from "@/api/client";
 
 const { t } = useI18n();
@@ -64,6 +65,13 @@ const auditModelOptions = computed(() =>
     disabled: isEmbedModel(o.value) && o.value !== llm.value?.ai_audit_model,
   })));
 
+// 判讀模型下拉：同上；清空＝沿用對話模型
+const interpretModelOptions = computed(() =>
+  modelOptions.value.map((o) => ({
+    ...o,
+    disabled: isEmbedModel(o.value) && o.value !== llm.value?.ai_interpret_model,
+  })));
+
 // 巡檢範圍。存的是每個子網路的 ai_audit_enabled 欄位（跟子網路編輯頁同一個），
 // 不是另外存一份清單 —— 存兩份遲早會出現「這裡看是開的、那裡看是關的」。
 const subnets = ref<Subnet[]>([]);
@@ -89,6 +97,19 @@ async function saveScope(ids: string[]) {
     msg.success(t("common.saved"));
   } catch (e) { msg.error(apiErrMsg(e)); await loadSubnets(); }
 }
+
+// 排程的「哪幾天」。時刻（下面的 auditTimes）是另一個維度：兩者相乘才是實際的執行時機。
+const freqOptions = computed(() => (["daily", "weekly", "monthly"] as const).map((f) => ({
+  label: t(`llm_settings.audit_freq_${f}`), value: f,
+})));
+// 1=週一 … 7=週日（ISO），與後端一致
+const weekdayOptions = computed(() => [1, 2, 3, 4, 5, 6, 7].map((d) => ({
+  label: t(`llm_settings.weekday_${d}`), value: d,
+})));
+const auditFreq = computed(() => llm.value?.ai_audit_frequency || "daily");
+const auditWeekdays = computed(() => (llm.value?.ai_audit_weekdays?.length
+  ? [...llm.value.ai_audit_weekdays] : [1]));
+const auditMonthDay = computed(() => llm.value?.ai_audit_month_day || 1);
 
 // 排程時刻。n-time-picker 吃毫秒時間戳，設定存的是 "HH:MM" —— 兩邊在這裡轉換。
 const auditTimes = computed(() => llm.value?.ai_audit_times?.length
@@ -124,7 +145,11 @@ async function loadModels() {
   try {
     const res = await listOllamaModels();
     models.value = res.models;
-    if (res.error) modelsError.value = res.error;
+    // 後端只給代碼與參數（error_detail），句子在這裡組 —— 伺服器產生的文字沒有辦法
+    // 跟著使用者的語言走。舊欄位 error 留著當退路。
+    if (res.error_detail || res.error) {
+      modelsError.value = srvText(res.error_detail, res.error ?? "");
+    }
   } catch (e: any) {
     modelsError.value = e?.response?.data?.detail ?? String(e);
   } finally {
@@ -148,6 +173,25 @@ async function doReindex() {
   try { reindexResult.value = await reindexEmbeddings(); }
   catch (e) { msg.error(apiErrMsg(e)); }
   finally { reindexBusy.value = false; }
+}
+
+// 思考檢查：AI 巡檢與判讀一律送「關閉思考」的參數，伺服器或閘道沒照做時只會變慢、
+// 答案被思考吃掉額度，不會報錯 —— 所以要能當場問一次（不自動跑：每個模型要真的問一句）
+const thinkBusy = ref(false);
+const thinkResults = ref<ThinkingCheck[] | null>(null);
+async function doCheckThinking() {
+  thinkBusy.value = true;
+  try { thinkResults.value = await checkThinking(); }
+  catch (e) { msg.error(apiErrMsg(e)); }
+  finally { thinkBusy.value = false; }
+}
+function thinkLine(r: ThinkingCheck): string {
+  const who = `${t(`llm_settings.think_role_${r.role}`)} ${r.model}`;
+  if (!r.ok) return t("llm_settings.think_failed", { who, err: String(r.error ?? "").slice(0, 160) });
+  if (!r.thinking) return t("llm_settings.think_off", { who, sec: r.seconds });
+  const why = r.reasoning_chars ? t("llm_settings.think_why_chars", { n: r.reasoning_chars })
+    : r.think_tag ? t("llm_settings.think_why_tag") : t("llm_settings.think_why_empty");
+  return t("llm_settings.think_on", { who, sec: r.seconds, why });
 }
 
 async function doCheckEmbedding() {
@@ -323,6 +367,10 @@ onMounted(() => { void load(); void loadTools(); void loadSubnets(); });
           <span v-if="modelsError" style="color: var(--err-color, #e88080); font-size: 11px;">
             {{ t("llm_settings.ollama_unreachable", { err: modelsError.slice(0, 80) }) }}
           </span>
+          <n-button text size="tiny" :loading="thinkBusy" data-testid="think-check" @click="doCheckThinking">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>
+            {{ t("llm_settings.think_check") }}
+          </n-button>
         </n-space>
         <n-select
           :value="llm.chat_model"
@@ -332,6 +380,16 @@ onMounted(() => { void load(); void loadTools(); void loadSubnets(); });
           filterable
           @update:value="(v: string) => patch({ chat_model: v })"
         />
+        <div v-if="thinkResults" data-testid="think-results" style="margin-top: 6px">
+          <p v-for="r in thinkResults" :key="r.role" class="hint"
+             :style="r.ok && !r.thinking ? 'color:#18a058' : 'color:#e88080'">
+            {{ thinkLine(r) }}
+            <template v-if="r.rejected_params.length">
+              {{ t("llm_settings.think_rejected", { params: r.rejected_params.join(", ") }) }}
+            </template>
+          </p>
+          <p v-if="thinkResults.some((r) => r.ok && r.thinking)" class="hint">{{ t("llm_settings.think_on_hint") }}</p>
+        </div>
       </div>
       <div>
         <n-space align="center" style="margin-bottom: 4px">
@@ -349,6 +407,17 @@ onMounted(() => { void load(); void loadTools(); void loadSubnets(); });
           filterable
           @update:value="(v: string) => patch({ embedding_model: v })"
         />
+        <!-- 嵌入與對話模型常常是分開部署的（GitHub issue #33），位址自然不同。
+             留空＝沿用上面那個位址，既有安裝升上來行為不變。 -->
+        <div style="margin-top: 8px">
+          <label>{{ t("llm_settings.embedding_url") }}</label>
+          <n-input
+            :value="llm.embedding_base_url ?? ''"
+            :placeholder="llm.url"
+            @update:value="(v: string) => patch({ embedding_base_url: v })"
+          />
+          <p class="hint">{{ t("llm_settings.embedding_url_hint") }}</p>
+        </div>
         <!-- 選錯嵌入模型時唯一的症狀是「語意搜尋永遠沒有結果」，畫面上沒有任何線索
              指向維度不合 —— 所以要能當場問一次、把實際維度講出來。 -->
         <p v-if="embedResult" class="hint" :style="embedResult.ok ? 'color:#18a058' : 'color:#e88080'">
@@ -400,8 +469,50 @@ onMounted(() => { void load(); void loadTools(); void loadSubnets(); });
         />
         <p class="hint">{{ t("llm_settings.num_ctx_hint") }}</p>
       </div>
+      <div data-testid="chat-thinking">
+        <n-switch :value="llm.chat_thinking"
+                  @update:value="(v: boolean) => patch({ chat_thinking: v })" />
+        <span style="margin-left:10px">{{ t("llm_settings.chat_thinking") }}</span>
+        <p class="hint">{{ t("llm_settings.chat_thinking_hint") }}</p>
+      </div>
     </n-space>
     <p v-else style="opacity: 0.7">{{ t("common.loading") }}</p>
+  </n-card>
+
+  <!-- AI 判讀：三個按需觸發的判讀功能共用一個模型設定（比照巡檢；留空＝沿用對話模型） -->
+  <n-card v-if="llm" style="margin-top:16px" data-testid="interpret-card">
+    <template #header>
+      <n-space align="center" :size="8">
+        <n-icon :size="18" :component="TestIcon" />
+        <span>{{ t("llm_settings.interpret_title") }}</span>
+      </n-space>
+    </template>
+    <p class="hint" style="margin: 0 0 14px">{{ t("llm_settings.interpret_scope") }}</p>
+    <n-space vertical :size="14">
+      <div>
+        <label>{{ t("llm_settings.interpret_model") }}</label>
+        <n-select
+          :value="llm.ai_interpret_model"
+          :options="interpretModelOptions"
+          :loading="modelsLoading"
+          :placeholder="t('llm_settings.audit_model_inherit', { model: llm.chat_model })"
+          clearable
+          filterable
+          style="width: 100%"
+          data-testid="interpret-model"
+          @update:value="(v: string | null) => patch({ ai_interpret_model: v ?? '' })"
+        />
+        <p class="hint">{{ t("llm_settings.interpret_model_hint") }}</p>
+      </div>
+      <div>
+        <label>{{ t("llm_settings.interpret_num_ctx") }}</label>
+        <n-input-number :value="llm.ai_interpret_num_ctx" :min="0" :max="131072" :step="2048"
+                        clearable style="width: 220px"
+                        :placeholder="String(llm.num_ctx ?? 4096)"
+                        @update:value="(v: number | null) => patch({ ai_interpret_num_ctx: v ?? 0 })" />
+        <p class="hint">{{ t("llm_settings.interpret_num_ctx_hint", { n: llm.num_ctx ?? 4096 }) }}</p>
+      </div>
+    </n-space>
   </n-card>
 
   <!-- AI 巡檢排程 -->
@@ -453,6 +564,29 @@ onMounted(() => { void load(); void loadTools(); void loadSubnets(); });
                   :placeholder="t('llm_settings.audit_scope_none')"
                   style="width: 100%" @update:value="saveScope" />
         <p class="hint">{{ t("llm_settings.audit_scope_hint") }}</p>
+      </div>
+      <div>
+        <label>{{ t("llm_settings.audit_freq") }}</label>
+        <n-space align="center" :size="12" :wrap="true">
+          <n-select :value="auditFreq" :options="freqOptions" style="width: 160px"
+                    :disabled="!llm.ai_audit_enabled"
+                    @update:value="(v: string) => patch({ ai_audit_frequency: v })" />
+          <!-- 每週：可複選；一天都不選等於排程永遠不觸發，所以後端不會存空清單 -->
+          <n-select v-if="auditFreq === 'weekly'" :value="auditWeekdays" multiple
+                    :options="weekdayOptions" style="min-width: 280px"
+                    :disabled="!llm.ai_audit_enabled"
+                    :placeholder="t('llm_settings.audit_weekdays_ph')"
+                    @update:value="(v: number[]) => v.length && patch({ ai_audit_weekdays: v })" />
+          <!-- 每月：1–31。設 31 遇到只有 30 天（或 2 月）的月份會落在該月最後一天，
+               不是整個月都不跑 —— 提示文字要講出來，否則使用者以為排程壞了 -->
+          <n-input-number v-if="auditFreq === 'monthly'" :value="auditMonthDay"
+                          :min="1" :max="31" style="width: 130px"
+                          :disabled="!llm.ai_audit_enabled"
+                          @update:value="(v: number | null) => v && patch({ ai_audit_month_day: v })" />
+        </n-space>
+        <p v-if="auditFreq === 'monthly'" class="hint">
+          {{ t("llm_settings.audit_month_day_hint") }}
+        </p>
       </div>
       <div>
         <label>{{ t("llm_settings.audit_times") }}</label>

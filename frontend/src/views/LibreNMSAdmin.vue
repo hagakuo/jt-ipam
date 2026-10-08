@@ -5,7 +5,7 @@ import { useI18n } from "vue-i18n";
 import ScopeOverlapWarning from "@/components/ScopeOverlapWarning.vue";
 import {
   NCard, NDataTable, NSpace, NButton, NTag, NIcon, NTooltip,
-  NModal, NForm, NFormItem, NInput, NInputNumber, NSwitch, NPopconfirm, NSelect,
+  NModal, NForm, NFormItem, NInput, NInputNumber, NSwitch, NPopconfirm, NSelect, NAlert, NCheckbox,
   useMessage, type DataTableColumns,
 } from "naive-ui";
 import {
@@ -24,7 +24,8 @@ import ExportButton from "@/components/ExportButton.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 const { t } = useI18n();
 
-const { visibleKeys: lnVis, setVisible: lnSet, reset: lnReset } = useColumnPrefs(
+const { visibleKeys: lnVis, setVisible: lnSet, reset: lnReset,
+  order: lnOrder, setOrder: lnSetOrder, orderColumns: lnOrderCols } = useColumnPrefs(
   "librenms",
   ["name", "api_url", "enabled", "sync_interval_seconds", "last_sync_at", "last_error", "actions"],
   ["name", "api_url", "enabled", "sync_interval_seconds", "last_sync_at", "last_error", "actions"],
@@ -53,6 +54,7 @@ const form = ref({
   verify_tls: true,
   sync_devices: true, sync_arp: true, sync_fdb: true, sync_vlans: true, sync_links: true,
   use_for_status: true, auto_add_devices: true, auto_create_ips: true,
+  auto_create_from_arp: false, arp_create_require_fdb: true, arp_create_skip_dhcp: true,
   sync_interval_seconds: 300,
   scope_subnet_ids: [] as string[],
 });
@@ -79,6 +81,7 @@ function openCreate() {
     verify_tls: true,
     sync_devices: true, sync_arp: true, sync_fdb: true, sync_vlans: true, sync_links: true,
     use_for_status: true, auto_add_devices: true, auto_create_ips: true,
+    auto_create_from_arp: false, arp_create_require_fdb: true, arp_create_skip_dhcp: true,
     sync_interval_seconds: 300, scope_subnet_ids: [],
   };
   show.value = true;
@@ -99,6 +102,9 @@ function openEdit(r: LibreNMSInstance) {
     use_for_status: r.use_for_status,
     auto_add_devices: r.auto_add_devices,
     auto_create_ips: r.auto_create_ips,
+    auto_create_from_arp: r.auto_create_from_arp ?? false,
+    arp_create_require_fdb: r.arp_create_require_fdb ?? true,
+    arp_create_skip_dhcp: r.arp_create_skip_dhcp ?? true,
     sync_interval_seconds: r.sync_interval_seconds,
     scope_subnet_ids: r.scope_subnet_ids ?? [],
   };
@@ -126,6 +132,9 @@ async function submit() {
         use_for_status: form.value.use_for_status,
         auto_add_devices: form.value.auto_add_devices,
         auto_create_ips: form.value.auto_create_ips,
+        auto_create_from_arp: form.value.auto_create_from_arp,
+        arp_create_require_fdb: form.value.arp_create_require_fdb,
+        arp_create_skip_dhcp: form.value.arp_create_skip_dhcp,
         sync_interval_seconds: form.value.sync_interval_seconds,
         scope_subnet_ids: form.value.scope_subnet_ids,
       };
@@ -202,7 +211,7 @@ const allCols = computed<DataTableColumns<LibreNMSInstance>>(() => autoSort([
 ]));
 
 const cols = computed<DataTableColumns<LibreNMSInstance>>(() =>
-  allCols.value.filter((c: any) => lnVis.value.includes(c.key)),
+  lnOrderCols(allCols.value.filter((c: any) => lnVis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); void loadSubnetOptions(); });
@@ -228,7 +237,8 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
         {{ t("librenms_admin.create") }}
       </n-button>
       <ColumnPicker :all="lnPicker" :visible="lnVis"
-                    @update:visible="lnSet" @reset="lnReset" />
+                    @update:visible="lnSet" @reset="lnReset"
+                    :order="lnOrder" @update:order="lnSetOrder" />
       <ExportButton :columns="cols" :rows="rows" filename="librenms" :title="t('librenms_admin.title')" />
     </n-space>
 
@@ -287,6 +297,28 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
           <div class="row"><span>{{ t('librenms_admin.auto_create_ips') }}</span><n-switch size="small" v-model:value="form.auto_create_ips" /></div>
         </div>
         <p class="hint">{{ t('librenms_admin.auto_create_ips_hint') }}</p>
+        <!-- 依 ARP 表自動建立 IP（#48）：預設關；打開才顯示代價與把關選項 -->
+        <div class="arp-create" data-testid="lnms-arp-create">
+          <div class="row">
+            <span>{{ t('librenms_admin.arp_create') }}</span>
+            <n-switch size="small" v-model:value="form.auto_create_from_arp" data-testid="lnms-arp-create-switch" />
+          </div>
+          <p class="row-hint">{{ t('librenms_admin.arp_create_hint') }}</p>
+          <template v-if="form.auto_create_from_arp">
+            <n-alert type="warning" :show-icon="false" :bordered="false" class="arp-warn">
+              <span class="arp-warn-text">{{ t('librenms_admin.arp_create_warn') }}</span>
+            </n-alert>
+            <n-checkbox v-model:checked="form.arp_create_require_fdb" data-testid="lnms-arp-require-fdb">
+              {{ t('librenms_admin.arp_create_require_fdb') }}
+            </n-checkbox>
+            <p class="row-hint indent">{{ t(form.arp_create_require_fdb
+              ? 'librenms_admin.arp_create_require_fdb_hint' : 'librenms_admin.arp_create_no_fdb_warn') }}</p>
+            <n-checkbox v-model:checked="form.arp_create_skip_dhcp">
+              {{ t('librenms_admin.arp_create_skip_dhcp') }}
+            </n-checkbox>
+            <p class="row-hint indent">{{ t('librenms_admin.arp_create_skip_dhcp_hint') }}</p>
+          </template>
+        </div>
         <n-form-item :label="t('librenms_admin.sync_interval')">
           <n-input-number v-model:value="form.sync_interval_seconds" :min="60" :max="86400" />
         </n-form-item>
@@ -343,5 +375,17 @@ onMounted(() => { void refresh(); void loadSubnetOptions(); });
   background: var(--n-color-embedded, rgba(128, 128, 128, .06));
   border-radius: 4px;
 }
+.arp-create {
+  border: 1px solid var(--n-border-color, rgba(128,128,128,0.25));
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 18px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.arp-create .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.arp-create .row span { font-size: 13px; }
+.arp-create .row-hint { font-size: 12px; opacity: .7; margin: 0; line-height: 1.5; }
+.arp-create .row-hint.indent { margin-left: 26px; }
+.arp-create .arp-warn-text { font-size: 12.5px; line-height: 1.6; }
 .hint { font-size: 12px; color: var(--n-text-color-disabled, #888); margin: -8px 0 14px; line-height: 1.5; }
 </style>

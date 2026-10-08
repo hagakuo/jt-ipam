@@ -22,6 +22,8 @@ from dataclasses import dataclass
 
 import asyncssh
 
+from app.core.ui_error import UiError
+
 # 相容（legacy）演算法：連老舊網路裝置用（如 D-Link DGS-1510、老 switch / 防火牆，
 # 這類機種常只提供 CBC 加密、group1 / group14-sha1 金鑰交換、ssh-rsa（SHA-1）host key）。
 # 以 "+" 首碼「附加」到 asyncssh 預設集之後 → 連現代裝置時仍優先協商強演算法（chacha20 /
@@ -39,7 +41,7 @@ LEGACY_SSH_ALGS: dict[str, str] = {
 }
 
 
-class SSHTunnelError(RuntimeError):
+class SSHTunnelError(UiError, RuntimeError):
     """SSH tunnel 任一階段失敗。"""
 
 
@@ -74,11 +76,13 @@ def _parse_pubkey_line(line: str) -> bytes:
     """從 'ssh-ed25519 AAAAC3...' 取出 binary key。"""
     parts = line.strip().split()
     if len(parts) < 2:
-        raise SSHTunnelError("known_host 格式錯誤；應為 'ssh-XXX BASE64KEY'")
+        raise SSHTunnelError("known_host 格式錯誤；應為 'ssh-XXX BASE64KEY'",
+                             code="ssh_known_host_format")
     try:
         return base64.b64decode(parts[1])
     except Exception as exc:
-        raise SSHTunnelError(f"無法解碼 known_host base64: {exc}") from exc
+        raise SSHTunnelError(f"無法解碼 known_host base64: {exc}",
+                             code="ssh_known_host_b64", reason=str(exc)[:200]) from exc
 
 
 def server_key_fingerprint_sha256(key_blob: bytes) -> str:
@@ -88,7 +92,9 @@ def server_key_fingerprint_sha256(key_blob: bytes) -> str:
     return f"SHA256:{b64}"
 
 
-async def fetch_host_key(host: str, port: int = 22, timeout: float = 8.0) -> dict[str, str]:
+async def fetch_host_key(
+    host: str, port: int = 22, timeout: float = TunnelConfig.timeout,
+) -> dict[str, str]:
     """連到 host:port 取 server 的 public key，不做認證。
     給 TOFU 流程用 — 把 fingerprint 顯示給 user 確認。
 
@@ -110,24 +116,38 @@ async def fetch_host_key(host: str, port: int = 22, timeout: float = 8.0) -> dic
                 options=asyncssh.SSHClientConnectionOptions(**LEGACY_SSH_ALGS),
             )
     except TimeoutError as exc:
-        raise SSHTunnelError(f"SSH connect timeout to {host}:{port}") from exc
+        # 這一步是**整條路徑上第一個**連出去的動作，卻曾經是逾時最短的一個（8 秒，
+        # 比真正連線的 15 秒還短）—— 於是「連得上、只是第一次慢」會被報成連不上。
+        # 實機：同一台 OpenSSH 8.9 第一次要 8 秒以上、第二次 1.08 秒、第三次 0.05 秒。
+        # 第一次慢的常見原因是伺服器對來源做反解 DNS（`UseDNS`），或老裝置的
+        # 金鑰交換本來就慢；那都不是「連不上」。
+        raise SSHTunnelError(
+            f"{timeout:.0f} 秒內沒有完成金鑰交換：{host}:{port}"
+            "（對方可能在做反解 DNS，或裝置本身較慢；請再試一次）",
+            code="ssh_kex_timeout", seconds=f"{timeout:.0f}", host=host, port=port,
+        ) from exc
     except (asyncssh.Error, OSError) as exc:
-        raise SSHTunnelError(f"無法取得 server key from {host}:{port}: {exc}") from exc
+        raise SSHTunnelError(f"無法取得 server key from {host}:{port}: {exc}",
+                             code="ssh_host_key_fetch", host=host, port=port,
+                             reason=str(exc)[:200]) from exc
 
     if key is None:
-        raise SSHTunnelError(f"server {host}:{port} 沒有回傳 host key")
+        raise SSHTunnelError(f"server {host}:{port} 沒有回傳 host key",
+                             code="ssh_no_host_key", host=host, port=port)
 
     try:
         openssh = key.export_public_key("openssh").decode("ascii").strip()
         parts = openssh.split()
         if len(parts) < 2:
-            raise SSHTunnelError(f"無法解析 server key 輸出：{openssh[:80]}")
+            raise SSHTunnelError(f"無法解析 server key 輸出：{openssh[:80]}",
+                                 code="ssh_host_key_parse", value=openssh[:80])
         key_type, key_b64 = parts[0], parts[1]
         raw = base64.b64decode(key_b64)
     except SSHTunnelError:
         raise
     except Exception as exc:
-        raise SSHTunnelError(f"無法解析 server key: {exc}") from exc
+        raise SSHTunnelError(f"無法解析 server key: {exc}",
+                             code="ssh_host_key_bad", reason=str(exc)[:200]) from exc
 
     return {
         "key_type": key_type,
@@ -147,13 +167,14 @@ async def open_tunnel(cfg: TunnelConfig) -> AsyncIterator[int]:
             ...
     """
     if not cfg.private_key_pem.strip():
-        raise SSHTunnelError("private_key_pem 必填")
+        raise SSHTunnelError("private_key_pem 必填", code="ssh_key_required")
 
     # 把 PEM 字串轉成 asyncssh 認得的 key 物件
     try:
         client_key = asyncssh.import_private_key(cfg.private_key_pem)
     except Exception as exc:
-        raise SSHTunnelError(f"private key 無法解析: {exc}") from exc
+        raise SSHTunnelError(f"private key 無法解析: {exc}",
+                             code="ssh_key_parse", reason=str(exc)[:200]) from exc
 
     # 設定 known_hosts callback
     if cfg.known_host:
@@ -216,9 +237,12 @@ async def open_tunnel(cfg: TunnelConfig) -> AsyncIterator[int]:
             f"SSH 金鑰認證被拒：{exc}。請確認 (1) 這把私鑰對應的公鑰已加入對端 "
             f"{cfg.username}@{cfg.host} 的 ~/.ssh/authorized_keys；(2) sshd 允許該帳號金鑰"
             f"登入（root 需 PermitRootLogin 至少 prohibit-password）；(3) 家目錄與 "
-            f"~/.ssh(700)、authorized_keys(600) 權限正確；(4) 貼上的私鑰與該公鑰確實成對。"
+            f"~/.ssh(700)、authorized_keys(600) 權限正確；(4) 貼上的私鑰與該公鑰確實成對。",
+            code="ssh_key_denied", reason=str(exc)[:200],
+            target=f"{cfg.username}@{cfg.host}",
         ) from exc
     except TimeoutError as exc:
-        raise SSHTunnelError(f"SSH timeout（{cfg.timeout}s）— host 不在 / 防火牆擋了？") from exc
+        raise SSHTunnelError(f"SSH timeout（{cfg.timeout}s）— host 不在 / 防火牆擋了？",
+                             code="ssh_connect_timeout", seconds=cfg.timeout) from exc
     except asyncssh.Error as exc:
         raise SSHTunnelError(f"asyncssh error: {exc}") from exc

@@ -29,8 +29,21 @@ async function ensureLoaded(): Promise<void> {
   await loadingPromise;
 }
 
-async function persistAll(): Promise<void> {
-  try { await updatePreferences({ pinned: allPinned.value }); } catch { /* ignore */ }
+// 寫回要排隊、而且一律送最新狀態：以前每次異動各送一個 PUT，同時在路上時舊的那個晚到就把新的蓋掉
+// （儀表板機櫃卡片存檔會連續改兩個 namespace，設定時有時無）。送出途中又有異動 → 送完再補送一次最新的。
+let inflight: Promise<void> | null = null;
+let dirty = false;
+
+function persistAll(): Promise<void> {
+  dirty = true;
+  if (inflight) return inflight;
+  inflight = (async () => {
+    while (dirty) {
+      dirty = false;
+      try { await updatePreferences({ pinned: { ...allPinned.value } }); } catch { /* ignore */ }
+    }
+  })().finally(() => { inflight = null; });
+  return inflight;
 }
 
 function make(namespace: string) {
@@ -62,11 +75,17 @@ function make(namespace: string) {
     allPinned.value[namespace] = [...ids.value];
     void persistAll();
   }
+  /** 整個換掉（儀表板機櫃卡片的設定：挑了哪幾個就是哪幾個） */
+  function setAll(next: string[]): void {
+    ids.value = [...new Set(next.map(String))];
+    allPinned.value[namespace] = [...ids.value];
+    void persistAll();
+  }
   /** 把釘選的排到最前面（穩定排序，其餘維持原順序） */
   function sortPinnedFirst<T extends { id: string }>(rows: T[]): T[] {
     return [...rows].sort((a, b) => Number(isPinned(b.id)) - Number(isPinned(a.id)));
   }
-  return { ids, isPinned, toggle, sortPinnedFirst };
+  return { ids, isPinned, toggle, setAll, sortPinnedFirst };
 }
 
 export function usePinned(namespace: string) {

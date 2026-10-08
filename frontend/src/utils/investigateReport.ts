@@ -26,6 +26,11 @@ function download(text: string, filename: string, mime: string, bom: boolean): v
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
+/** 給「一段文字直接存檔」的輕量出口（如 AI 解讀報告）——沿用同一套 BOM 規則。 */
+export function downloadTextFile(text: string, filename: string, fmt: "md" | "txt"): void {
+  download(text, filename, fmt === "md" ? "text/markdown" : "text/plain", fmt === "txt");
+}
+
 /** 報告的一個區塊：標題 + 若干行。行留空的區塊不輸出，免得報告一半是空標題。 */
 export interface ReportSection {
   title: string;
@@ -42,6 +47,22 @@ export interface ReportInput {
   narrativeNote?: string;   // 「這是推測不是查核過的結論」那句
   /** 已渲染好的判讀 HTML（僅 .html 用）。純文字格式仍用 narrative 的原文。 */
   narrativeHtml?: string;
+  /** 報告本身的固定文字。由呼叫端翻好再傳進來 —— 這支是純函式，不碰 i18n。 */
+  labels: ReportLabels;
+}
+
+/** 報告骨架上的固定字樣（欄位標題、段落標題）。內容的文字由呼叫端組好。 */
+export interface ReportLabels {
+  /** 標題，已代入 IP，例：「192.0.2.10 調查報告」 */
+  title: string;
+  generatedAt: string;
+  conflicts: string;
+  narrative: string;
+  /** CSV 表頭的兩欄 */
+  csvSection: string;
+  csvContent: string;
+  /** `<html lang>` 用的 BCP 47 標籤 */
+  htmlLang: string;
 }
 
 function esc(s: string): string {
@@ -59,22 +80,24 @@ function csvCell(s: string): string {
 export function buildReport(input: ReportInput, fmt: ReportFormat): string {
   const secs = input.sections.filter((s) => s.lines.length > 0);
   if (fmt === "csv") {
-    const rows: string[][] = [["區塊", "內容"]];
+    const L = input.labels;
+    const rows: string[][] = [[L.csvSection, L.csvContent]];
     for (const [k, v] of input.summary) rows.push([k, v]);
-    for (const c of input.conflicts) rows.push(["矛盾", c]);
+    for (const c of input.conflicts) rows.push([L.conflicts, c]);
     for (const s of secs) for (const l of s.lines) rows.push([s.title, l]);
-    if (input.narrative) rows.push(["AI 判讀", input.narrative]);
+    if (input.narrative) rows.push([L.narrative, input.narrative]);
     // CRLF：Excel 對 LF-only 的多行欄位處理不一致
     return rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
   }
   if (fmt === "html") {
     const part = (s: ReportSection) =>
       `<h2>${esc(s.title)}</h2>\n<ul>\n${s.lines.map((l) => `  <li>${esc(l)}</li>`).join("\n")}\n</ul>`;
+    const L = input.labels;
     return `<!doctype html>
-<html lang="zh-Hant">
+<html lang="${esc(L.htmlLang)}">
 <head>
 <meta charset="utf-8">
-<title>${esc(input.ip)} 調查報告</title>
+<title>${esc(L.title)}</title>
 <style>
  body { font-family: system-ui, "Noto Sans TC", sans-serif; line-height: 1.7;
         max-width: 900px; margin: 32px auto; padding: 0 16px; color: #222; }
@@ -88,25 +111,26 @@ export function buildReport(input: ReportInput, fmt: ReportFormat): string {
 </style>
 </head>
 <body>
-<h1>${esc(input.ip)} 調查報告</h1>
-<p class="note">產生時間：${esc(input.generatedAt)}</p>
+<h1>${esc(L.title)}</h1>
+<p class="note">${esc(L.generatedAt)}：${esc(input.generatedAt)}</p>
 <table>
 ${input.summary.map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${esc(v)}</td></tr>`).join("\n")}
 </table>
-${input.conflicts.length ? `<div class="warn"><b>矛盾</b><ul>${input.conflicts.map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
+${input.conflicts.length ? `<div class="warn"><b>${esc(L.conflicts)}</b><ul>${input.conflicts.map((c) => `<li>${esc(c)}</li>`).join("")}</ul></div>` : ""}
 ${secs.map(part).join("\n")}
-${input.narrative ? `<h2>AI 判讀</h2>\n<p class="note">${esc(input.narrativeNote ?? "")}</p>\n<div class="md">${input.narrativeHtml ?? `<pre style="white-space:pre-wrap">${esc(input.narrative)}</pre>`}</div>` : ""}
+${input.narrative ? `<h2>${esc(L.narrative)}</h2>\n<p class="note">${esc(input.narrativeNote ?? "")}</p>\n<div class="md">${input.narrativeHtml ?? `<pre style="white-space:pre-wrap">${esc(input.narrative)}</pre>`}</div>` : ""}
 </body>
 </html>`;
   }
   // md 與 txt 共用結構，差別只在標記符號
   const md = fmt === "md";
-  const h1 = md ? `# ${input.ip} 調查報告` : `${input.ip} 調查報告`;
+  const L = input.labels;
+  const h1 = md ? `# ${L.title}` : L.title;
   const bullet = md ? "- " : "  · ";
-  const out: string[] = [h1, "", `產生時間：${input.generatedAt}`, ""];
+  const out: string[] = [h1, "", `${L.generatedAt}：${input.generatedAt}`, ""];
   for (const [k, v] of input.summary) out.push(`${bullet}${k}：${v}`);
   if (input.conflicts.length) {
-    out.push("", md ? "## 矛盾" : "【矛盾】");
+    out.push("", md ? `## ${L.conflicts}` : `【${L.conflicts}】`);
     for (const c of input.conflicts) out.push(`${bullet}${c}`);
   }
   for (const s of secs) {
@@ -114,7 +138,7 @@ ${input.narrative ? `<h2>AI 判讀</h2>\n<p class="note">${esc(input.narrativeNo
     for (const l of s.lines) out.push(`${bullet}${l}`);
   }
   if (input.narrative) {
-    out.push("", md ? "## AI 判讀" : "【AI 判讀】");
+    out.push("", md ? `## ${L.narrative}` : `【${L.narrative}】`);
     if (input.narrativeNote) out.push(input.narrativeNote, "");
     out.push(input.narrative);
   }

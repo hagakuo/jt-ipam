@@ -8,6 +8,7 @@ import uuid
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.sqlin import in_values
 from app.models.address import IPAddress
 from app.models.subnet import Subnet
 from app.models.vrf import VRF
@@ -67,7 +68,7 @@ async def find_overlapping(
     if not rows:
         return []
     ids = [row[0] for row in rows]
-    result = await session.execute(select(Subnet).where(Subnet.id.in_(ids)))
+    result = await session.execute(select(Subnet).where(in_values(Subnet.id, ids)))
     return list(result.scalars().all())
 
 
@@ -291,6 +292,14 @@ async def find_free_addresses(
         for u in used_rows:
             try:
                 used.add(int(ipaddress.IPv4Address(u)))
+            except (ValueError, ipaddress.AddressValueError):
+                pass
+        # 冷卻中的位址也算「不可用」：它剛被釋放，外面的 DNS 快取／防火牆規則還指著它。
+        # 這裡不是額外功能，是配發正確性的一部分 —— 少了它，冷卻期等於沒設。
+        from app.services.ip_lifecycle import active_cooldowns
+        for cip in (await active_cooldowns(session, subnet.id)):
+            try:
+                used.add(int(ipaddress.IPv4Address(cip)))
             except (ValueError, ipaddress.AddressValueError):
                 pass
 

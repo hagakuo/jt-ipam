@@ -7,7 +7,6 @@ import {
   NDataTable,
   NSpace,
   NIcon,
-  NInput,
   NSelect,
   NButton,
   NTag,
@@ -15,7 +14,7 @@ import {
   useMessage,
   type DataTableColumns,
 } from "naive-ui";
-import { listAudit, verifyAuditChain, type AuditLog } from "@/api/admin";
+import { listAudit, listAuditActions, verifyAuditChain, type AuditLog } from "@/api/admin";
 import { AuditIcon, RefreshIcon, AdminIcon as VerifyIcon } from "@/icons";
 import { autoSort } from "@/composables/useTableSort";
 import ColumnPicker from "@/components/ColumnPicker.vue";
@@ -54,12 +53,16 @@ function renderObjectLink(objectType: string | null, objectId: string | null, la
     case "ip_request":   return go("requests");
     // 整合實例 → 點進對應的設定頁（標籤已由後端解析成實例名稱）
     case "fortigate_firewall":  return go("fortigate");
+    case "paloalto_firewall":   return go("paloalto");
     case "pfsense_firewall":    return go("pfsense");
     case "opnsense_firewall":   return go("firewall_admin");
     case "librenms_instance":   return go("librenms");
     case "wazuh_instance":      return go("wazuh");
     case "adguard_instance":    return go("adguard");
     case "windows_dhcp_server": return go("windows_dhcp");
+    case "kea_dhcp_server":     return go("kea_dhcp");
+    case "isc_dhcp_server":     return go("isc_dhcp");
+    case "rustdesk_server":     return go("rustdesk");
     case "proxmox_instance":
     case "virt_cluster":        return go("virt_admin");
     case "dns_server":          return go("dns");
@@ -70,7 +73,8 @@ function renderObjectLink(objectType: string | null, objectId: string | null, la
   }
 }
 
-const { visibleKeys: auditVis, setVisible: auditSet, reset: auditReset } = useColumnPrefs(
+const { visibleKeys: auditVis, setVisible: auditSet, reset: auditReset,
+  order: auditOrder, setOrder: auditSetOrder, orderColumns: auditOrderCols } = useColumnPrefs(
   "audit",
   ["id", "ts", "actor", "actor_ip", "object_type", "object_link", "action", "diff", "this_hash_hex"],
   // 預設不顯示 ID 與雜湊（要稽核鏈驗證時再自行於「欄位」開）
@@ -104,7 +108,16 @@ const objTypeOptions = [
   "wazuh_instance", "scan_agent", "webhook",
   "phpipam_migration", "ip_request", "custom_field",
 ].map((v) => ({ label: v, value: v }));
-const filterAction = ref("");
+// 動作篩選：可複選、可從下拉挑、也可以直接打字（tag 模式）——
+// 稽核動作有數十種且會隨功能增加，純下拉選不到新的、純輸入又要背名字。
+const filterActions = ref<string[]>([]);
+const actionOptions = ref<{ label: string; value: string }[]>([]);
+async function loadActionOptions() {
+  try {
+    const rows = await listAuditActions();
+    actionOptions.value = rows.map((r) => ({ label: `${r.action}（${r.count}）`, value: r.action }));
+  } catch { actionOptions.value = []; }
+}
 const limit = ref(50);
 const offset = ref(0);
 
@@ -156,7 +169,7 @@ const allColumns = computed<DataTableColumns<AuditLog>>(() => autoSort([
     render: (r) => renderObjectLink(r.object_type, r.object_id, r.object_label),
   },
   {
-    title: t("audit.action"), key: "action", width: 120,
+    title: t("audit.action"), key: "action", width: 230,
     render: (r) => h_tag(r.action, action_color(r.action)),
   },
   {
@@ -170,7 +183,7 @@ const allColumns = computed<DataTableColumns<AuditLog>>(() => autoSort([
 ]));
 
 const columns = computed<DataTableColumns<AuditLog>>(() =>
-  allColumns.value.filter((c: any) => auditVis.value.includes(c.key)),
+  auditOrderCols(allColumns.value.filter((c: any) => auditVis.value.includes(c.key))),
 );
 
 // 匯出全部：用相同篩選分頁抓完整資料集
@@ -181,7 +194,7 @@ async function fetchAllForExport(): Promise<AuditLog[]> {
   for (;;) {
     const res = await listAudit({
       object_type: filterObjType.value || undefined,
-      action: filterAction.value || undefined,
+      action: filterActions.value.length ? filterActions.value : undefined,
       limit: big, offset: off,
     });
     all.push(...res.items);
@@ -196,7 +209,7 @@ async function refresh() {
   try {
     const res = await listAudit({
       object_type: filterObjType.value || undefined,
-      action: filterAction.value || undefined,
+      action: filterActions.value.length ? filterActions.value : undefined,
       limit: limit.value, offset: offset.value,
     });
     rows.value = res.items;
@@ -234,8 +247,10 @@ function action_color(action: string): "default" | "success" | "warning" | "erro
   return "default";
 }
 
+// 標籤不會自己縮：比欄寬長的動作名（rustdesk.web_session_close…）會整段蓋到右邊的欄位。
+// 限制在欄寬內、超出的用 … 收起來，滑過去看完整名稱。
 function h_tag(text: string, type: "default" | "success" | "warning" | "error" | "info" = "default") {
-  return h(NTag, { type, size: "small", bordered: false }, () => text);
+  return h(NTag, { type, size: "small", bordered: false, class: "audit-tag", title: text }, () => text);
 }
 
 // 差異欄：整理成好讀文字（field: 舊 → 新；或 field: 值），不直接吐 JSON。
@@ -252,7 +267,8 @@ function diffSummary(diff: Record<string, unknown>): string {
   return Object.entries(obj).map(([k, v]) => `${k}: ${fmtVal(v)}`).join("；");
 }
 
-onMounted(() => { void refresh(); });
+onMounted(() => {
+  void loadActionOptions(); void refresh(); });
 </script>
 
 <template>
@@ -268,8 +284,11 @@ onMounted(() => { void refresh(); });
                 :placeholder="t('audit.filter_object_type')"
                 @update:value="refresh"
                 style="width: 240px" />
-      <n-input v-model:value="filterAction" :placeholder="t('audit.filter_action')"
-               style="width: 220px" clearable />
+      <n-select v-model:value="filterActions" :options="actionOptions"
+                multiple filterable tag clearable
+                :placeholder="t('audit.filter_action')"
+                max-tag-count="responsive"
+                style="width: 320px" @update:value="refresh" />
       <n-button @click="refresh" :loading="loading">
         <template #icon><n-icon><RefreshIcon /></n-icon></template>
         {{ t("common.refresh") }}
@@ -279,7 +298,8 @@ onMounted(() => { void refresh(); });
         {{ t("audit.verify_chain") }}
       </n-button>
       <ColumnPicker :all="auditPickerItems" :visible="auditVis"
-                    @update:visible="auditSet" @reset="auditReset" />
+                    @update:visible="auditSet" @reset="auditReset"
+                    :order="auditOrder" @update:order="auditSetOrder" />
       <ExportButton :columns="columns" :rows="rows" :fetch-all="fetchAllForExport"
                     filename="audit" :title="t('audit.title')" />
       <span style="opacity: 0.6">{{ t("common.total_n", { n: total }) }}</span>
@@ -337,6 +357,13 @@ onMounted(() => { void refresh(); });
     </n-modal>
   </n-card>
 </template>
+
+<!-- 表格儲存格是 NDataTable 自己渲染的，scoped 樣式套不到 render 函式產生的標籤 -->
+<style>
+.audit-tag { max-width: 100%; }
+/* 只裁水平方向：overflow:hidden 會連底線（_）往下突出的那一截一起切掉，看起來像空白 */
+.audit-tag .n-tag__content { min-width: 0; overflow-x: clip; overflow-y: visible; text-overflow: ellipsis; }
+</style>
 
 <style scoped>
 .audit-meta { width: 100%; border-collapse: collapse; font-size: 13px; }

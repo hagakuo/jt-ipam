@@ -1,9 +1,13 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import crypto from "node:crypto";
 
 // issue: 啟用 TOTP 後「安全」頁沒有顯示已啟用。此測試走完整瀏覽器流程驗證狀態顯示。
+// 用**自己臨時建的帳號**跑，不動共用的 admin：以前直接替 admin 開 TOTP，平行跑的其他 spec
+// 剛好在那幾秒登入就卡在驗證碼畫面（0.6.51 發版的 e2e 撞到過一次）。
 const ADMIN_USER = process.env.E2E_ADMIN_USER || "admin";
 const ADMIN_PASS = process.env.E2E_ADMIN_PASS || "";
+const TOTP_USER = `e2e-totp-${Date.now().toString(36)}`;
+const TOTP_PASS = `Totp-${crypto.randomBytes(9).toString("base64url")}`;
 
 test.skip(!ADMIN_PASS, "需要 E2E_ADMIN_PASS env 才能跑");
 
@@ -31,10 +35,18 @@ function totp(secret: string, atMs = Date.now()): string {
   return (code % 1_000_000).toString().padStart(6, "0");
 }
 
+async function adminToken(request: APIRequestContext): Promise<string> {
+  const r = await request.post("/api/v1/auth/login", {
+    data: { username: ADMIN_USER, password: ADMIN_PASS, realm: "local" },
+  });
+  expect(r.ok(), "admin API 登入要成功").toBeTruthy();
+  return (await r.json()).access_token;
+}
+
 async function login(page: Page) {
   await page.goto("/login");
-  await page.getByPlaceholder(/帳號|Username/).fill(ADMIN_USER);
-  await page.getByPlaceholder(/密碼|Password/).fill(ADMIN_PASS);
+  await page.getByPlaceholder(/帳號|Username/).fill(TOTP_USER);
+  await page.getByPlaceholder(/密碼|Password/).fill(TOTP_PASS);
   await page.getByRole("button", { name: "登入", exact: true }).click();
   await expect(page).not.toHaveURL(/\/login/, { timeout: 15_000 });
 }
@@ -46,6 +58,20 @@ async function openSecurityTab(page: Page) {
 }
 
 test.describe("TOTP 狀態顯示（issue 回報）", () => {
+  let userId: string | null = null;
+  test.beforeAll(async ({ request }) => {
+    const auth = { Authorization: `Bearer ${await adminToken(request)}` };
+    const r = await request.post("/api/v1/users", { headers: auth, data: {
+      username: TOTP_USER, email: `${TOTP_USER}@example.com`, password: TOTP_PASS } });
+    expect(r.status(), await r.text()).toBe(201);
+    userId = (await r.json()).id;
+  });
+  test.afterAll(async ({ request }) => {
+    if (!userId) return;
+    const auth = { Authorization: `Bearer ${await adminToken(request)}` };
+    await request.delete(`/api/v1/users/${userId}`, { headers: auth });
+  });
+
   test("啟用→顯示已啟用→重載仍在→停用→回未啟用", async ({ page }) => {
     await login(page);
     await openSecurityTab(page);
@@ -97,7 +123,7 @@ test.describe("TOTP 狀態顯示（issue 回報）", () => {
     await expect(page.getByText("已啟用", { exact: true })).toBeVisible();
 
     // 正確密碼 → 才真的停用
-    await dlg.locator('input[type="password"]').fill(ADMIN_PASS);
+    await dlg.locator('input[type="password"]').fill(TOTP_PASS);
     await dlg.getByRole("button", { name: "停用 TOTP" }).click();
     await expect(page.getByText("未啟用", { exact: true })).toBeVisible({ timeout: 10_000 });
     await expect(page.getByRole("button", { name: "啟用 TOTP" })).toBeVisible();

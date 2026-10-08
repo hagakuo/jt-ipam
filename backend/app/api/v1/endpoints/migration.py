@@ -17,7 +17,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,7 @@ from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.security import decrypt_secret, encrypt_secret
+from app.core.ui_error import detail_of, ui_detail
 from app.models.migration_mapping import PhpIPAMMigrationMapping
 from app.models.system_setting import SystemSetting
 from app.schemas.base import StrictModel
@@ -77,15 +78,25 @@ class SyncRequest(StrictModel):
     on_conflict: Literal["skip", "overwrite"] = "skip"
     dry_run: bool = False
 
-    @model_validator(mode="after")
-    def _check(self) -> SyncRequest:
-        if self.ssh_host:
-            if not self.ssh_username:
-                raise ValueError("ssh_host 給了就要給 ssh_username")
-            # ssh_private_key 可留空 → 後端會改用已儲存的設定金鑰
-        elif self.mysql_via == "socket":
-            raise ValueError("mysql_via='socket' 必須搭配 SSH tunnel（要從遠端讀 socket）")
-        return self
+    # 設定上的矛盾不在這裡擋 —— pydantic 的驗證錯誤會變成一個 422 的陣列，
+    # 前端顯示不出裡面那句話（實際畫面只會出現「伺服器發生錯誤」），而且那句話
+    # 也翻不成使用者的語言。改由 `reject_if_inconsistent()` 在端點入口擋，見下方。
+
+
+def reject_if_inconsistent(payload: SyncRequest) -> None:
+    """設定上互相矛盾就擋下來（400，帶得動翻譯的代碼）。
+
+    只擋真正矛盾的組合，不擋「可以推出來」的空欄位：`ssh_private_key` 留空是正常的
+    （後端會改用已儲存的設定金鑰）。
+    """
+    if payload.ssh_host:
+        if not payload.ssh_username:
+            raise HTTPException(400, detail=ui_detail(
+                "migration_ssh_user_required", "填了 SSH 主機就要填 SSH 帳號"))
+    elif payload.mysql_via == "socket":
+        raise HTTPException(400, detail=ui_detail(
+            "migration_socket_needs_ssh",
+            "MySQL 走 socket 必須搭配 SSH 通道（socket 只存在於遠端主機上）"))
 
 
 class FingerprintRequest(StrictModel):
@@ -262,7 +273,7 @@ async def ssh_fingerprint(
     try:
         info = await fetch_host_key(payload.ssh_host, payload.ssh_port)
     except SSHTunnelError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=detail_of(exc, "ssh_tunnel_error")) from exc
     return FingerprintResponse(**info)
 
 
@@ -357,6 +368,7 @@ async def sync(
     - dry_run=True  → 同步等結果（讓 UI 立刻看到預覽）
     - dry_run=False → 走背景 task（不阻塞），回 task_id
     """
+    reject_if_inconsistent(payload)
     from app.services.background_tasks import spawn_task
 
     actor_user_id_str = str(user.id)
@@ -384,7 +396,10 @@ async def sync(
     if payload.ssh_host and not payload.ssh_known_host:
         raise HTTPException(
             status_code=422,
-            detail="ssh_known_host is required (call /migration/phpipam/ssh-fingerprint first to obtain it)",
+            detail=ui_detail(
+                "migration_known_host_required",
+                "ssh_known_host is required "
+                "(call /migration/phpipam/ssh-fingerprint first to obtain it)"),
         )
 
     # dry-run：同步等結果
@@ -399,10 +414,13 @@ async def sync(
             raise HTTPException(status_code=409, detail={
                 "error": "host_key_mismatch",
                 "expected": exc.expected, "actual": exc.actual,
-                "hint": "重新呼叫 /ssh-fingerprint 確認新 fingerprint 並再次提交",
+                # 形狀維持不變（前端靠 error 欄位跳出指紋比對畫面）；hint 改成代碼，
+                # 中文句子留在 hint_message 當退路。
+                "hint": "migration_refetch_fingerprint",
+                "hint_message": "重新呼叫 /ssh-fingerprint 確認新指紋並再次提交",
             }) from exc
         except SSHTunnelError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(status_code=502, detail=detail_of(exc, "ssh_tunnel_error")) from exc
 
     # 非 dry-run：走背景 task；payload 含 SecretStr 不能直接傳 closure 過 await 邊界？
     # 實際上 closure 會抓 outer scope 變數，asyncio.create_task 在同 process 內，

@@ -11,7 +11,7 @@
 #   BACKEND_BIND_PORT        bind port
 #   BACKEND_TLS_CERT_FILE    PEM certificate for direct mode
 #   BACKEND_TLS_KEY_FILE     PEM private key for direct mode
-#   UVICORN_WORKERS          number of workers (default 4)
+#   UVICORN_WORKERS          number of workers (default: 2 on 2-core or <=4.5 GB machines, else 4)
 #   UVICORN_EXTRA_OPTS       extra flags (e.g. --reload)
 #
 # OWASP mapping:
@@ -29,7 +29,22 @@ fi
 mode="${BACKEND_TLS_MODE:-nginx}"
 host="${BACKEND_BIND_HOST:-127.0.0.1}"
 port="${BACKEND_BIND_PORT:-8000}"
-workers="${UVICORN_WORKERS:-4}"
+# Worker count when UVICORN_WORKERS is not set. Each worker is ~250 MB resident; a
+# 4 GB machine with four of them has too little left for the ~1.6 GB frontend build an
+# upgrade runs (measured 2026-10-02), and a 2-core machine gains nothing from four.
+# In a container without lxcfs /proc/meminfo shows the host, so the cgroup limit wins.
+# JT_IPAM_NPROC / JT_IPAM_MEMINFO / JT_IPAM_CGROUP_DIR only exist for the tests.
+default_workers() {
+    local cpus mem_mb cg
+    cpus="${JT_IPAM_NPROC:-$(nproc 2>/dev/null || echo 4)}"
+    mem_mb="$(awk '/^MemTotal:/ {print int($2/1024)}' "${JT_IPAM_MEMINFO:-/proc/meminfo}" 2>/dev/null || echo 0)"
+    cg="$(cat "${JT_IPAM_CGROUP_DIR:-/sys/fs/cgroup}/memory.max" 2>/dev/null || echo max)"
+    if [[ "$cg" =~ ^[0-9]+$ ]] && { (( mem_mb == 0 )) || (( cg / 1048576 < mem_mb )); }; then
+        mem_mb=$(( cg / 1048576 ))
+    fi
+    if (( cpus <= 2 )) || (( mem_mb > 0 && mem_mb <= 4608 )); then echo 2; else echo 4; fi
+}
+workers="${UVICORN_WORKERS:-$(default_workers)}"
 extra_opts="${UVICORN_EXTRA_OPTS:-}"
 
 args=(
@@ -40,6 +55,29 @@ args=(
     --proxy-headers
     --forwarded-allow-ips "127.0.0.1"
     --no-server-header
+    # WebSocket keepalive. uvicorn defaults to pinging every 20s and dropping the
+    # connection when no pong arrives within 20s -- and that default breaks file
+    # uploads over the SFTP console on a slow uplink. The browser answers the ping
+    # at once, but the pong is queued behind the megabytes of upload data already
+    # sitting in the same TCP stream, so it arrives late and the server hangs up
+    # mid-transfer. The client sees "connection lost" with no explanation.
+    #
+    # The ping interval stays short so a genuinely dead peer is still reaped; only
+    # the patience for the reply grows. What the pong waits behind is bounded, not
+    # the whole file: the SFTP client keeps at most its ack window (4 MB) plus its
+    # send-buffer high-water mark (4 MB) in flight. 600s therefore covers uplinks
+    # down to roughly 14 KB/s for ANY file size -- the SFTP size limit is a system
+    # setting since 0.6.48 and can be raised to GBs without touching this. If that
+    # client flow control ever changes, re-read the above before lowering this.
+    --ws-ping-interval 20
+    --ws-ping-timeout 600
+    # No WebSocket compression. The console carries file bytes -- usually already
+    # compressed archives and executables -- so deflate buys nothing on the wire
+    # while adding a stateful layer between "the browser called send()" and "the
+    # server received bytes" that can swallow data with no error anywhere. It also
+    # burns CPU per frame on both ends. Turning it off removes a whole class of
+    # interop failures from the transport.
+    --ws-per-message-deflate false
 )
 
 case "$mode" in

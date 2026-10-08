@@ -29,6 +29,8 @@ class OPNsenseFirewallBase(StrictModel):
     scope_location_id: uuid.UUID | None = None
     scope_customer_id: uuid.UUID | None = None
     scope_subnet_ids: list[uuid.UUID] | None = None
+    # DHCP 有、IPAM 沒有的位址是否自動建立（預設關閉；風險見 models 註解）
+    auto_create_ips: bool | None = None
     iface_subnet_map: dict[str, uuid.UUID] | None = None
 
 
@@ -56,6 +58,8 @@ class OPNsenseFirewallUpdate(StrictModel):
     scope_location_id: uuid.UUID | None = None
     scope_customer_id: uuid.UUID | None = None
     scope_subnet_ids: list[uuid.UUID] | None = None
+    # DHCP 有、IPAM 沒有的位址是否自動建立（預設關閉；風險見 models 註解）
+    auto_create_ips: bool | None = None
     iface_subnet_map: dict[str, uuid.UUID] | None = None
 
 

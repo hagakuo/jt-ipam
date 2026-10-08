@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.ui_error import detail_of
 from app.models.esxi import ESXiInstance
 from app.schemas.esxi import ESXiCreate, ESXiRead, ESXiUpdate
 from app.services import esxi as svc
@@ -53,6 +54,7 @@ async def create_instance(
         verify_tls=payload.verify_tls,
         sync_interval_seconds=payload.sync_interval_seconds,
         scope_subnet_ids=payload.scope_subnet_ids,
+        auto_create_ips=bool(payload.auto_create_ips),
         description=payload.description,
         password_enc=b"placeholder", password_nonce=b"placeholder",
     )
@@ -120,6 +122,13 @@ async def delete_instance(
         object_type="esxi_instance", object_id=str(inst.id), action="delete",
         diff={"name": inst.name}, request_id=getattr(request.state, "request_id", None),
     )
+    # VM 鏡像一併刪掉（網卡列 CASCADE）：以前留著、而且再也不會有同步去更新（2026-09-26 稽核）。
+    # 叢集本身留著 —— 上面可能有使用者設的地點／客戶
+    if inst.cluster_id is not None:
+        from sqlalchemy import delete as _delete
+
+        from app.models.virt import VirtualMachine
+        await session.execute(_delete(VirtualMachine).where(VirtualMachine.cluster_id == inst.cluster_id))
     await session.delete(inst)
     await session.commit()
 
@@ -138,7 +147,7 @@ async def check_connection(
 
 @router.post("/{instance_id}/sync")
 async def sync_now(
-    instance_id: uuid.UUID, _user: CurrentUser,
+    instance_id: uuid.UUID, _user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     inst = await _get_or_404(session, instance_id)
@@ -149,6 +158,15 @@ async def sync_now(
         inst = await _get_or_404(session, instance_id)
         inst.last_error = str(exc)[:2000]
         await session.commit()
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "esxi_error")) from exc
+    # 手動觸發的同步要留紀錄（其他整合本來就有記，這裡漏了）
+    await append_audit(
+        session, actor_user_id=str(_user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="esxi_instance", object_id=str(inst.id), action="sync",
+        diff=out if isinstance(out, dict) else {"result": str(out)[:500]},
+        request_id=getattr(request.state, "request_id", None),
+    )
     await session.commit()
     return out

@@ -13,10 +13,11 @@ import ipaddress
 import uuid
 from typing import Any
 
+from sqlalchemy import String, func, select, text
 from sqlalchemy import false as sa_false
-from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.sqlin import in_values
 from app.models.address import IPAddress
 from app.models.customer import Customer
 from app.models.device import Device
@@ -169,6 +170,22 @@ async def _resolve_subnet(
     return subnet
 
 
+async def _scope_subnet(
+    session: AsyncSession, *, user: User,
+    subnet_cidr: str | None = None, subnet_id: str | None = None,
+) -> tuple[list[uuid.UUID] | None, str]:
+    """清單工具的共用範圍解析：回 (subnet_ids | None 代表全域, 範圍標籤)。
+
+    沒有範圍參數時，問「某網段有哪些…」的答案會變成全站資料 —— 這類錯誤每個數字
+    單獨看都是真的，最難察覺。解析同時走 `_resolve_subnet` 的可見性把關。
+    """
+    if not (subnet_cidr or subnet_id):
+        return None, "all"
+    subnet = await _resolve_subnet(
+        session, user=user, subnet_id=subnet_id, subnet_cidr=subnet_cidr)
+    return [subnet.id], str(subnet.cidr)
+
+
 async def find_free_ips(
     session: AsyncSession, *, user: User,
     subnet_cidr: str | None = None, subnet_id: str | None = None,
@@ -252,6 +269,13 @@ async def get_subnet_usage(
     }
 
 
+async def _librenms_name(session: AsyncSession, ln_id: Any) -> str | None:
+    if ln_id is None:
+        return None
+    ln = await session.get(LibreNMSDevice, ln_id)
+    return (ln.sysname or ln.hostname) if ln else None
+
+
 async def trace_mac(
     session: AsyncSession, *, user: User, mac: str,
 ) -> dict[str, Any]:
@@ -278,15 +302,29 @@ async def trace_mac(
             select(IPAddress.subnet_id).where(IPAddress.ip == arp.ip).limit(1))).scalars().first()
         if ip_sub is None or ip_sub not in vis_sub:
             arp = None
-    if fdb is not None and vis_dev is not None and (
-            fdb.device_id is None or fdb.device_id not in vis_dev):
+    # ⚠️ FDB／ARP 的 device_id 是 **LibreNMS 的裝置**，要經 jt_ipam_device_id 才對得到使用者看得到的
+    # jt-ipam 裝置。以前直接拿來比，非管理員永遠看不到交換器埠（2026-09-30 研究）。沒對映到 jt-ipam
+    # 裝置的交換器無從判斷權限 → 非管理員一律遮蔽。
+    switch_name = switch_dev = None
+    if fdb is not None and fdb.device_id is not None:
+        ln = await session.get(LibreNMSDevice, fdb.device_id)
+        if ln is not None:
+            switch_name = ln.sysname or ln.hostname
+            switch_dev = ln.jt_ipam_device_id
+    elif fdb is not None and fdb.switch_device_id is not None:
+        # MikroTik 回報的列（0170）直接記 jt-ipam 裝置
+        switch_dev = fdb.switch_device_id
+        switch_name = await session.scalar(select(Device.name).where(Device.id == switch_dev))
+    if fdb is not None and vis_dev is not None and (switch_dev is None or switch_dev not in vis_dev):
         fdb = None
     return {
         "mac": mac,
         "arp": (
             {
                 "ip": arp.ip,
-                "device_id": str(arp.device_id) if arp.device_id else None,
+                # 哪一台回報的（LibreNMS 裝置名稱；防火牆／掃描代理的 ARP 看 source）
+                "seen_by": await _librenms_name(session, arp.device_id),
+                "source": arp.source,
                 "interface": arp.interface,
                 "last_seen_at": arp.last_seen_at.isoformat(),
             }
@@ -294,14 +332,30 @@ async def trace_mac(
         ),
         "fdb": (
             {
+                "switch": switch_name,
+                "switch_device_id": str(switch_dev) if switch_dev else None,
                 "port_name": fdb.port_name,
                 "vlan_id_num": fdb.vlan_id_num,
-                "device_id": str(fdb.device_id) if fdb.device_id else None,
                 "last_seen_at": fdb.last_seen_at.isoformat(),
             }
             if fdb else None
         ),
     }
+
+
+async def mac_history(session: AsyncSession, *, user: User, mac: str) -> dict[str, Any]:
+    """以 MAC 為中心的完整歷程：用過哪些 IP（起訖時間）、何時被誰取代、出現在哪台交換器的哪個埠、
+    DHCP 固定分配、是哪台裝置或虛擬機的網卡，以及隨機 MAC 輪替時可能是同一台的其他 MAC。
+    依使用者的可見範圍縮放。"""
+    from app.services.mac_history import mac_history as _history
+    try:
+        out = await _history(session, user=user, mac=mac, ips_limit=100, events_limit=60)
+    except ValueError as exc:
+        raise IPAMToolError("not a valid MAC address") from exc
+    # 上線依據是給畫面畫燈的原始時間，AI 用不到，省 token
+    for r in out["ips"]:
+        r.pop("live", None)
+    return out
 
 
 async def list_vlans(
@@ -350,7 +404,7 @@ async def stats_overview(session: AsyncSession, *, user: User) -> dict[str, Any]
         if not vis:
             return 0
         return int(await session.scalar(
-            select(func.count()).select_from(model).where(model.id.in_(vis))) or 0)
+            select(func.count()).select_from(model).where(in_values(model.id, vis))) or 0)
 
     vis_sec = await visible_ids(session, user=user, object_type="section")
     vis_sub = await visible_ids(session, user=user, object_type="subnet")
@@ -366,7 +420,7 @@ async def stats_overview(session: AsyncSession, *, user: User) -> dict[str, Any]
     else:
         ip_n = int(await session.scalar(
             select(func.count()).select_from(IPAddress)
-            .where(IPAddress.subnet_id.in_(vis_sub))) or 0)
+            .where(in_values(IPAddress.subnet_id, vis_sub))) or 0)
 
     out: dict[str, Any] = {
         "sections": await _scoped(Section, vis_sec),
@@ -397,46 +451,98 @@ async def stats_overview(session: AsyncSession, *, user: User) -> dict[str, Any]
 
 
 async def list_racks(
-    session: AsyncSession, *, user: User, limit: int = 200,
+    session: AsyncSession, *, user: User, limit: int = 200, location_id: str | None = None,
 ) -> dict[str, Any]:
-    """列出機櫃（含所在地點與已掛裝置數）。"""
+    """列出機櫃／層架（含所在地點、已掛裝置、每一列還剩多少空間）。問某機房要帶 location_id。
+
+    **不是每一種機架都以 U 計**：層架（一般／鍍鉻／木質，如 IKEA IVAR）以「層」為單位，
+    層高可以逐層不同，而且最上面那片板的**上面**還能再放一排。
+
+    而且同一列可以左右並排、也可以上下疊放好幾台。只看「這一列有沒有東西」會把半滿的
+    那一層算成滿的，「還能放幾台」就答錯了 —— 所以這裡額外回 `rows_with_space`（哪幾列
+    還有空、還剩多少比例）與每台裝置的橫向／層內位置。
+    """
     limit = min(int(limit), 500)
-    rows = (await session.execute(
-        select(Rack, Location.name)
-        .outerjoin(Location, Location.id == Rack.location_id)
-        .order_by(Rack.name).limit(limit)
-    )).all()
+    stmt = (select(Rack, Location.name)
+            .outerjoin(Location, Location.id == Rack.location_id))
+    scope = "all"
+    if location_id:
+        stmt = stmt.where(Rack.location_id == _as_uuid(location_id, "location_id"))
+        scope = f"location:{location_id}"
+    # 可見性推進 SQL（同 list_devices：先截斷再過濾會漏資料且總數失真）
     vis = await visible_ids(session, user=user, object_type="rack")
+    if vis is not None:
+        stmt = stmt.where(in_values(Rack.id, vis) if vis else sa_false())
+    total = int(await session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0)
+    rows = (await session.execute(stmt.order_by(Rack.name).limit(limit))).all()
+    from app.services.rack import (
+        RACK_SLOTS,
+        has_open_top,
+        level_heights_mm,
+        placeable_levels,
+        uses_rack_units,
+    )
     out = []
     for rack, loc_name in rows:
-        if vis is not None and rack.id not in vis:
-            continue
         devs = list((await session.execute(
-            select(Device.name, Device.type, Device.u_position, Device.u_size, Device.rack_face)
+            select(Device.name, Device.type, Device.u_position, Device.u_size,
+                   Device.rack_face, Device.rack_slot, Device.rack_slot_span,
+                   Device.rack_vslot, Device.rack_vslot_span)
             .where(Device.rack_id == rack.id).order_by(Device.u_position)
         )).all())
-        # 以「實際被佔用的 U 列」計算，半 U（左/右兩台同列）只算一次，避免重複累加把空間算光
-        occupied_rows: set[int] = set()
-        for (_n, _t, pos, sz, _f) in devs:
+        kind = getattr(rack, "kind", None)
+        levels = not uses_rack_units(kind)
+        # 層架最上面那片板的上面也放得下 → 可放的位置比層數多一列
+        placeable = placeable_levels(kind, int(rack.u_height or 0))
+        # 每一列被佔掉多少「面積」：橫向比例 × 層內上下比例。只數「有沒有東西」會把
+        # 一層放了一台半寬裝置的情況當成整層滿了。
+        area: dict[int, float] = {}
+        for (_n, _t, pos, sz, _f, _hs, hsp, _vs, vsp) in devs:
             if pos is None:
                 continue
+            frac = ((float(hsp or RACK_SLOTS) / RACK_SLOTS)
+                    * (float(vsp or RACK_SLOTS) / RACK_SLOTS))
             for u in range(int(pos), int(pos) + int(sz or 1)):
-                occupied_rows.add(u)
+                area[u] = min(1.0, area.get(u, 0.0) + frac)
+        occupied_rows = set(area)
         used_u = len(occupied_rows)
-        free_u = max(rack.u_height - used_u, 0)
-        # 連續空檔（給「還能放多大的裝置」參考）
-        free_rows = sorted(set(range(1, rack.u_height + 1)) - occupied_rows)
+        free_u = max(placeable - used_u, 0)
+        # 完全空的列（給「還能放多大的裝置」參考）
+        free_rows = sorted(set(range(1, placeable + 1)) - occupied_rows)
         out.append({
             "id": str(rack.id), "name": rack.name, "u_height": rack.u_height,
+            # 型態決定單位與畫法：標準／工業機櫃以 U 計，三種層架以「層」計
+            "kind": kind, "uses_levels": levels,
+            "rows_label": "level" if levels else "U",
+            "open_top": has_open_top(kind),
+            "placeable_rows": placeable,
+            "level_heights_mm": (
+                [int(x) for x in level_heights_mm(kind, rack.row_height_mm,
+                                                  rack.level_heights, int(rack.u_height or 0))]
+                if levels else None),
             "location": loc_name, "device_count": len(devs),
             "used_u": used_u, "free_u": free_u, "free_u_rows": free_rows,
+            # 還有空位、但不是全空的那幾列（一層並排／疊放多台時最需要知道的就是這個）
+            "rows_with_space": [
+                {"row": u, "free_fraction": round(1.0 - a, 3)}
+                for u, a in sorted(area.items()) if a < 0.999
+            ],
             "devices": [
-                {"name": n, "type": t, "u_position": pos, "u_size": sz, "rack_face": f}
-                for (n, t, pos, sz, f) in devs
+                {"name": n, "type": t, "u_position": pos, "u_size": sz, "rack_face": f,
+                 # 橫向：起始格與跨幾格（整列＝0/60）；層內上下：同一套 60 格
+                 "rack_slot": hs, "rack_slot_span": hsp,
+                 "rack_vslot": vs, "rack_vslot_span": vsp}
+                for (n, t, pos, sz, f, hs, hsp, vs, vsp) in devs
             ],
             "description": rack.description,
         })
-    return {"racks": out, "count": len(out)}
+    return {"scope": scope, "count": total, "returned": len(out), "racks": out,
+            "slots_per_row": RACK_SLOTS,
+            "note": ("A row can hold several devices side by side (rack_slot/rack_slot_span) "
+                     "and stacked within the row (rack_vslot/rack_vslot_span), both on a "
+                     f"{RACK_SLOTS}-cell grid. Shelf kinds are counted in levels, not U — "
+                     "use rows_label. Check rows_with_space before saying a row is full.")}
 
 
 async def list_locations(
@@ -470,21 +576,36 @@ async def list_locations(
 async def list_devices(
     session: AsyncSession, *, user: User,
     name: str | None = None, type: str | None = None, limit: int = 100,
+    location_id: str | None = None, rack_id: str | None = None,
 ) -> dict[str, Any]:
-    """列出/搜尋裝置（可給 name 子字串或 type 過濾）；含地點、機櫃、IP 數。"""
+    """列出/搜尋裝置（可給 name 子字串或 type 過濾）；含地點、機櫃、IP 數。
+
+    問「某機房／某機櫃有哪些裝置」要帶 location_id / rack_id，否則回的是全站裝置。
+    """
     limit = min(int(limit), 500)
     stmt = select(Device)
     if name:
         stmt = stmt.where(Device.name.ilike(f"%{name}%"))
     if type:
         stmt = stmt.where(Device.type == type)
-    rows = list((await session.execute(stmt.order_by(Device.name).limit(limit))).scalars().all())
+    scope = "all"
+    if location_id:
+        stmt = stmt.where(Device.location_id == _as_uuid(location_id, "location_id"))
+        scope = f"location:{location_id}"
+    if rack_id:
+        stmt = stmt.where(Device.rack_id == _as_uuid(rack_id, "rack_id"))
+        scope = f"rack:{rack_id}"
+    # 可見性推進 SQL：先截斷再過濾會讓受限帳號拿到不足 limit 的結果，
+    # 且總數會把看不到的也算進去
     vis = await visible_ids(session, user=user, object_type="device")
+    if vis is not None:
+        stmt = stmt.where(in_values(Device.id, vis) if vis else sa_false())
+    total = int(await session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0)
+    rows = list((await session.execute(stmt.order_by(Device.name).limit(limit))).scalars().all())
     cust_cache: dict[Any, str | None] = {}
     out = []
     for d in rows:
-        if vis is not None and d.id not in vis:
-            continue
         ip_count = int(await session.scalar(
             select(func.count()).select_from(IPAddress).where(IPAddress.device_id == d.id)
         ) or 0)
@@ -499,9 +620,13 @@ async def list_devices(
             "vendor": d.vendor, "model": d.model, "ip_count": ip_count,
             "customer": cust_name,
             "u_position": d.u_position, "u_size": d.u_size, "rack_face": d.rack_face,
+            # 同一列可以左右並排、也可以上下疊放：少了這四個欄位，同一層的兩台在
+            # AI 眼裡是同一個位置（60 格網格，整列＝0/60）
+            "rack_slot": d.rack_slot, "rack_slot_span": d.rack_slot_span,
+            "rack_vslot": d.rack_vslot, "rack_vslot_span": d.rack_vslot_span,
             "rack_id": str(d.rack_id) if d.rack_id else None,
         })
-    return {"devices": out, "count": len(out)}
+    return {"scope": scope, "count": total, "returned": len(out), "devices": out}
 
 
 async def get_device(
@@ -537,7 +662,15 @@ async def get_device(
     if dev.rack_id:
         rk = await session.get(Rack, dev.rack_id)
         if rk is not None:
-            rack_info = {"id": str(rk.id), "name": rk.name, "u_height": rk.u_height}
+            from app.services.rack import placeable_levels, uses_rack_units
+            rack_info = {
+                "id": str(rk.id), "name": rk.name, "u_height": rk.u_height,
+                # 型態決定單位：層架以「層」計，說成 U 就錯了
+                "kind": getattr(rk, "kind", None),
+                "uses_levels": not uses_rack_units(getattr(rk, "kind", None)),
+                "placeable_rows": placeable_levels(getattr(rk, "kind", None),
+                                                   int(rk.u_height or 0)),
+            }
     cust = await session.get(Customer, dev.customer_id) if dev.customer_id else None
     loc = await session.get(Location, dev.location_id) if dev.location_id else None
     # 電源埠 ↔ 插座（NetBox 風）
@@ -560,6 +693,9 @@ async def get_device(
         "location": loc.name if loc else None,
         # 機櫃 U 位資訊（讓 AI 能判斷占位 / 剩餘空間）
         "u_position": dev.u_position, "u_size": dev.u_size, "rack_face": dev.rack_face,
+        # 列內的橫向與上下位置（60 格網格，整列＝0/60）
+        "rack_slot": dev.rack_slot, "rack_slot_span": dev.rack_slot_span,
+        "rack_vslot": dev.rack_vslot, "rack_vslot_span": dev.rack_vslot_span,
         "rack": rack_info,
         "ips": [{"ip": str(ip), "hostname": hn, "mac": str(m) if m else None}
                 for ip, hn, m in ips],
@@ -588,11 +724,21 @@ async def list_customers(
 
 async def list_nat(
     session: AsyncSession, *, user: User, limit: int = 100,
+    subnet_cidr: str | None = None, subnet_id: str | None = None,
 ) -> dict[str, Any]:
-    """列出 NAT 規則。"""
+    """列出 NAT 規則。問某網段對外開了什麼要帶 subnet_cidr。"""
     limit = min(int(limit), 500)
+    scope_ids, scope = await _scope_subnet(
+        session, user=user, subnet_cidr=subnet_cidr, subnet_id=subnet_id)
+    stmt = select(NATTranslation)
+    if scope_ids is not None:
+        in_scope = select(IPAddress.id).where(in_values(IPAddress.subnet_id, scope_ids))
+        stmt = stmt.where(NATTranslation.src_ip_id.in_(in_scope)
+                          | NATTranslation.dst_ip_id.in_(in_scope))
+    total = int(await session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0)
     rows = list((await session.execute(
-        select(NATTranslation).order_by(NATTranslation.name).limit(limit)
+        stmt.order_by(NATTranslation.name).limit(limit)
     )).scalars().all())
     ip_cache: dict[Any, str | None] = {}
 
@@ -618,7 +764,7 @@ async def list_nat(
             "source_origin": r.source_origin,
             "description": r.description,
         })
-    return {"nat_rules": out, "count": len(out)}
+    return {"scope": scope, "count": total, "returned": len(out), "nat_rules": out}
 
 
 async def list_sections(session: AsyncSession, *, user: User, limit: int = 200) -> dict[str, Any]:
@@ -669,7 +815,7 @@ async def list_vpn_tunnels(session: AsyncSession, *, user: User, limit: int = 20
     dev_pip: dict[Any, Any] = {}
     if dev_ids:
         for did, nm, pip in (await session.execute(
-            select(Device.id, Device.name, Device.primary_ip_id).where(Device.id.in_(dev_ids))
+            select(Device.id, Device.name, Device.primary_ip_id).where(in_values(Device.id, dev_ids))
         )).all():
             names[did] = nm
             dev_pip[did] = pip
@@ -677,7 +823,7 @@ async def list_vpn_tunnels(session: AsyncSession, *, user: User, limit: int = 20
     pip_ids = {p for p in dev_pip.values() if p}
     if pip_ids:
         pip_map = {pid: str(ip).split("/")[0] for pid, ip in (await session.execute(
-            select(IPAddress.id, IPAddress.ip).where(IPAddress.id.in_(pip_ids))
+            select(IPAddress.id, IPAddress.ip).where(in_values(IPAddress.id, pip_ids))
         )).all()}
 
     def _dev_ip(did) -> str | None:  # type: ignore[no-untyped-def]
@@ -722,7 +868,7 @@ async def recent_ip_changes(
     # RBAC：只回使用者可見子網路內 IP 的異動（限定範圍時 subnet_id 必須落在 vis）
     vis = await visible_ids(session, user=user, object_type="subnet")
     if vis is not None:
-        stmt = stmt.where(IPChangeLog.subnet_id.in_(vis)) if vis else stmt.where(sa_false())
+        stmt = stmt.where(in_values(IPChangeLog.subnet_id, vis)) if vis else stmt.where(sa_false())
     stmt = stmt.order_by(IPChangeLog.created_at.desc()).limit(limit)
     rows = list((await session.execute(stmt)).scalars().all())
     return {"changes": [
@@ -771,7 +917,7 @@ async def switch_port_for_ip(
     """查某 IP 接在哪台 switch 的哪個 port（用 FDB；access port = 該 port MAC 數最少者）。"""
     # 先把可見範圍套進查詢、再取一筆 —— 不可「先任取一筆再檢查可見性」。
     # 原寫法有兩個問題：
-    #  (1) 沒 scope 也沒 limit(1) → 重疊網段（多客戶共用 192.168.1.0/24）下同一個 IP
+    #  (1) 沒 scope 也沒 limit(1) → 重疊網段（多客戶共用 198.51.100.0/24）下同一個 IP
     #      字串會有多筆，`scalar_one_or_none()` 拋 MultipleResultsFound 直接炸掉；
     #  (2) 任取一筆才驗權限 → 若剛好取到不可見子網路那筆就回「IP not found」，
     #      即使使用者其實看得到另一個子網路的同一個 IP。
@@ -780,7 +926,7 @@ async def switch_port_for_ip(
     if vis is not None:                      # None＝全部可見（admin 或萬用授權）
         if not vis:
             raise IPAMToolError("IP not found")
-        stmt = stmt.where(IPAddress.subnet_id.in_(vis))
+        stmt = stmt.where(in_values(IPAddress.subnet_id, vis))
     ipa = (await session.execute(stmt.limit(1))).scalars().first()
     if ipa is None:
         raise IPAMToolError("IP not found")
@@ -789,22 +935,23 @@ async def switch_port_for_ip(
     mac = str(ipa.mac).lower()
     rows = list((await session.execute(
         select(FDBEntry.port_name, FDBEntry.vlan_id_num, FDBEntry.last_seen_at,
-               LibreNMSDevice.hostname, LibreNMSDevice.primary_ip)
+               FDBEntry.device_id, FDBEntry.switch_device_id,
+               LibreNMSDevice.hostname, LibreNMSDevice.primary_ip, Device.name)
         .outerjoin(LibreNMSDevice, LibreNMSDevice.id == FDBEntry.device_id)
+        .outerjoin(Device, Device.id == FDBEntry.switch_device_id)     # MikroTik 回報的列（0170）
         .where(FDBEntry.mac == mac)
     )).all())
     locs = []
-    for port, vlan, seen, sw_host, sw_ip in rows:
+    for port, vlan, seen, ln_id, dev_id, sw_host, sw_ip, dev_name in rows:
         # 該 (switch, port) 上有幾個不同 MAC → 越少越像 access port
+        same_switch = (FDBEntry.device_id == ln_id) if ln_id is not None else (
+            FDBEntry.switch_device_id == dev_id)
         mac_count = int(await session.scalar(
             select(func.count(func.distinct(FDBEntry.mac)))
-            .select_from(FDBEntry)
-            .join(LibreNMSDevice, LibreNMSDevice.id == FDBEntry.device_id, isouter=True)
-            .where(FDBEntry.port_name == port,
-                   LibreNMSDevice.hostname == sw_host)
+            .where(FDBEntry.port_name == port, same_switch)
         ) or 0)
         locs.append({
-            "switch": sw_host, "switch_ip": str(sw_ip) if sw_ip else None,
+            "switch": sw_host or dev_name, "switch_ip": str(sw_ip) if sw_ip else None,
             "port": port, "vlan": vlan,
             "macs_on_port": mac_count,
             "last_seen_at": seen.isoformat() if seen else None,
@@ -907,6 +1054,96 @@ async def allocate_ip(
 
 # ─────────────────── 新增工具：完整覆蓋系統功能 ───────────────────
 
+async def get_ip_history(
+    session: AsyncSession, *, user: User, ip: str, days: int = 30,
+) -> dict[str, Any]:
+    """IP 鑑識：某個 IP 在指定期間內「是誰」的證據時間軸。
+
+    資安事件調查的第一個問題永遠是「那個 IP 當時是誰」。把四種既有證據依時間彙整：
+    異動記錄（欄位級，含來源）、ARP（IP↔MAC 對應與最後出現時間）、主機名稱觀測
+    （各來源獨立）、DHCP 觀測。全部是確定性檢索 —— 判讀交給呼叫端（人或模型），
+    資料本身不做任何推測。
+
+    RBAC 與 get_ip_detail 同規：先縮到可見子網路，重疊網段下不會把別單位的同 IP
+    洩出來，也不會因為先取到不可見那筆而假報「查無」。
+    """
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError as exc:
+        raise IPAMToolError(f"Invalid IP: {exc}") from exc
+    from datetime import UTC, datetime, timedelta
+    days = max(1, min(int(days or 30), 365))
+    since = datetime.now(UTC) - timedelta(days=days)
+
+    from app.models.dhcp_sighting import DHCPSighting
+    from app.models.ip_change_log import IPChangeLog
+    from app.models.ip_hostname import IPHostnameObservation
+    from app.models.librenms import ARPEntry
+
+    vis = await visible_ids(session, user=user, object_type="subnet")
+    ip_stmt = select(IPAddress).where(IPAddress.ip == ip)
+    if vis is not None:
+        if not vis:
+            return {"ip": ip, "days": days, "visible": False, "events": []}
+        ip_stmt = ip_stmt.where(in_values(IPAddress.subnet_id, vis))
+    ipa = (await session.execute(ip_stmt.limit(1))).scalars().first()
+
+    events: list[dict[str, Any]] = []
+    # ARP／DHCP 觀測不掛在子網路底下（全域基礎設施資料）。受限帳號只有在
+    # 「看得到這個 IP 的登錄紀錄」時才給 —— 否則對未登錄 IP 查歷史就能繞過
+    # 可見性把 MAC 對應撈出來（admin／萬用讀取者 vis is None，不受此限）。
+    can_see_global_evidence = (vis is None) or (ipa is not None)
+
+    # 異動記錄：who/what/when，含來源（scanner/librenms/manual…）
+    ch_stmt = (select(IPChangeLog)
+               .where(IPChangeLog.ip_text == ip, IPChangeLog.created_at >= since))
+    if vis is not None:
+        ch_stmt = ch_stmt.where(in_values(IPChangeLog.subnet_id, vis))
+    for c in (await session.execute(
+            ch_stmt.order_by(IPChangeLog.created_at.desc()).limit(200))).scalars().all():
+        events.append({"at": c.created_at.isoformat(), "kind": "change",
+                       "source": c.source, "event": c.event_type, "field": c.field,
+                       "old": c.old_value, "new": c.new_value})
+
+    # ARP：這個 IP 綁過哪些 MAC（換 MAC ＝ 換機器或偽冒，是鑑識關鍵）
+    for a in ([] if not can_see_global_evidence else (await session.execute(
+            select(ARPEntry).where(ARPEntry.ip == ip)
+            .order_by(ARPEntry.last_seen_at.desc()).limit(20))).scalars().all()):
+        events.append({"at": a.last_seen_at.isoformat() if a.last_seen_at else None,
+                       "kind": "arp", "mac": str(a.mac),
+                       "first_seen": a.first_seen_at.isoformat() if getattr(a, "first_seen_at", None) else None})
+
+    # 主機名稱觀測：各來源（rdns/netbios/mdns/dhcp…）各自的說法
+    if ipa is not None:
+        for o in (await session.execute(
+                select(IPHostnameObservation)
+                .where(IPHostnameObservation.ip_id == ipa.id)
+                .order_by(IPHostnameObservation.observed_at.desc()).limit(20))).scalars().all():
+            events.append({"at": o.observed_at.isoformat() if o.observed_at else None,
+                           "kind": "hostname", "source": o.source,
+                           "hostname": o.hostname})
+
+    # DHCP 觀測（掃描代理看到誰在回應 DHCP —— 非法 DHCP 調查用）
+    for d in ([] if not can_see_global_evidence else (await session.execute(
+            select(DHCPSighting).where(DHCPSighting.server_ip == ip)
+            .order_by(DHCPSighting.last_seen_at.desc()).limit(5))).scalars().all()):
+        events.append({"at": d.last_seen_at.isoformat() if d.last_seen_at else None,
+                       "kind": "dhcp_server_sighting", "mac": str(d.server_mac) if getattr(d, "server_mac", None) else None})
+
+    events.sort(key=lambda e: e.get("at") or "", reverse=True)
+    return {
+        "ip": ip, "days": days, "visible": True,
+        "registered": ipa is not None,
+        "current": None if ipa is None else {
+            "hostname": ipa.hostname, "mac": str(ipa.mac) if ipa.mac else None,
+            "status": ipa.effective_status, "state": ipa.state,
+            "discovery_source": ipa.discovery_source,
+        },
+        "events": events,
+        "note": "資料為系統記錄的原始證據；時間為 UTC。判讀請以多筆證據交叉為準。",
+    }
+
+
 async def get_ip_detail(session: AsyncSession, *, user: User, ip: str) -> dict[str, Any]:
     """單一 IP 的完整資料：狀態 / 主機名稱 / MAC / 擁有者 / 裝置 / 交換器埠 / 客戶 / 最後上線來源。"""
     try:
@@ -914,14 +1151,14 @@ async def get_ip_detail(session: AsyncSession, *, user: User, ip: str) -> dict[s
     except ValueError as exc:
         raise IPAMToolError(f"Invalid IP: {exc}") from exc
     # RBAC：先縮到可見子網路再取一筆。若「先任取一筆再驗可見性」，在重疊網段
-    # （多客戶共用 192.168.1.0/24）下可能取到不可見那筆而回報「查無」——
+    # （多客戶共用 198.51.100.0/24）下可能取到不可見那筆而回報「查無」——
     # 但使用者其實看得到另一個子網路的同一個 IP，那是假的查無。
     vis = await visible_ids(session, user=user, object_type="subnet")
     stmt = select(IPAddress).where(IPAddress.ip == ip)
     if vis is not None:                      # None＝全部可見（admin 或萬用授權）
         if not vis:
             return {"found": False, "ip": ip}
-        stmt = stmt.where(IPAddress.subnet_id.in_(vis))
+        stmt = stmt.where(in_values(IPAddress.subnet_id, vis))
     obj = (await session.execute(stmt.limit(1))).scalars().first()
     if obj is None:
         return {"found": False, "ip": ip}
@@ -952,6 +1189,15 @@ async def get_ip_detail(session: AsyncSession, *, user: User, ip: str) -> dict[s
         "last_seen_scanner": obj.last_seen_scanner,
         "last_seen_librenms": obj.last_seen_librenms,
         "last_seen_dns": obj.last_seen_dns,
+        # OCS Inventory（透過網卡 MAC 比對到這個 IP 的資產盤點）
+        "last_seen_ocs": obj.last_seen_ocs,
+        "ocs_tag": obj.ocs_tag,
+        "ocs_agent": obj.ocs_agent,
+        "ocs_notes": obj.ocs_notes or [],
+        # OCS 回報的硬體：系統／主機板／BIOS／CPU／記憶體／磁碟／顯示卡（記憶體、磁碟單位 MB）
+        "ocs_hardware": obj.ocs_hw,
+        # RustDesk Server（開源版）：對應到這個 IP 的 RustDesk ID 與線上狀態（不帶連線網址）
+        "rustdesk": await _rustdesk_brief(session, obj.id),
         # OS 偵測（依來源優先序 scanner/librenms/wazuh 解析）+ 探測項目
         **_os,
         "effective_probes": await _effective_probes(session, sub, obj),
@@ -1040,18 +1286,23 @@ async def list_subnet_ips(
 
 
 async def list_firewalls(session: AsyncSession, *, user: User, limit: int = 200) -> dict[str, Any]:
-    """所有防火牆清單（OPNsense / pfSense / FortiGate，不含密鑰）。每筆帶 `vendor` 標明廠牌。
+    """所有防火牆清單（OPNsense / pfSense / FortiGate / Palo Alto / MikroTik，不含密鑰）。
+    每筆帶 `vendor` 標明廠牌。
 
-    三種廠牌一起回：只回其中一種的話，模型會拿一份不完整的清單當成全部去回答
-    「我們有哪些防火牆」—— 那比答不出來更糟。
+    **所有廠牌一起回**：只回其中一種的話，模型會拿一份不完整的清單當成全部去回答
+    「我們有哪些防火牆」—— 那比答不出來更糟。新增廠牌時這裡一定要跟著加
+    （`tests/test_integration_coverage.py` 會擋）。
     """
     from app.models.firewall import OPNsenseFirewall
     from app.models.fortigate import FortiGateFirewall
+    from app.models.mikrotik import MikroTikRouter
+    from app.models.paloalto import PaloAltoFirewall
     from app.models.pfsense import PfSenseFirewall
 
     out: list[dict[str, Any]] = []
     for vendor, model in (("opnsense", OPNsenseFirewall), ("pfsense", PfSenseFirewall),
-                          ("fortigate", FortiGateFirewall)):
+                          ("fortigate", FortiGateFirewall), ("paloalto", PaloAltoFirewall),
+                          ("mikrotik", MikroTikRouter)):
         rows = (await session.execute(select(model).limit(limit))).scalars().all()
         out.extend({
             "id": str(f.id), "vendor": vendor, "name": f.name,
@@ -1062,20 +1313,87 @@ async def list_firewalls(session: AsyncSession, *, user: User, limit: int = 200)
     return {"firewalls": out[:limit]}
 
 
+async def list_mikrotik_rules(
+    session: AsyncSession, *, user: User,
+    router_name: str | None = None, table: str | None = None, limit: int = 200,
+) -> dict[str, Any]:
+    """MikroTik RouterOS 防火牆規則（唯讀鏡像）。可依路由器名稱與表（filter/nat/mangle）篩選。
+
+    依 `position` 排序而不是名稱：RouterOS 由上而下比對，第一條命中就決定結果 ——
+    順序本身就是語意，打散了規則集就讀不出行為。
+    """
+    from app.models.mikrotik import MikroTikRouter, MikroTikRule
+    stmt = select(MikroTikRule, MikroTikRouter.name).join(
+        MikroTikRouter, MikroTikRouter.id == MikroTikRule.router_id)
+    if router_name:
+        stmt = stmt.where(MikroTikRouter.name == router_name)
+    if table in ("filter", "nat", "mangle"):
+        stmt = stmt.where(MikroTikRule.table_name == table)
+    rows = (await session.execute(stmt.order_by(
+        MikroTikRule.table_name, MikroTikRule.position).limit(limit))).all()
+    return {"rules": [{
+        "router": name, "table": r.table_name, "chain": r.chain, "position": r.position,
+        "action": r.action, "disabled": r.disabled, "protocol": r.protocol,
+        "src_address": r.src_address, "dst_address": r.dst_address,
+        "src_port": r.src_port, "dst_port": r.dst_port,
+        "in_interface": r.in_interface, "out_interface": r.out_interface,
+        "to_addresses": r.to_addresses, "to_ports": r.to_ports, "comment": r.comment,
+    } for r, name in rows]}
+
+
+async def list_mikrotik_address_lists(
+    session: AsyncSession, *, user: User,
+    router_name: str | None = None, list_name: str | None = None, limit: int = 300,
+) -> dict[str, Any]:
+    """MikroTik 的 address-list（等同其他廠牌的別名）。
+
+    與其他家的差別：RouterOS 的清單是**逐筆位址**，不是一個物件裝很多成員 ——
+    所以一列就是一個位址，回傳可能很長（動態封鎖清單常常上萬筆）。
+    """
+    from app.models.mikrotik import MikroTikAddressList, MikroTikRouter
+    stmt = select(MikroTikAddressList, MikroTikRouter.name).join(
+        MikroTikRouter, MikroTikRouter.id == MikroTikAddressList.router_id)
+    if router_name:
+        stmt = stmt.where(MikroTikRouter.name == router_name)
+    if list_name:
+        stmt = stmt.where(MikroTikAddressList.list_name == list_name)
+    total = int(await session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0)
+    rows = (await session.execute(stmt.order_by(
+        MikroTikAddressList.list_name, MikroTikAddressList.address).limit(limit))).all()
+    return {"total": total, "returned": len(rows), "entries": [{
+        "router": name, "list": e.list_name, "address": e.address,
+        "dynamic": e.dynamic, "timeout": e.timeout, "comment": e.comment,
+    } for e, name in rows]}
+
+
 async def list_dhcp_ranges(
     session: AsyncSession, *, user: User, limit: int = 300,
+    subnet_cidr: str | None = None, subnet_id: str | None = None,
 ) -> dict[str, Any]:
-    """各整合同步回來的 DHCP 發放範圍（OPNsense / pfSense / FortiGate / Windows DHCP）。
+    """各整合同步回來的 DHCP 發放範圍（OPNsense / pfSense / FortiGate / Windows DHCP），
+    加上子網路裡手動定義的 DHCP 集區（source_type=manual）。
 
     每筆帶來源整合（`source_type` / `source_name`）與 DHCP 引擎（`source`：kea / isc /
-    windows）。「這個 IP 是不是落在 DHCP 池裡」這種問題要靠它，不能拿子網路去猜。
+    windows）。「這個 IP 是不是落在 DHCP 集區裡」這種問題要靠它，不能拿子網路去猜。
     """
     from app.models.dhcp import DHCPPoolRange
-    rows = (await session.execute(
-        select(DHCPPoolRange).order_by(DHCPPoolRange.source_type, DHCPPoolRange.start_ip)
-        .limit(limit)
-    )).scalars().all()
-    return {"ranges": [{
+    scope_ids, scope = await _scope_subnet(
+        session, user=user, subnet_cidr=subnet_cidr, subnet_id=subnet_id)
+    stmt = select(DHCPPoolRange)
+    if scope_ids is not None:
+        # 範圍表存的是 CIDR 字串，直接以該子網路的 cidr 比對
+        stmt = stmt.where(DHCPPoolRange.subnet_cidr.in_(
+            select(Subnet.cidr).where(in_values(Subnet.id, scope_ids))))
+    from app.services.ip_ranges import manual_dhcp_pools
+    # 子網路裡手動定義的 DHCP 集區（issue #40），跟整合同步回來的一起列
+    manual = await manual_dhcp_pools(session, list(scope_ids) if scope_ids is not None else None)
+    total = int(await session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0) + len(manual)
+    rows: list[Any] = [*(await session.execute(
+        stmt.order_by(DHCPPoolRange.source_type, DHCPPoolRange.start_ip).limit(limit)
+    )).scalars().all(), *manual][:limit]
+    return {"scope": scope, "count": total, "returned": len(rows), "ranges": [{
         "source_type": r.source_type, "source_name": r.source_name,
         "subnet_cidr": str(r.subnet_cidr) if r.subnet_cidr else None,
         "start_ip": str(r.start_ip), "end_ip": str(r.end_ip),
@@ -1123,6 +1441,55 @@ async def list_fortigate_addresses(
     return {"addresses": [{
         "firewall": fw_name, "vdom": a.vdom, "name": a.name, "kind": a.kind,
         "obj_type": a.obj_type, "value": a.value, "members": a.members, "comment": a.comment,
+    } for a, fw_name in rows]}
+
+
+async def list_paloalto_policies(
+    session: AsyncSession, *, user: User,
+    firewall_name: str | None = None, vsys: str | None = None, limit: int = 200,
+) -> dict[str, Any]:
+    """Palo Alto（PAN-OS）安全政策（唯讀鏡像）。可依防火牆名稱與 vsys 篩選。
+
+    依 `position` 排序而不是名稱：PAN-OS 由上而下比對，順序本身就是語意。
+    `application` 是 App-ID —— PAN-OS 規則真正在管的東西，不可以省略。
+    """
+    from app.models.paloalto import PaloAltoFirewall, PaloAltoPolicy
+    stmt = select(PaloAltoPolicy, PaloAltoFirewall.name).join(
+        PaloAltoFirewall, PaloAltoFirewall.id == PaloAltoPolicy.firewall_id)
+    if firewall_name:
+        stmt = stmt.where(PaloAltoFirewall.name == firewall_name)
+    if vsys:
+        stmt = stmt.where(PaloAltoPolicy.vsys == vsys)
+    rows = (await session.execute(
+        stmt.order_by(PaloAltoPolicy.vsys, PaloAltoPolicy.position).limit(limit))).all()
+    return {"policies": [{
+        "firewall": fw_name, "vsys": p.vsys, "position": p.position, "name": p.name,
+        "action": p.action, "disabled": p.disabled,
+        "from_zone": p.from_zone, "to_zone": p.to_zone,
+        "source": p.source, "destination": p.destination,
+        "application": p.application, "service": p.service, "description": p.description,
+    } for p, fw_name in rows]}
+
+
+async def list_paloalto_addresses(
+    session: AsyncSession, *, user: User,
+    firewall_name: str | None = None, vsys: str | None = None, limit: int = 300,
+) -> dict[str, Any]:
+    """Palo Alto 位址物件與位址群組（唯讀鏡像）。群組的 `members` 是成員名稱清單。"""
+    from app.models.paloalto import PaloAltoAddressObject, PaloAltoFirewall
+    stmt = select(PaloAltoAddressObject, PaloAltoFirewall.name).join(
+        PaloAltoFirewall, PaloAltoFirewall.id == PaloAltoAddressObject.firewall_id)
+    if firewall_name:
+        stmt = stmt.where(PaloAltoFirewall.name == firewall_name)
+    if vsys:
+        stmt = stmt.where(PaloAltoAddressObject.vsys == vsys)
+    rows = (await session.execute(
+        stmt.order_by(PaloAltoAddressObject.vsys, PaloAltoAddressObject.name)
+        .limit(limit))).all()
+    return {"addresses": [{
+        "firewall": fw_name, "vsys": a.vsys, "name": a.name, "kind": a.kind,
+        "obj_type": a.obj_type, "value": a.value, "members": a.members,
+        "description": a.description,
     } for a, fw_name in rows]}
 
 
@@ -1185,6 +1552,9 @@ async def get_topology(
     graph = await build_topology(
         session, user=user, subnet_ids=subnet_ids, include_l3=include_l3, include_vpn=include_vpn,
     )
+    if graph.get("too_large"):
+        return {"too_large": graph["too_large"],
+                "hint": "Too many devices to draw at once; call again with subnet_cidr to narrow it down."}
     labels = {n["data"]["id"]: n["data"].get("label") for n in graph["nodes"]}
     edges = [{
         "from": labels.get(e["data"]["source"], e["data"]["source"]),
@@ -1251,7 +1621,7 @@ async def list_dns_records(
     have: set[str] = set()
     if ip_vals:
         for (host,) in (await session.execute(
-            select(func.host(_IPA.ip)).where(func.host(_IPA.ip).in_(ip_vals))
+            select(func.host(_IPA.ip)).where(in_values(func.host(_IPA.ip), ip_vals, type_=String()))
         )).all():
             have.add(str(host))
     zone_ids = {r.zone_id for r in rows if r.zone_id}
@@ -1260,7 +1630,7 @@ async def list_dns_records(
         for zid, sname in (await session.execute(
             select(DNSZone.id, DNSServer.name)
             .join(DNSServer, DNSServer.id == DNSZone.server_id)
-            .where(DNSZone.id.in_(zone_ids))
+            .where(in_values(DNSZone.id, zone_ids))
         )).all():
             zsrv[zid] = sname
     return {"records": [{
@@ -1274,16 +1644,22 @@ async def list_dns_records(
 async def list_ip_requests(
     session: AsyncSession, *, user: User, status: str | None = None, limit: int = 200,
 ) -> dict[str, Any]:
-    """IP 申請工作流清單。非管理員只看自己提出的。"""
+    """IP 申請工作流清單。
+
+    可見範圍與 REST 端點同一套判定，不另立規則：admin 或具全域讀取權限者看得到全部，
+    其餘只看自己提出的（避免同一件事有兩套邏輯，日後各自演化到不一致）。
+    """
     from app.models.ip_request import IPRequest
     stmt = select(IPRequest)
-    if not user.is_admin:
+    if not await has_global_read(session, user):
         stmt = stmt.where(IPRequest.requester_user_id == user.id)
     if status:
         stmt = stmt.where(IPRequest.status == status)
-    stmt = stmt.order_by(IPRequest.created_at.desc()).limit(limit)
-    rows = (await session.execute(stmt)).scalars().all()
-    return {"requests": [{
+    total = int(await session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0)
+    rows = (await session.execute(
+        stmt.order_by(IPRequest.created_at.desc()).limit(limit))).scalars().all()
+    return {"count": total, "returned": len(rows), "requests": [{
         "id": str(r.id), "status": r.status, "subnet_id": str(r.subnet_id),
         "requested_ip": r.requested_ip, "hostname": r.hostname, "purpose": r.purpose,
         "description": r.description, "created_at": r.created_at,
@@ -1409,25 +1785,111 @@ async def list_arp(
 
 async def list_fdb(
     session: AsyncSession, *, user: User, mac: str | None = None, limit: int = 50,
+    subnet_cidr: str | None = None, subnet_id: str | None = None,
 ) -> dict[str, Any]:
-    """交換器 FDB 紀錄（MAC↔埠）。"""
+    """交換器 FDB 紀錄（MAC↔埠）。問某網段的機器接在哪要帶 subnet_cidr。"""
+    scope_ids, scope = await _scope_subnet(
+        session, user=user, subnet_cidr=subnet_cidr, subnet_id=subnet_id)
     stmt = select(FDBEntry)
     if mac:
         stmt = stmt.where(FDBEntry.mac == mac.strip().lower())
+    if scope_ids is not None:
+        # FDB 只有 MAC 沒有 IP → 以該網段 IP 已知的 MAC 反查
+        stmt = stmt.where(FDBEntry.mac.in_(
+            select(IPAddress.mac).where(
+                in_values(IPAddress.subnet_id, scope_ids), IPAddress.mac.is_not(None))))
+    total = int(await session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0)
     stmt = stmt.order_by(FDBEntry.last_seen_at.desc()).limit(limit)
     rows = (await session.execute(stmt)).scalars().all()
-    return {"fdb": [{
+    return {"scope": scope, "count": total, "returned": len(rows), "fdb": [{
         "mac": str(e.mac), "vlan": e.vlan_id_num, "port": e.port_name,
         "device_id": str(e.device_id) if e.device_id else None, "source": e.source,
+        # source=mikrotik 的列：回報的路由器所對應的 jt-ipam 裝置（device_id 是 LibreNMS 裝置）
+        "switch_device_id": str(e.switch_device_id) if e.switch_device_id else None,
         "last_seen_at": e.last_seen_at,
     } for e in rows]}
 
 
-async def wazuh_missing_agents(session: AsyncSession, *, user: User, limit: int = 200) -> dict[str, Any]:
-    """有設主機名稱、卻沒裝 Wazuh agent 的 IP（資安覆蓋缺口）。"""
+async def wazuh_missing_agents(
+    session: AsyncSession, *, user: User, limit: int = 200,
+    subnet_cidr: str | None = None, subnet_id: str | None = None,
+) -> dict[str, Any]:
+    """有設主機名稱、卻沒裝 Wazuh agent 的 IP（資安覆蓋缺口）。
+
+    問「某網段有誰沒裝」一定要帶 subnet_cidr/subnet_id：不帶會回全站缺口，
+    模型就會把別的網段當成該網段的答案（曾實際發生：問 1.0/24 卻回 11.x/40.x）。
+    """
+    from app.models.wazuh import WazuhInstance
+    from app.services.agent_scope import expected_subnets
     from app.services.wazuh import find_missing_agents
-    rows = await find_missing_agents(session)
-    return {"missing_count": len(rows), "missing": rows[:limit]}
+    scope_ids: list[uuid.UUID] | None = None
+    scope_label = "all"
+    if subnet_cidr or subnet_id:
+        subnet = await _resolve_subnet(
+            session, user=user, subnet_id=subnet_id, subnet_cidr=subnet_cidr)
+        scope_ids = [subnet.id]
+        scope_label = str(subnet.cidr)
+    else:
+        # 沒指定網段 → 跟畫面一致，只看 Wazuh 整合設定的「限定子網路範圍」
+        scope_ids = expected_subnets(list((await session.execute(
+            select(WazuhInstance).where(WazuhInstance.enabled.is_(True)))).scalars().all()))
+        if scope_ids is not None:
+            scope_label = "integration_scope"
+    rows = await find_missing_agents(session, subnet_ids=scope_ids)
+    return {
+        "scope": scope_label,          # 回答時必須說明涵蓋範圍
+        "missing_count": len(rows),    # 此範圍內的總數（非全站）
+        "returned": min(len(rows), limit),
+        "missing": rows[:limit],
+    }
+
+
+
+async def list_attack_surface(
+    session: AsyncSession, *, user: User, fqdn: str | None = None,
+    ip: str | None = None, limit: int = 200,
+) -> dict[str, Any]:
+    """對外開放服務清單（從外面可達的 IP:port，每項配 IPAM 身分與 DNS 名稱）。
+
+    支援兩種問法，因為人記得的常是名字不是位址：
+    - `fqdn="meet.example.net"` → 先由 DNS 記錄對應到 IP，再列該 IP 的對外開口
+    - `ip="198.51.100.7"` → 直接列該位址的開口
+    兩者都不給就是全部（回傳的 `scope` 會標明）。
+    """
+    from app.services.fw_lookup import attack_surface
+
+    items = await attack_surface(session)
+    scope = "all"
+    if fqdn:
+        want = fqdn.strip().rstrip(".").lower()
+        items = [i for i in items
+                 if any(f.lower() == want for f in (i["identity"].get("fqdns") or []))]
+        scope = f"fqdn:{want}"
+    elif ip:
+        want_ip = ip.strip()
+        items = [i for i in items if str(i["identity"].get("ip") or "") == want_ip]
+        scope = f"ip:{want_ip}"
+    n = max(1, min(int(limit), 500))
+    return {
+        "scope": scope,
+        "count": len(items),
+        "returned": min(len(items), n),
+        # 未登錄的目標本身就是警訊，一併帶出來讓對話端可以指出來
+        "items": [{
+            "ip": i["identity"].get("ip"),
+            "registered": i["identity"].get("registered"),
+            "hostname": i["identity"].get("hostname"),
+            "fqdns": i["identity"].get("fqdns") or [],
+            "port": i.get("port"), "protocol": i.get("protocol"),
+            "via": i.get("via"), "source": i.get("source"),
+            "firewall": i.get("firewall"), "name": i.get("name"),
+            "customer": i["identity"].get("customer"),
+            "subnet": i["identity"].get("subnet"),
+            "wazuh": i["identity"].get("wazuh"),
+            "status": i["identity"].get("status"),
+        } for i in items[:n]],
+    }
 
 
 async def get_customer_summary(
@@ -1460,10 +1922,21 @@ async def get_customer_summary(
     }
 
 
-async def list_vms(session: AsyncSession, *, user: User, limit: int = 200) -> dict[str, Any]:
-    """虛擬機清單（Proxmox VE 等同步回來）。"""
+async def list_vms(
+    session: AsyncSession, *, user: User, limit: int = 200,
+    subnet_cidr: str | None = None, subnet_id: str | None = None,
+) -> dict[str, Any]:
+    """虛擬機清單（Proxmox VE 等同步回來）。問某網段有哪些 VM 要帶 subnet_cidr。"""
     from app.models.virt import VirtualMachine, VMInterface
-    rows = list((await session.execute(select(VirtualMachine).limit(limit))).scalars().all())
+    scope_ids, scope = await _scope_subnet(
+        session, user=user, subnet_cidr=subnet_cidr, subnet_id=subnet_id)
+    stmt = select(VirtualMachine)
+    if scope_ids is not None:
+        stmt = stmt.where(VirtualMachine.primary_ip_id.in_(
+            select(IPAddress.id).where(in_values(IPAddress.subnet_id, scope_ids))))
+    total = int(await session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0)
+    rows = list((await session.execute(stmt.limit(limit))).scalars().all())
     out = []
     for v in rows:
         ifaces = list((await session.execute(
@@ -1481,7 +1954,7 @@ async def list_vms(session: AsyncSession, *, user: User, limit: int = 200) -> di
                 "name": i.name, "mac": i.mac, "primary_ip": i.primary_ip, "bridge": i.bridge,
             } for i in ifaces],
         })
-    return {"vms": out, "count": len(out)}
+    return {"scope": scope, "count": total, "returned": len(out), "vms": out}
 
 
 async def list_wireless_links(session: AsyncSession, *, user: User, limit: int = 200) -> dict[str, Any]:
@@ -1610,11 +2083,34 @@ async def cable_trace(session: AsyncSession, *, user: User, cable_id: str) -> di
     }
 
 
-async def list_power(session: AsyncSession, *, user: User, limit: int = 200) -> dict[str, Any]:
-    """電力清單：饋線（電壓/電流/相位）與插座（接到哪台裝置）。"""
+async def list_power(
+    session: AsyncSession, *, user: User, limit: int = 200, rack_id: str | None = None,
+) -> dict[str, Any]:
+    """電力清單：饋線（電壓/電流/相位）與插座（接到哪台裝置）。
+
+    問「某機櫃／某機房的電力」要帶 rack_id，否則回的是全站電力。
+    """
     from app.models.physical import PowerFeed, PowerOutlet
-    feeds = list((await session.execute(select(PowerFeed).limit(min(int(limit), 500)))).scalars().all())
-    outlets = list((await session.execute(select(PowerOutlet).limit(min(int(limit), 500)))).scalars().all())
+    lim = min(int(limit), 500)
+    fstmt = select(PowerFeed)
+    ostmt = select(PowerOutlet)
+    scope = "all"
+    if rack_id:
+        rid = _as_uuid(rack_id, "rack_id")
+        vis = await visible_ids(session, user=user, object_type="rack")
+        if vis is not None and rid not in vis:
+            raise IPAMToolError("rack not visible to this user")
+        scope = f"rack:{rid}"
+        fstmt = fstmt.where(PowerFeed.rack_id == rid)
+        # 插座掛在饋線上 → 以範圍內的饋線反查
+        ostmt = ostmt.where(PowerOutlet.feed_id.in_(select(PowerFeed.id).where(
+            PowerFeed.rack_id == rid)))
+    feed_total = int(await session.scalar(
+        select(func.count()).select_from(fstmt.subquery())) or 0)
+    outlet_total = int(await session.scalar(
+        select(func.count()).select_from(ostmt.subquery())) or 0)
+    feeds = list((await session.execute(fstmt.limit(lim))).scalars().all())
+    outlets = list((await session.execute(ostmt.limit(lim))).scalars().all())
     feed_out = [{
         "id": str(f.id), "name": f.name, "voltage_v": f.voltage_v, "amperage_a": f.amperage_a,
         "phase": f.phase, "supply_type": f.supply_type,
@@ -1627,22 +2123,164 @@ async def list_power(session: AsyncSession, *, user: User, limit: int = 200) -> 
             "id": str(o.id), "label": o.label, "feed_id": str(o.feed_id) if o.feed_id else None,
             "device": dev.name if dev else None,
         })
-    return {"feeds": feed_out, "outlets": outlet_out}
+    return {"scope": scope, "feed_count": feed_total, "outlet_count": outlet_total,
+            "feeds_returned": len(feed_out), "outlets_returned": len(outlet_out),
+            "feeds": feed_out, "outlets": outlet_out}
 
 
-async def list_wazuh_agents(session: AsyncSession, *, user: User, limit: int = 200) -> dict[str, Any]:
-    """Wazuh 代理清單（狀態、OS、版本、CVE 數）。"""
+async def list_wazuh_agents(
+    session: AsyncSession, *, user: User, limit: int = 200,
+    subnet_cidr: str | None = None, subnet_id: str | None = None,
+) -> dict[str, Any]:
+    """Wazuh 代理清單（狀態、OS、版本、CVE 數）。問某網段時要帶 subnet_cidr。"""
     from app.models.wazuh import WazuhAgent
+    scope_ids, scope = await _scope_subnet(
+        session, user=user, subnet_cidr=subnet_cidr, subnet_id=subnet_id)
+    stmt = select(WazuhAgent)
+    if scope_ids is not None:
+        # agent 以 jt_ipam_address_id 對映 IP → 用該 IP 的子網路限縮
+        stmt = stmt.where(WazuhAgent.jt_ipam_address_id.in_(
+            select(IPAddress.id).where(in_values(IPAddress.subnet_id, scope_ids))))
+    total = int(await session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0)
     rows = (await session.execute(
-        select(WazuhAgent).order_by(WazuhAgent.name).limit(min(int(limit), 500))
+        stmt.order_by(WazuhAgent.name).limit(min(int(limit), 500))
     )).scalars().all()
-    return {"agents": [{
+    return {"scope": scope, "count": total, "returned": len(rows), "agents": [{
         "id": str(a.id), "agent_id": a.agent_id, "name": a.name, "ip": a.ip,
-        "status": a.status, "os_platform": a.os_platform, "os_version": a.os_version,
+        "status": a.status, "os_platform": a.os_platform, "os_version": a.os_version, "os_name": a.os_name,
         "agent_version": a.agent_version, "group": a.group,
-        "cve_critical": a.cve_critical_count, "cve_high": a.cve_high_count,
         "last_keep_alive": a.last_keep_alive,
     } for a in rows]}
+
+
+async def list_ocs_computers(
+    session: AsyncSession, *, user: User, limit: int = 200,
+    subnet_cidr: str | None = None, subnet_id: str | None = None,
+    stale_days: int | None = None,
+) -> dict[str, Any]:
+    """OCS Inventory 盤點到的電腦（OS／資產標籤／代理版本／盤點時間／備註）。
+
+    OCS 沒有自己的每台記錄表 —— 它是**透過網卡 MAC** 比對到既有 IP，再把資料補上去，
+    所以這裡列的就是「有被 OCS 盤點過」的 IP。問某網段時要帶 subnet_cidr。
+    stale_days=N 只列「超過 N 天沒被盤點」的（找資產盤點缺口用）。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import or_
+
+    scope_ids, scope = await _scope_subnet(
+        session, user=user, subnet_cidr=subnet_cidr, subnet_id=subnet_id)
+    stmt = select(IPAddress).where(
+        or_(IPAddress.ocs_id.isnot(None), IPAddress.last_seen_ocs.isnot(None)))
+    if scope_ids is not None:
+        stmt = stmt.where(in_values(IPAddress.subnet_id, scope_ids))
+    if stale_days is not None:
+        cutoff = datetime.now(UTC) - timedelta(days=max(0, int(stale_days)))
+        stmt = stmt.where(or_(IPAddress.last_seen_ocs.is_(None),
+                              IPAddress.last_seen_ocs < cutoff))
+    total = int(await session.scalar(
+        select(func.count()).select_from(stmt.subquery())) or 0)
+    rows = (await session.execute(
+        stmt.order_by(IPAddress.last_seen_ocs.desc().nullslast()).limit(min(int(limit), 500))
+    )).scalars().all()
+    return {"scope": scope, "count": total, "returned": len(rows), "computers": [{
+        "ip": str(a.ip).split("/")[0], "hostname": a.hostname,
+        "mac": str(a.mac) if a.mac else None,
+        "os": a.os_ocs, "tag": a.ocs_tag, "agent_version": a.ocs_agent,
+        "last_inventory": a.last_seen_ocs, "ocs_id": a.ocs_id,
+        "notes": a.ocs_notes or [],
+    } for a in rows]}
+
+
+async def _rustdesk_brief(session: AsyncSession, address_id: Any) -> dict[str, Any] | None:
+    from app.services.rustdesk import for_address
+    rd = await for_address(session, address_id)
+    if rd is None:
+        return None
+    return {"id": rd["id"], "online": rd["online"], "last_online_at": rd["last_online_at"],
+            "server": rd["server_name"]}
+
+
+async def list_rustdesk_peers(
+    session: AsyncSession, *, user: User, limit: int = 200,
+    subnet_cidr: str | None = None, subnet_id: str | None = None,
+    online: bool | None = None, q: str | None = None,
+) -> dict[str, Any]:
+    """RustDesk Server（開源版）上註冊的裝置：ID、是否上線、最後上線、登記 IP、對應到的 IP 記錄。
+
+    hbbs 不存主機名稱／OS；hostname 欄是對應到的 jt-ipam IP 記錄的。問某網段時要帶 subnet_cidr ——
+    帶了就只列「對應到該網段 IP」的裝置（沒對應到的不知道在哪個網段）。
+    """
+    from sqlalchemy import or_
+
+    from app.models.rustdesk import RustDeskPeer, RustDeskServer
+
+    scope_ids, scope = await _scope_subnet(
+        session, user=user, subnet_cidr=subnet_cidr, subnet_id=subnet_id)
+    stmt = (select(RustDeskPeer, RustDeskServer.name, IPAddress.ip, IPAddress.hostname)
+            .join(RustDeskServer, RustDeskServer.id == RustDeskPeer.server_id)
+            .outerjoin(IPAddress, IPAddress.id == RustDeskPeer.address_id))
+    if scope_ids is not None:
+        stmt = stmt.where(in_values(IPAddress.subnet_id, scope_ids))
+    if online is not None:
+        stmt = stmt.where(RustDeskPeer.online.is_(bool(online)))
+    if q and str(q).strip():
+        like = f"%{str(q).strip()[:100]}%"
+        stmt = stmt.where(or_(RustDeskPeer.rustdesk_id.ilike(like), IPAddress.hostname.ilike(like),
+                              func.host(RustDeskPeer.registered_ip).ilike(like)))
+    total = int(await session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+    rows = (await session.execute(
+        stmt.order_by(RustDeskPeer.online.desc(), RustDeskPeer.last_online_at.desc().nullslast())
+        .limit(min(int(limit), 500)))).all()
+    return {"scope": scope, "count": total, "returned": len(rows), "peers": [{
+        "rustdesk_id": p.rustdesk_id, "server": server, "online": p.online,
+        "last_online_at": p.last_online_at,
+        "registered_ip": str(p.registered_ip).split("/")[0] if p.registered_ip else None,
+        "match_status": p.match_status,
+        "ip": str(ip).split("/")[0] if ip else None, "hostname": hostname,
+    } for p, server, ip, hostname in rows]}
+
+
+async def list_rustdesk_audit(
+    session: AsyncSession, *, user: User, limit: int = 100, hours: int = 168,
+    kind: str | None = None, q: str | None = None, subnet_cidr: str | None = None, subnet_id: str | None = None,
+) -> dict[str, Any]:
+    """RustDesk 客戶端回報的稽核：誰（對方 ID、名稱、IP）在什麼時候連進哪台、傳了什麼檔案、告警（密碼錯太多次等）。
+
+    受控端要開著回報（客戶端 API 伺服器沒填時會自動送到 ID 伺服器的 21114，代理在那裡收）才會有資料。
+    問某網段時帶 subnet_cidr：只列受控端對應到該網段 IP 的紀錄。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import and_, or_
+
+    from app.models.rustdesk import RustDeskAuditEvent, RustDeskPeer
+
+    scope_ids, scope = await _scope_subnet(session, user=user, subnet_cidr=subnet_cidr, subnet_id=subnet_id)
+    E = RustDeskAuditEvent
+    since = datetime.now(UTC) - timedelta(hours=max(1, min(int(hours), 24 * 400)))
+    stmt = (select(E, IPAddress.ip, IPAddress.hostname, RustDeskPeer.hostname)
+            .outerjoin(RustDeskPeer, and_(RustDeskPeer.server_id == E.server_id,
+                                          RustDeskPeer.rustdesk_id == E.rustdesk_id))
+            .outerjoin(IPAddress, IPAddress.id == RustDeskPeer.address_id)
+            .where(E.occurred_at >= since))
+    if kind in ("conn", "file", "alarm", "note"):
+        stmt = stmt.where(E.kind == kind)
+    if scope_ids is not None:
+        stmt = stmt.where(in_values(IPAddress.subnet_id, scope_ids))
+    if q and str(q).strip():
+        like = f"%{str(q).strip()[:100]}%"
+        stmt = stmt.where(or_(E.rustdesk_id.ilike(like), E.peer_id.ilike(like), E.peer_name.ilike(like),
+                              IPAddress.hostname.ilike(like), RustDeskPeer.hostname.ilike(like)))
+    total = int(await session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+    rows = (await session.execute(stmt.order_by(E.occurred_at.desc()).limit(min(int(limit), 500)))).all()
+    return {"scope": scope, "since": since, "count": total, "returned": len(rows), "events": [{
+        "at": e.occurred_at, "kind": e.kind, "action": e.action, "device_rustdesk_id": e.rustdesk_id,
+        "device_ip": str(ip).split("/")[0] if ip else None, "device_hostname": host or rhost,
+        "peer_id": e.peer_id, "peer_name": e.peer_name, "peer_ip": str(e.ip).split("/")[0] if e.ip else None,
+        "conn_type": e.conn_type, "alarm_type": e.alarm_type, "detail": e.detail, "verified": e.verified,
+    } for e, ip, host, rhost in rows]}
 
 
 # ── 寫入類（一律 ADMIN ONLY，與 allocate_ip 同模式） ──
@@ -1706,7 +2344,8 @@ async def create_device(
     """ADMIN ONLY。建立裝置。"""
     if not user.is_admin:
         raise IPAMToolError("create_device requires admin")
-    dev = Device(name=name.strip(), type=type, fqdn=fqdn, vendor=vendor, model=model)
+    dev = Device(name=name.strip(), type=type, fqdn=fqdn, vendor=vendor, model=model,
+                 type_source="manual" if type != "other" else None)
     session.add(dev)
     await session.flush()
     return {"id": str(dev.id), "name": dev.name, "type": dev.type}
@@ -1944,7 +2583,7 @@ async def list_connection_targets(
         if vis is not None:
             if not vis:
                 return {"items": [], "count": 0}
-            stmt = stmt.where(IPAddress.subnet_id.in_(vis))
+            stmt = stmt.where(in_values(IPAddress.subnet_id, vis))
     rows = list((await session.execute(stmt)).scalars().all())
     perm_cache: dict[Any, str] = {}
     kept: list[IPAddress] = []
@@ -1970,7 +2609,7 @@ async def list_connection_targets(
     dev_names: dict[Any, str] = {}
     if dev_ids:
         drows = (await session.execute(
-            select(Device.id, Device.name).where(Device.id.in_(dev_ids))
+            select(Device.id, Device.name).where(in_values(Device.id, dev_ids))
         )).all()
         dev_names = {d[0]: d[1] for d in drows}
     items = [{
@@ -2030,6 +2669,12 @@ async def list_anomalies(
         "dangling_dns": _an.detect_dangling_dns,
         "duplicate_ip_records": _an.detect_duplicate_ip_records,
         "suspicious_changes": _an.detect_suspicious_changes,
+        "fw_rule_rot": _an.detect_fw_rule_rot,      # 原本漏掉 → AI 問不到規則劣化
+        # 這三類也曾經漏掉（2026-10-01 補）：畫面上有、AI 問不到
+        "arp_only_liveness": _an.detect_arp_only_liveness,
+        "stale_device_links": _an.detect_stale_device_links,
+        "mac_flapping": _an.detect_mac_flapping,
+        "identity_changes": _an.detect_identity_changes,
     }
     n = max(1, min(int(limit), 100))
     if kind:
@@ -2038,10 +2683,46 @@ async def list_anomalies(
             return {"error": f"unknown kind: {kind}", "available": sorted(detectors)}
         detectors = {key: detectors[key]}
     buckets = {k: list(await fn(session)) for k, fn in detectors.items()}
-    return {
+    total = sum(len(v) for v in buckets.values())
+    # 一疊 0 對小模型來說不夠清楚 —— GitHub issue #34：查無結果時模型自己編了兩個
+    # 根本不在這套 IPAM 裡的位址（連 MAC 都是示範用的 VMware 前綴）。事實由查詢決定、
+    # 模型只負責敘述，所以把「沒有就是沒有」寫進**工具輸出**，不要指望提示詞。
+    note = (
+        "No anomalies were detected. Say exactly that. There is nothing to list — "
+        "do NOT invent example IPs, MACs, hostnames or subnets to illustrate."
+        if total == 0 else
+        "Report only the items listed here, copied verbatim. Every IP, MAC and hostname "
+        "in your answer must appear in this result."
+    )
+    out: dict[str, Any] = {
+        "total": total,
         "counts": {k: len(v) for k, v in buckets.items()},
         "items": {k: v[:n] for k, v in buckets.items()},
     }
+    if "ip_conflicts" in buckets:
+        # GitHub issue #41：偵測器沒有資料時，模型把空結果講成「系統中沒有任何已記錄的 IP 衝突」。
+        # 「沒有依據」與「看過了、沒有衝突」要分得開，而且結果是**此刻**的狀態、不是歷史。
+        cov = await _an.ip_conflict_coverage(session)
+        out["coverage"] = {"ip_conflicts": cov}
+        scope = (f"IP conflicts are current state only: ARP observations from the last "
+                 f"{cov['window_minutes']} minutes and MAC changes from the last "
+                 f"{cov['flip_window_hours']} hours. They are not a history of past conflicts.")
+        if cov["observations"] == 0 and not buckets["ip_conflicts"]:
+            blind = ("There was no ARP evidence at all in that window (no LibreNMS, scan agent "
+                     "or firewall ARP observations), so whether any IP conflict exists cannot be "
+                     "determined. Say exactly that — do NOT say there are no IP conflicts.")
+            if total == 0:
+                # 「沒有偵測到異常，照這樣講」與「不可以說沒有衝突」不能同時出現
+                others = [k for k in buckets if k != "ip_conflicts"]
+                note = ((f"No anomalies were detected in: {', '.join(others)}. " if others else "")
+                        + "Do NOT invent example IPs, MACs, hostnames or subnets. "
+                        + blind + " " + scope)
+            else:
+                note = f"{note} {blind} {scope}"
+        else:
+            note = f"{note} {scope}"
+    out["note"] = note
+    return out
 
 
 async def investigate_ip(
@@ -2049,8 +2730,9 @@ async def investigate_ip(
 ) -> dict[str, Any]:
     """把一個位址散落在各處的線索收成一份檔案（只回事實，不做推論）。
 
-    可見性由 collect_dossier 依子網路授權處理；全域基礎設施那幾段（NAT／防火牆／DNS）
-    只有具全域讀取權限者才會拿到。
+    可見性由 collect_dossier 依子網路授權處理；全域基礎設施那幾段（NAT／防火牆／DNS／非法 DHCP）
+    只有具全域讀取權限者才會拿到，探測、異常、AI 巡檢與主控台連線只有管理員才會拿到
+    （與對應的 REST 端點同一層，不會因為走 AI 對話就鬆一級）。
     """
     from app.services.investigate import collect_dossier
     return await collect_dossier(session, user=user, ip=str(ip).strip())
@@ -2073,13 +2755,14 @@ async def check_ip_exposure(session: AsyncSession, user: User, ip: str) -> dict[
     if not d.get("found"):
         return {"found": False, "ip": ip}
     nat = d.get("nat") or []
-    fw = [r for r in (d.get("firewall") or []) if str(r.get("action", "")).lower() == "pass"]
+    # 檔案裡的鍵是 firewall_rules、主機名稱在 address 底下（以前讀 firewall／hostname，永遠是空的）
+    fw = [r for r in (d.get("firewall_rules") or []) if str(r.get("action", "")).lower() == "pass"]
     ports = sorted({str(n.get("port")) for n in nat if n.get("port")}
                    | {str(r.get("port")) for r in fw if r.get("port")})
     return {
         "found": True,
         "ip": ip,
-        "hostname": d.get("hostname"),
+        "hostname": (d.get("address") or {}).get("hostname"),
         # 有 NAT 轉發＝從外網打得到；沒有不代表安全（可能走反向代理或另一條路徑）
         "reachable_from_wan": bool(nat),
         "open_ports": ports,
@@ -2161,6 +2844,20 @@ TOOLS: dict[str, dict[str, Any]] = {
             "required": ["mac"],
         },
     },
+    "mac_history": {
+        "fn": mac_history,
+        "description": (
+            "Everything known about one MAC address: every IP it used (first/last seen, still in use), "
+            "when it was replaced and by which MAC, switch ports it appeared on, DHCP reservations, the device "
+            "or VM it belongs to, and other MACs that are probably the same device (random/private MAC rotation). "
+            "Use when the user has a MAC and asks which IPs it used, where it is, or its history."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"mac": {"type": "string", "description": "MAC address in any common format"}},
+            "required": ["mac"],
+        },
+    },
     "list_vlans": {
         "fn": list_vlans,
         "description": "List VLANs; optional exact number lookup.",
@@ -2188,13 +2885,23 @@ TOOLS: dict[str, dict[str, Any]] = {
     "list_racks": {
         "fn": list_racks,
         "description": (
-            "List racks (機櫃) with location, device count, total/used/free U, and each "
-            "mounted device's U position & size (u_position/u_size/rack_face). Use this to "
-            "answer how many more devices/U fit in a rack — free_u is the free U count."
+            "List racks and shelving units (機櫃／層架) with location, device count, "
+            "total/used/free rows, and each mounted device's position: u_position/u_size "
+            "plus rack_slot/rack_slot_span (side by side) and rack_vslot/rack_vslot_span "
+            "(stacked within one row), on a 60-cell grid. kind tells you the type "
+            "(rack / industrial / lackrack = U-based; shelf / wire_shelf / wood_shelf / "
+            "angle_shelf = slotted angle steel shelving / kallax = IKEA KALLAX cube unit are "
+            "shelf kinds). Shelf kinds are counted "
+            "in LEVELS not U — use rows_label, and placeable_rows (shelves can also take "
+            "devices on top of the highest board). A row may hold several devices, so check "
+            "rows_with_space before saying a row is full."
         ),
         "parameters": {
             "type": "object",
-            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500}},
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+                "location_id": {"type": "string", "description": "Restrict to one location (機房); otherwise all racks"},
+            },
         },
     },
     "list_locations": {
@@ -2210,7 +2917,10 @@ TOOLS: dict[str, dict[str, Any]] = {
         "description": (
             "List or search devices (裝置). Optional name substring or type filter "
             "(server/switch/router/firewall/ap/storage/ipmi/other). Includes each device's "
-            "rack U position/size (u_position, u_size, rack_face) and rack_id."
+            "rack row position/size (u_position, u_size, rack_face), its position WITHIN "
+            "that row (rack_slot/rack_slot_span side by side, rack_vslot/rack_vslot_span "
+            "stacked, on a 60-cell grid; 0/60 means the whole row) and rack_id. On shelving "
+            "units a row is a LEVEL, not a U — call list_racks for the rack's kind."
         ),
         "parameters": {
             "type": "object",
@@ -2218,14 +2928,19 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "name": {"type": "string"},
                 "type": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+                "location_id": {"type": "string", "description": "Restrict to one location (機房)"},
+                "rack_id": {"type": "string", "description": "Restrict to one rack"},
             },
         },
     },
     "get_device": {
         "fn": get_device,
         "description": (
-            "Device details by id or name: IPs, VLANs (via LibreNMS), and its rack U "
-            "position/size (u_position, u_size, rack_face) + the rack it's mounted in."
+            "Device details by id or name: IPs, VLANs (via LibreNMS), its rack row "
+            "position/size (u_position, u_size, rack_face), its position within that row "
+            "(rack_slot/rack_slot_span, rack_vslot/rack_vslot_span on a 60-cell grid) and "
+            "the rack it is mounted in (the rack's kind and uses_levels fields say whether "
+            "rows are levels or U)."
         ),
         "parameters": {
             "type": "object",
@@ -2245,10 +2960,14 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     "list_nat": {
         "fn": list_nat,
-        "description": "List NAT rules (NAT 規則).",
+        "description": "List NAT rules (NAT 規則). If the question is about one subnet/CIDR you MUST pass subnet_cidr, otherwise the answer covers the whole system. The reply carries 'scope' and 'count'; state them.",
         "parameters": {
             "type": "object",
-            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500}},
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+                "subnet_cidr": {"type": "string", "description": "Restrict to this subnet, e.g. 198.51.100.0/24"},
+                "subnet_id": {"type": "string"},
+            },
         },
     },
     "switch_port_for_ip": {
@@ -2368,6 +3087,14 @@ TOOLS: dict[str, dict[str, Any]] = {
         "parameters": {"type": "object", "properties": {"ip": {"type": "string"}},
                        "required": ["ip"]},
     },
+    "get_ip_history": {
+        "fn": get_ip_history,
+        "description": "Forensic timeline for one IP: field-level change log, ARP MAC bindings, per-source hostname observations, DHCP sightings. Answers 'who was this IP on that day'.",
+        "parameters": {"type": "object", "properties": {
+            "ip": {"type": "string"},
+            "days": {"type": "integer", "description": "lookback window, default 30, max 365"}},
+            "required": ["ip"]},
+    },
     "get_ip_detail": {
         "fn": get_ip_detail,
         "description": "Full record for one IP: state, hostname, MAC, owner, device, switch port, customer, last-seen sources.",
@@ -2399,7 +3126,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "description": ("List DHCP pool ranges synced from the firewall / DHCP integrations "
                         "(OPNsense, pfSense, FortiGate, Windows DHCP). Use this to tell whether "
                         "an address falls inside a DHCP pool — do not guess from the subnet."),
-        "parameters": {"type": "object", "properties": {
+        "parameters": {"type": "object", "properties": {"subnet_cidr": {"type": "string", "description": "Restrict to this subnet, e.g. 198.51.100.0/24"}, "subnet_id": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
     },
     "list_fortigate_policies": {
@@ -2415,6 +3142,41 @@ TOOLS: dict[str, dict[str, Any]] = {
                         "Filter by firewall_name and/or vdom."),
         "parameters": {"type": "object", "properties": {
             "firewall_name": {"type": "string"}, "vdom": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+    },
+    "list_paloalto_policies": {
+        "fn": list_paloalto_policies,
+        "description": ("List Palo Alto (PAN-OS) security policies in evaluation order. "
+                        "Includes the App-ID, which is what a PAN-OS rule actually matches on. "
+                        "Filter by firewall_name and/or vsys."),
+        "parameters": {"type": "object", "properties": {
+            "firewall_name": {"type": "string"}, "vsys": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+    },
+    "list_paloalto_addresses": {
+        "fn": list_paloalto_addresses,
+        "description": ("List Palo Alto address objects and address groups. "
+                        "Filter by firewall_name and/or vsys."),
+        "parameters": {"type": "object", "properties": {
+            "firewall_name": {"type": "string"}, "vsys": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+    },
+    "list_mikrotik_rules": {
+        "fn": list_mikrotik_rules,
+        "description": ("List MikroTik RouterOS firewall rules in evaluation order "
+                        "(RouterOS matches top-down; the order is the semantics). "
+                        "Filter by router_name and/or table (filter|nat|mangle)."),
+        "parameters": {"type": "object", "properties": {
+            "router_name": {"type": "string"},
+            "table": {"type": "string", "enum": ["filter", "nat", "mangle"]},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+    },
+    "list_mikrotik_address_lists": {
+        "fn": list_mikrotik_address_lists,
+        "description": ("List MikroTik address-list entries (RouterOS's equivalent of "
+                        "aliases; one row per address). Filter by router_name and/or list_name."),
+        "parameters": {"type": "object", "properties": {
+            "router_name": {"type": "string"}, "list_name": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
     },
     "list_firewall_rules": {
@@ -2471,9 +3233,16 @@ TOOLS: dict[str, dict[str, Any]] = {
         "fn": investigate_ip,
         "description": "Everything known about one IP address in one place: the record, "
                        "other records for the same address in overlapping subnets, what "
-                       "each source reports as its hostname and OS, monitoring coverage, "
-                       "ARP history, recent changes, and (for global readers) DNS, NAT "
-                       "and firewall rules. Facts only, no inference.",
+                       "each source reports as its hostname and OS, device type and how it "
+                       "was decided, NIC vendor, monitoring (Wazuh, LibreNMS, Zabbix), "
+                       "endpoint agents (OCS inventory, RustDesk), the matching VM or "
+                       "container, DHCP reservations/leases/pool, the switch ports its MAC "
+                       "was learned on, firewall ARP/VPN/lease evidence, last seen by "
+                       "source, ARP history, recent changes, and a computed list of "
+                       "contradictions (conflicts). Global readers also get DNS, NAT, "
+                       "firewall rules/objects on every vendor and rogue DHCP sightings; "
+                       "admins also get the latest identify probe, open anomalies, AI "
+                       "findings and recent console sessions. Facts only, no inference.",
         "parameters": {
             "type": "object",
             "properties": {"ip": {"type": "string", "description": "IPv4 or IPv6"}},
@@ -2491,7 +3260,9 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "kind": {"type": "string", "description":
                          "ip_conflicts | mac_drifts | ghost_ips | unauthorized_ips | "
-                         "rogue_dhcp | external_exposure | dangling_dns | duplicate_ip_records | suspicious_changes"},
+                         "rogue_dhcp | external_exposure | dangling_dns | duplicate_ip_records | suspicious_changes | "
+                         "fw_rule_rot | arp_only_liveness | stale_device_links | mac_flapping | "
+                         "identity_changes (device type or OS family changed)"},
                 "limit": {"type": "integer", "description": "max items per kind (default 20)"},
             },
         },
@@ -2531,14 +3302,35 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     "list_fdb": {
         "fn": list_fdb,
-        "description": "Switch FDB entries (MAC↔port/VLAN). Filter by mac.",
-        "parameters": {"type": "object", "properties": {
+        "description": "Switch FDB entries (MAC↔port/VLAN). Filter by mac. If the question is about one subnet/CIDR you MUST pass subnet_cidr, otherwise the answer covers the whole system. The reply carries 'scope' and 'count'; state them.",
+        "parameters": {"type": "object", "properties": {"subnet_cidr": {"type": "string", "description": "Restrict to this subnet, e.g. 198.51.100.0/24"}, "subnet_id": {"type": "string"},
             "mac": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
     },
     "wazuh_missing_agents": {
         "fn": wazuh_missing_agents,
-        "description": "IPs that have a hostname but no active Wazuh agent (security coverage gap).",
-        "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+        "description": ("IPs that have a hostname but no active Wazuh agent (security coverage gap). "
+                        "If the question is about one subnet/CIDR, you MUST pass subnet_cidr "
+                        "(e.g. '198.51.100.0/24') — otherwise the result covers every subnet the "
+                        "Wazuh integration is limited to (scope 'integration_scope'), or the whole "
+                        "system (scope 'all') when it has no limit, and answering with it would be "
+                        "wrong. The reply includes 'scope'; state it."),
+        "parameters": {"type": "object", "properties": {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            "subnet_cidr": {"type": "string", "description": "Restrict to this subnet, e.g. 198.51.100.0/24"},
+            "subnet_id": {"type": "string"}}},
+    },
+    "list_attack_surface": {
+        "fn": list_attack_surface,
+        "description": ("Externally reachable services (the attack surface): IP:port entries "
+                        "with their IPAM identity and the DNS names that resolve to them. "
+                        "Ask by name with fqdn='meet.example.net' (resolved through synced DNS "
+                        "records) or by address with ip=. The reply carries 'scope' and 'count'; "
+                        "state them. Entries marked registered=false point at hosts IPAM does "
+                        "not know — that is itself a finding worth reporting."),
+        "parameters": {"type": "object", "properties": {
+            "fqdn": {"type": "string", "description": "Restrict to services reachable via this FQDN"},
+            "ip": {"type": "string", "description": "Restrict to this address"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
     },
     "get_customer_summary": {
         "fn": get_customer_summary,
@@ -2548,8 +3340,8 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     "list_vms": {
         "fn": list_vms,
-        "description": "List virtual machines (synced from Proxmox VE etc.).",
-        "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+        "description": "List virtual machines (synced from Proxmox VE etc.). If the question is about one subnet/CIDR you MUST pass subnet_cidr, otherwise the answer covers the whole system. The reply carries 'scope' and 'count'; state them.",
+        "parameters": {"type": "object", "properties": {"subnet_cidr": {"type": "string", "description": "Restrict to this subnet, e.g. 198.51.100.0/24"}, "subnet_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
     },
     "list_wireless_links": {
         "fn": list_wireless_links,
@@ -2653,7 +3445,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "fn": calc_aggregate,
         "description": "Collapse/aggregate multiple CIDRs (comma- or space-separated) into the minimal set.",
         "parameters": {"type": "object", "properties": {
-            "cidrs": {"type": "string", "description": "e.g. '192.168.0.0/24, 192.168.1.0/24'"}},
+            "cidrs": {"type": "string", "description": "e.g. '192.168.0.0/24, 198.51.100.0/24'"}},
             "required": ["cidrs"]},
     },
     "calc_netmask": {
@@ -2750,21 +3542,42 @@ TOOLS: dict[str, dict[str, Any]] = {
     "list_power": {
         "fn": list_power,
         "description": "List power feeds (voltage/amperage/phase) and outlets (which device each outlet powers).",
-        "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+        "parameters": {"type": "object", "properties": {"rack_id": {"type": "string", "description": "Restrict to one rack"}, "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+    },
+    "list_ocs_computers": {
+        "fn": list_ocs_computers,
+        "description": "List computers inventoried by OCS Inventory (OS, asset tag, agent version, last inventory time, notes). OCS matches machines to existing IPs by network-card MAC. If the question is about one subnet/CIDR you MUST pass subnet_cidr, otherwise the answer covers the whole system. Use stale_days=N to find assets not inventoried for N days. The reply carries 'scope' and 'count'; state them.",
+        "parameters": {"type": "object", "properties": {"subnet_cidr": {"type": "string", "description": "Restrict to this subnet, e.g. 198.51.100.0/24"}, "subnet_id": {"type": "string"}, "stale_days": {"type": "integer", "minimum": 0, "description": "Only computers not inventoried for this many days"}, "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+    },
+    "list_rustdesk_audit": {
+        "fn": list_rustdesk_audit,
+        "description": "RustDesk connection audit reported by the RustDesk clients themselves: who (peer RustDesk ID, name, IP) connected to which device and when (kind=conn, action new/auth/close; conn_type 0 desktop, 1 file transfer, 2 port forward, 3 camera, 4 terminal), file transfers (kind=file) and alarms (kind=alarm; alarm_type 1 = over 30 wrong passwords, 2 = 6 wrong passwords within a minute, 6 = too many from one IPv6 prefix, 0/10 = IP/ID allowlist violation). Default window is the last 168 hours. If the question is about one subnet/CIDR you MUST pass subnet_cidr. The reply carries 'scope', 'since' and 'count'; state them.",
+        "parameters": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["conn", "file", "alarm", "note"]}, "q": {"type": "string", "description": "Search device or peer RustDesk ID, peer name, hostname"}, "hours": {"type": "integer", "minimum": 1, "maximum": 9600}, "subnet_cidr": {"type": "string", "description": "Restrict to devices mapped to this subnet, e.g. 198.51.100.0/24"}, "subnet_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+    },
+    "list_rustdesk_peers": {
+        "fn": list_rustdesk_peers,
+        "description": "List devices registered on the RustDesk Server (open source): RustDesk ID, online now, last time seen online, the IP the server saw, and the jt-ipam IP record it maps to (hostname comes from that record; RustDesk itself does not store hostnames or OS). If the question is about one subnet/CIDR you MUST pass subnet_cidr (only devices mapped to that subnet are listed). The reply carries 'scope' and 'count'; state them.",
+        "parameters": {"type": "object", "properties": {"subnet_cidr": {"type": "string", "description": "Restrict to devices mapped to this subnet, e.g. 198.51.100.0/24"}, "subnet_id": {"type": "string"}, "online": {"type": "boolean", "description": "Only online (true) or offline (false) devices"}, "q": {"type": "string", "description": "Search RustDesk ID, hostname or IP"}, "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
     },
     "list_wazuh_agents": {
         "fn": list_wazuh_agents,
-        "description": "List Wazuh agents (status, OS, version, CVE critical/high counts). For the coverage GAP use wazuh_missing_agents instead.",
-        "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
+        "description": "List Wazuh agents (status, OS, version, CVE critical/high counts). For the coverage GAP use wazuh_missing_agents instead. If the question is about one subnet/CIDR you MUST pass subnet_cidr, otherwise the answer covers the whole system. The reply carries 'scope' and 'count'; state them.",
+        "parameters": {"type": "object", "properties": {"subnet_cidr": {"type": "string", "description": "Restrict to this subnet, e.g. 198.51.100.0/24"}, "subnet_id": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 500}}},
     },
 }
 
 
 # ─────────────────── AI 對話：異動類工具需使用者確認 ───────────────────
 # 這些工具會新增 / 修改 / 刪除資料；AI 對話中不直接執行，先回前端請使用者按「確認」。
+from app.mcp.impact_tools import IMPACT_TOOLS  # noqa: E402 -- 工具字典建好之後才併入
+
+TOOLS.update(IMPACT_TOOLS)
+
 MUTATING_TOOLS: frozenset[str] = frozenset({
     "allocate_ip", "update_ip", "create_subnet", "create_device",
     "approve_ip_request", "reject_ip_request",
+    # 變更影響預演：建立計畫、開始分析、存 AI 草擬的待辦（都不改來源資料，但會寫入計畫）
+    "impact_create_plan", "impact_start_run", "impact_accept_task_draft",
 })
 
 
@@ -2786,12 +3599,14 @@ GLOBAL_READ_TOOLS: frozenset[str] = frozenset({
     "list_vlans", "list_vrfs", "list_nat", "list_firewalls", "list_firewall_rules",
     "list_firewall_aliases", "list_dns_servers", "list_dns_zones", "list_dns_records",
     "check_dns_consistency", "dns_lookup",
-    "list_vms", "list_wireless_links", "list_vpn_tunnels", "list_scan_agents",
+    "list_vms", "list_wireless_links", "list_vpn_tunnels",
     "list_arp", "list_fdb", "list_circuits", "list_providers", "list_asns",
     "list_tenants", "list_contacts", "list_ssids", "list_cables", "cable_trace",
-    "list_power", "list_wazuh_agents", "wazuh_missing_agents", "get_topology",
-    "list_certificates", "list_cert_distribution",
+    "list_power", "get_topology",
+    "list_attack_surface",
     "list_dhcp_ranges", "list_fortigate_policies", "list_fortigate_addresses",
+    "list_paloalto_policies", "list_paloalto_addresses",
+    "list_mikrotik_rules", "list_mikrotik_address_lists",
     # NAT 與防火牆規則是全域基礎設施資料 —— 與 list_nat / list_firewall_rules 同一層，
     # 不能因為它是「以 IP 為單位查」就鬆一級（改端點權限時要同步收 MCP，這裡踩過）。
     "check_ip_exposure",
@@ -2804,6 +3619,13 @@ GLOBAL_READ_TOOLS: frozenset[str] = frozenset({
 # MCP 是同一份資料的另一道門，鎖不一樣就等於沒鎖 —— 這個專案在 get_topology 踩過一次。
 ADMIN_TOOLS: frozenset[str] = frozenset({
     "list_ai_findings", "list_anomalies",
+    # 這幾個讀的資料在 REST 上都只給 admin（掃描代理、憑證與派送、Wazuh 代理與缺口、OCS 電腦）；
+    # 以前放在全域讀取，網頁打不開的資料在 AI 對話裡問得到（2026-09-30 盤點 API 手冊時發現）。
+    # tests/test_mcp_tools_match_rest_permissions.py 守著：工具不可以比對應的 REST 端點寬
+    "list_scan_agents", "list_certificates", "list_cert_distribution",
+    "list_wazuh_agents", "wazuh_missing_agents", "list_ocs_computers",
+    # RustDesk 整合頁（REST /rustdesk）只給 admin
+    "list_rustdesk_peers", "list_rustdesk_audit",
 })
 
 
@@ -2839,8 +3661,11 @@ async def authorize_tool(session: AsyncSession, user: User, name: str) -> str | 
     """
     token_scopes = set(getattr(user, "_api_token_scopes", []) or [])
     token_filters = getattr(user, "_api_token_object_filters", None)
+    if token_scopes & {"read", "mcp:read"} and name in MUTATING_TOOLS:
+        return "permission_denied: read-only MCP token cannot change data"
     if token_scopes and not (
-        "mcp:*" in token_scopes
+        "read" in token_scopes
+        or "mcp:*" in token_scopes
         or "mcp:read" in token_scopes
         or f"mcp:tool:{name}" in token_scopes
     ):
@@ -2849,6 +3674,11 @@ async def authorize_tool(session: AsyncSession, user: User, name: str) -> str | 
         return "permission_denied: MCP does not support token object_filters yet"
     if name in UTILITY_TOOLS:
         return None
+    if name.startswith("impact_"):
+        # 變更影響預演關閉時，工具清單裡也不出現（少佔小模型的提示詞）
+        from app.services.change_impact.config import get_config
+        if not (await get_config(session))["enabled"]:
+            return "feature_disabled: 變更影響預演尚未啟用。"
     if name in MUTATING_TOOLS and not getattr(user, "is_admin", False):
         return "permission_denied: 此操作需要管理員權限。"
     if name in ADMIN_TOOLS and not getattr(user, "is_admin", False):
@@ -2889,4 +3719,10 @@ def summarize_action(name: str, args: dict[str, Any]) -> str:
         return "核准一筆 IP 申請"
     if name == "reject_ip_request":
         return "駁回一筆 IP 申請"
+    if name == "impact_create_plan":
+        return f"建立變更影響預演計畫「{a.get('title') or ''}」（只建立計畫，不改任何設備）"
+    if name == "impact_start_run":
+        return "開始一次變更影響分析（唯讀預演）"
+    if name == "impact_accept_task_draft":
+        return f"把 {len(a.get('indices') or [])} 個 AI 草擬的待辦存進計畫"
     return f"執行 {name}"

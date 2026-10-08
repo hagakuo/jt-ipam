@@ -1,12 +1,12 @@
 <script setup lang="ts">
 /**
- * FortiGate 防火牆檢視（唯讀，Beta）：政策 / 位址物件，可依 VDOM 篩選。
+ * FortiGate 防火牆檢視（唯讀）：政策 / 位址物件，可依 VDOM 篩選。
  * 資料由 FortiGate 整合同步進來；本頁不呼叫 FortiGate、也不修改任何設定。
  */
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
-  NCard, NDataTable, NSpace, NSelect, NTag, NIcon, NEmpty, NTabs, NTabPane,
+  NCard, NDataTable, NSpace, NSelect, NIcon, NEmpty, NTabs, NTabPane,
   useMessage, type DataTableColumns,
 } from "naive-ui";
 import { FirewallIcon } from "@/icons";
@@ -16,12 +16,17 @@ import {
 } from "@/api/fortigate";
 import { autoSort } from "@/composables/useTableSort";
 import { apiErrMsg } from "@/api/client";
+import { useRoute } from "vue-router";
+import { useFocusRow } from "@/composables/useFocusRow";
+import FocusRowBanner from "@/components/FocusRowBanner.vue";
 
 const { t } = useI18n();
 const msg = useMessage();
 
 const firewalls = ref<FortiGateFirewall[]>([]);
-const fwId = ref<string | null>(null);
+const route = useRoute();
+// IP 詳細頁點進來：?fw=<id>&focus=<政策 id>
+const fwId = ref<string | null>(typeof route.query.fw === "string" ? route.query.fw : null);
 const vdom = ref<string | null>(null);
 const policies = ref<FortiGatePolicy[]>([]);
 const addresses = ref<FortiGateAddressObject[]>([]);
@@ -54,6 +59,9 @@ async function loadData() {
   finally { loading.value = false; }
 }
 
+const policyFocus = useFocusRow(policies, (p, k) => p.id === k);
+const policiesShown = computed(() => policyFocus.apply(policies.value));
+watch(fwId, (_n, old) => { if (old != null) policyFocus.clear(); });   // 換了防火牆，那一筆就不在這裡了
 watch([fwId, vdom], () => { void loadData(); });
 onMounted(async () => { await loadFirewalls(); await loadData(); });
 
@@ -97,7 +105,6 @@ const addrCols = computed<DataTableColumns<FortiGateAddressObject>>(() => autoSo
       <n-space align="center" :wrap-item="false">
         <n-icon :size="22"><FirewallIcon /></n-icon>
         <span>{{ t("fortigate.view_title") }}</span>
-        <n-tag type="warning" size="small" :bordered="false">Beta</n-tag>
       </n-space>
     </template>
 
@@ -111,7 +118,8 @@ const addrCols = computed<DataTableColumns<FortiGateAddressObject>>(() => autoSo
     <n-empty v-if="!firewalls.length" :description="t('fortigate.none_configured')" />
     <n-tabs v-else type="line">
       <n-tab-pane name="policies" :tab="t('fortigate.policies')">
-        <n-data-table :columns="policyCols" :data="policies" :loading="loading"
+        <FocusRowBanner :ctl="policyFocus" :loading="loading" />
+        <n-data-table :columns="policyCols" :data="policiesShown" :loading="loading"
                       :bordered="false" :scroll-x="1180" />
       </n-tab-pane>
       <n-tab-pane name="addresses" :tab="t('fortigate.addresses')">

@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import (
     ARRAY,
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -57,10 +58,43 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     # OS 偵測結果：原始字串 + 正規化家族 key（前端依 family 配 icon）。see core/os_fingerprint.py
     os_guess: Mapped[str | None] = mapped_column(String(160))
     os_family: Mapped[str | None] = mapped_column(String(24))
+    #: 掃描代理定期偵測判讀出的設備類型（camera / printer / storage …，見 services/device_identity）
+    #: 與廠牌型號。判讀與 IP 探測同一套（含 Recog 指紋庫）；判讀不出來時保留上一次的結果。
+    device_kind: Mapped[str | None] = mapped_column(String(24))
+    device_model: Mapped[str | None] = mapped_column(String(120))
+    device_identified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: OCS Inventory 代理回報的 OS 原始字串。獨立欄位（不污染掃描代理的 os_guess）——
+    #: 經 os_precedence 排在 scanner 之上，讓 agent 回報的 OS 蓋過 nmap 的指紋猜測。
+    os_ocs: Mapped[str | None] = mapped_column(String(160))
+    #: 對到的 OCS Inventory 電腦 systemid，供裝置明細「在 OCS 檢視」深連結。
+    ocs_id: Mapped[int | None] = mapped_column(BigInteger)
+    #: OCS 資產標籤（accountinfo.TAG）。
+    ocs_tag: Mapped[str | None] = mapped_column(String(128))
+    #: OCS 代理版本（hardware.USERAGENT）。
+    ocs_agent: Mapped[str | None] = mapped_column(String(128))
+    #: OCS 最新幾筆備註（itmgmt_comments）：[{date,user,comment,action}]。
+    ocs_notes: Mapped[list[Any] | None] = mapped_column(JSONB)
+    #: OCS 回報的硬體摘要（services/ocs.hardware_summary）：系統／主機板／BIOS／CPU／記憶體／磁碟／顯示卡。
+    #: 裝置明細的 OCS 卡片顯示這一份，而不是裝置本身的欄位（那可能是別的來源寫的）。
+    ocs_hw: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     # 各 probe 上次被執行的時間（由 report 回填），給「下次到期」顯示用。{"icmp": "...", "os": "..."}
     probe_last_run: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     ptr_ignore: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 這個 IP 要忽略哪幾類異常（0137）。逐類別而不是一個總開關：標了「這台會自己
+    # 換 MAC」（隱私隨機化）不代表它失聯也不用報。
+    anomaly_ignore: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"),
+    )
     note: Mapped[str | None] = mapped_column(Text)
+
+    # 主控台的連線出口（issue #24）：空＝沿用所屬子網路的設定；有值就覆寫它
+    jump_host_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jump_hosts.id", ondelete="SET NULL"), index=True,
+    )
+    # 或經由掃描代理中繼（issue #24 階段二，0175）；與 jump_host_id 只能擇一
+    console_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scan_agents.id", ondelete="SET NULL"), index=True,
+    )
 
     custom_fields: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
@@ -84,6 +118,25 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     is_dhcp_server: Mapped[bool] = mapped_column(default=False, nullable=False, server_default=text("false"))
     last_seen_scanner: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_librenms: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # ARP 證據獨立存：LibreNMS 的 ARP API 不回時間，只能靠「還在清單裡」推斷，
+    # 可信度遠低於裝置狀態（來源設備快取不老化就會永遠是「剛看到」）
+    last_seen_arp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 逐來源的 ARP 觀測時間：`{"opnsense": "…", "librenms": "…"}`。
+    #:
+    #: 為什麼要分來源：各家 ARP 表的「會不會過期」差很多。防火牆的 ARP 條目會自己
+    #: 老化、而且我們每輪重讀，所以「這輪還在」是有時間意義的；LibreNMS 的 ARP API
+    #: 不回任何時間，來源設備（AP／路由器）的快取不老化就會永遠看起來是剛看到。
+    #: 混成同一個欄位就沒辦法讓管理員只採信前者。
+    arp_seen: Mapped[dict] = mapped_column(   # type: ignore[type-arg]
+        JSONB, nullable=False, server_default=text("'{}'::jsonb"), default=dict,
+    )
+    #: Wazuh agent 最後一次 keep-alive（manager 端維護，會過期）
+    last_seen_wazuh: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Zabbix 最後一次回報這台主機可用（server 端輪詢維護，會過期）
+    last_seen_zabbix: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: OCS Inventory 最後一次盤點到這個 IP。**顯示用、不進上線判定** ——
+    #: 盤點時間不是活性訊號（機器關機後 agent 不會回報，但上次盤點時間還在）。
+    last_seen_ocs: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_dns: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     effective_status: Mapped[str | None] = mapped_column(String(32))
 
@@ -114,6 +167,10 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     bmc_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default=text("false")
     )
+    # 「以 RustDesk 連線」按鈕（叫出操作者電腦上的 RustDesk 客戶端）；比照 VNC 逐 IP 開啟
+    rustdesk_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
 
     __table_args__ = (
         UniqueConstraint("subnet_id", "ip", name="ip_subnet_ip_uq"),
@@ -122,8 +179,11 @@ class IPAddress(Base, UUIDPrimaryKeyMixin, TimestampMixin):
             name="ip_state_valid",
         ),
         CheckConstraint(
-            "discovery_source IN ('manual','scanner','librenms','dns','proxmox','opnsense','phpipam')",
+            "discovery_source IN ('manual','scanner','librenms','dns','proxmox','opnsense','phpipam',"
+            "'pfsense','vmware','librenms_arp')",
             name="ip_discovery_source_valid",
         ),
         Index("ix_ip_addresses_ip_gist", "ip", postgresql_using="gist"),
+        CheckConstraint("jump_host_id IS NULL OR console_agent_id IS NULL",
+                        name="ip_console_egress_one"),
     )

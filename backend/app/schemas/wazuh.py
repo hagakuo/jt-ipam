@@ -56,14 +56,13 @@ class WazuhAgentRead(StrictModel):
     status: str | None
     os_platform: str | None
     os_version: str | None
+    os_name: str | None = None
     agent_version: str | None
     group: str | None
     node_name: str | None
     last_keep_alive: datetime | None
     last_seen_at: datetime | None
     jt_ipam_address_id: uuid.UUID | None
-    cve_critical_count: int | None
-    cve_high_count: int | None
     cve_summary_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -80,3 +79,48 @@ class MissingAgentRow(StrictModel):
     ip_address_id: uuid.UUID
     ip: str | None
     hostname: str | None
+    # 所屬範圍（畫面依子網路／區段／單位篩選；單位＝IP → 子網路 → 區段第一個有掛的）
+    subnet_id: uuid.UUID | None = None
+    subnet_cidr: str | None = None
+    section_id: uuid.UUID | None = None
+    section_name: str | None = None
+    customer_id: uuid.UUID | None = None
+    customer_name: str | None = None
+    # 上線判斷要吃的欄位（前端用 IP 清單燈號同一套規則算，畫面可依狀態篩選）
+    last_seen_scanner: str | None = None
+    last_seen_librenms: str | None = None
+    last_seen_arp: str | None = None
+    last_seen_wazuh: str | None = None
+    last_seen_zabbix: str | None = None
+    arp_seen: dict[str, str] = {}
+    exclude_from_ping: bool = False
+    subnet_scan_enabled: bool | None = None
+    # 「設備類型」欄：掃描代理判讀出的類型與型號（services/device_identity）
+    device_kind: str | None = None
+    device_model: str | None = None
+
+
+
+class MissingAgentFacet(StrictModel):
+    value: str
+    label: str
+
+
+class MissingAgentFacets(StrictModel):
+    sections: list[MissingAgentFacet] = []
+    subnets: list[MissingAgentFacet] = []
+    customers: list[MissingAgentFacet] = []
+    statuses: list[MissingAgentFacet] = []
+
+
+class MissingAgentPageRow(MissingAgentRow):
+    #: 伺服器依畫面燈號同一套規則算的上線狀態（online／stale／offline／unknown）
+    status: str | None = None
+
+
+class MissingAgentPage(StrictModel):
+    """帶 page 參數時的回應：一頁資料＋篩選後總數＋全部缺口數＋篩選選項（Wazuh 與 OCS 共用）。"""
+    items: list[MissingAgentPageRow]
+    total: int
+    total_all: int
+    facets: MissingAgentFacets

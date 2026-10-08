@@ -40,6 +40,10 @@ class SubnetBase(StrictModel):
     auto_dns: bool = False
     scan_agent_id: uuid.UUID | None = None
     customer_id: uuid.UUID | None = None
+    #: 主控台的連線出口（issue #24）：空＝繼承上層或直連
+    jump_host_id: uuid.UUID | None = None
+    #: 或經由掃描代理中繼（階段二）：必須是這個子網路的掃描代理；與 jump_host_id 擇一
+    console_agent_id: uuid.UUID | None = None
     gateway: Annotated[str | None, Field(max_length=64)] = None
     dns_servers: Annotated[str | None, Field(max_length=512)] = None
     location_id: uuid.UUID | None = None
@@ -97,6 +101,10 @@ class SubnetUpdate(StrictModel):
     auto_dns: bool | None = None
     scan_agent_id: uuid.UUID | None = None
     customer_id: uuid.UUID | None = None
+    #: 主控台的連線出口（issue #24）：空＝繼承上層或直連
+    jump_host_id: uuid.UUID | None = None
+    #: 或經由掃描代理中繼（階段二）：必須是這個子網路的掃描代理；與 jump_host_id 擇一
+    console_agent_id: uuid.UUID | None = None
     gateway: Annotated[str | None, Field(max_length=64)] = None
     dns_servers: Annotated[str | None, Field(max_length=512)] = None
     location_id: uuid.UUID | None = None

@@ -92,12 +92,13 @@ onMounted(() => {
             <span>{{ data.customer.title || data.customer.name }}</span>
           </n-space>
         </template>
-        <template #header-extra>
+<!-- 控制元件移到卡片內文最上方（標題列不放控制元件） -->
+        <n-space align="center" justify="end" style="margin-bottom: 10px">
           <n-button @click="router.push({ name: 'customers' })" size="small">
             <template #icon><n-icon><ArrowLeftIcon /></n-icon></template>
             {{ t("common.back_to_list") }}
           </n-button>
-        </template>
+        </n-space>
         <n-descriptions bordered :column="3" size="small" label-placement="left">
           <n-descriptions-item :label="t('customer_detail.internal_name')">{{ data.customer.name }}</n-descriptions-item>
           <n-descriptions-item :label="t('customer_detail.display_name')">{{ data.customer.title ?? "—" }}</n-descriptions-item>

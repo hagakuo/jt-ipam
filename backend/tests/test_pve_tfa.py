@@ -40,7 +40,7 @@ async def test_tfa_challenge_asks_for_code_instead_of_failing_obscurely(monkeypa
     _patch(monkeypatch, [{"data": {"ticket": "PVE:!tfa!abc", "NeedTFA": 1}}])
     with pytest.raises(pc.PveConsoleError) as exc:
         await pc.pve_login("https://pve.example.com", "root@pam", "pw", False)
-    assert exc.value.code == "tfa_required"
+    assert exc.value.code == "pve_tfa_required"
     assert exc.value.http_status == 401
 
 
@@ -73,7 +73,7 @@ async def test_wrong_tfa_code_is_reported_clearly(monkeypatch) -> None:
         await pc.pve_login(
             "https://pve.example.com", "root@pam", "pw", False, tfa_code="000000",
         )
-    assert exc.value.code == "tfa_failed"
+    assert exc.value.code == "pve_tfa_failed"
 
 
 @pytest.mark.anyio

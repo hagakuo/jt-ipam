@@ -7,18 +7,17 @@
           <span>{{ t("api_tokens.title") }}</span>
         </n-space>
       </template>
-      <template #header-extra>
-        <n-space :size="8">
-          <n-button size="small" @click="refresh">
-            <template #icon><n-icon :component="RefreshIcon" /></template>
-            {{ t("common.refresh") }}
-          </n-button>
-          <n-button size="small" type="primary" @click="openCreate">
-            <template #icon><n-icon :component="PlusIcon" /></template>
-            {{ t("common.add") }}
-          </n-button>
-        </n-space>
-      </template>
+      <!-- 控制列：自標題列搬到內文最上方 -->
+      <n-space align="center" justify="end" style="margin-bottom: 10px">
+        <n-button size="small" @click="refresh">
+          <template #icon><n-icon :component="RefreshIcon" /></template>
+          {{ t("common.refresh") }}
+        </n-button>
+        <n-button size="small" type="primary" @click="openCreate">
+          <template #icon><n-icon :component="PlusIcon" /></template>
+          {{ t("common.add") }}
+        </n-button>
+      </n-space>
 
       <n-alert type="info" :show-icon="true" style="margin-bottom: 16px">
         {{ t("api_tokens.intro") }}

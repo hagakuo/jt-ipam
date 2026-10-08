@@ -1,6 +1,14 @@
 import { apiClient } from "@/api/client";
 
+/** 機架型態。以 U 計：rack / industrial / lackrack；其餘以「層」計。 */
+export type RackKind = "rack" | "industrial" | "shelf" | "wire_shelf" | "wood_shelf"
+  | "angle_shelf" | "kallax" | "lackrack";
+/** 表面顏色（各型態可用的見 utils/rackFinish.ts） */
+export type RackFinish = "black" | "white" | "galvanized" | "black_brown" | "oak" | "brown";
+
 export interface RackDeviceSlot {
+  rack_slot?: number;
+  rack_slot_span?: number;
   device_id: string;
   name: string;
   type: string;
@@ -20,6 +28,25 @@ export interface RackDiagram {
   location_id: string | null;
   numbering?: "top-down" | "bottom-up";
   face?: "front" | "rear";
+  /** 對外公開這個機櫃的示意圖（給別的系統用 <img> 嵌入）。預設關 */
+  expose_svg?: boolean;
+  /** issue #30：rack＝標準機櫃（列＝U）、shelf＝層架（列＝層） */
+  kind?: RackKind;
+  /** 表面顏色（沒有顏色選項的型態是 null） */
+  finish?: RackFinish | null;
+  /** 後端依機櫃實體尺寸算好的繪製大小（層架非標準寬/層高才畫得對） */
+  render_width_px?: number;
+  render_row_px?: number;
+  /** 每一層的高度 px，由第 1 層起算 */
+  render_row_px_list?: number[];
+  /** 每一列**底下**那片板的厚度 px，由上往下（畫面順序，含開放頂端那一列）。
+   *  KALLAX 的外框比內隔板厚、LackRack 疊幾張就有幾片桌面；其他型態是均一值。 */
+  render_board_px_list?: number[];
+  /** 最上面那一列之上的厚度 px（LackRack 的桌面） */
+  render_top_px?: number;
+  /** KALLAX 有幾欄、直的內隔板多寬 px */
+  render_cols?: number;
+  render_divider_px?: number;
   devices: RackDeviceSlot[];
   conflicts: Record<string, unknown>[];
 }
@@ -34,7 +61,12 @@ export interface Rack {
   id: string;
   name: string;
   u_height: number;
+  kind?: RackKind;
+  finish?: RackFinish | null;
   width_mm: number | null;
+  row_height_mm?: number | null;
+  /** 逐層高度（mm），由第 1 層起算；null＝整台用 row_height_mm */
+  level_heights?: number[] | null;
   depth_mm: number | null;
   location_id: string | null;
   location_name?: string | null;
@@ -43,6 +75,8 @@ export interface Rack {
   device_count?: number;
   numbering?: "top-down" | "bottom-up";
   face?: "front" | "rear";
+  /** 對外公開這個機櫃的示意圖（給別的系統用 <img> 嵌入）。預設關 */
+  expose_svg?: boolean;
   pos_x: number | null;
   pos_y: number | null;
   pos_rot: number;
@@ -84,5 +118,56 @@ export async function setRackPositions(
   const { data } = await apiClient.put<{ updated: number }>(
     `/api/v1/locations/${locationId}/rack-positions`, { positions },
   );
+  return data;
+}
+
+
+// ─────────────────── 對外嵌入設定（admin）───────────────────
+export interface RackEmbedConfig {
+  enabled: boolean;
+  token: string;
+}
+
+export async function getRackEmbedConfig(): Promise<RackEmbedConfig> {
+  const { data } = await apiClient.get<RackEmbedConfig>("/api/v1/system/rack-embed");
+  return data;
+}
+
+export async function setRackEmbedConfig(
+  enabled: boolean, regenerate_token = false,
+): Promise<RackEmbedConfig> {
+  const { data } = await apiClient.put<RackEmbedConfig>(
+    "/api/v1/system/rack-embed", { enabled, regenerate_token },
+  );
+  return data;
+}
+
+/** 給外部系統嵌入的完整網址（含 token）。注意：這串等同一把鑰匙，別貼到公開的地方。 */
+export function rackEmbedUrl(rackId: string, token: string): string {
+  const base = window.location.origin;
+  return `${base}/api/v1/racks/${rackId}/embed.svg?token=${encodeURIComponent(token)}`;
+}
+
+// ─────────────────── 層數調整（插入／刪除一層，裝置整批移位） ───────────────────
+export interface RackLevelMove { device_id: string; name: string; u_size: number; from: number; to: number }
+export interface RackLevelBlocker { device_id: string; name: string; u_position: number; u_size: number; reason: string }
+export interface RackLevelPlan {
+  op: "insert" | "remove";
+  at: number;
+  rack_id: string;
+  old_height: number;
+  new_height: number;
+  moves: RackLevelMove[];
+  blockers: RackLevelBlocker[];
+  /** 照著送回來就能還原（插入與刪除互為反操作） */
+  undo: { op: "insert" | "remove"; at: number; height_mm: number | null } | null;
+}
+
+/** `dryRun` 只算不做：預覽與實際執行走後端同一段程式，所以預覽看到什麼就會發生什麼。 */
+export async function rackLevelOp(
+  rackId: string,
+  body: { op: "insert" | "remove"; at: number; height_mm?: number | null; dry_run?: boolean },
+): Promise<RackLevelPlan> {
+  const { data } = await apiClient.post<RackLevelPlan>(`/api/v1/racks/${rackId}/levels`, body);
   return data;
 }

@@ -37,6 +37,8 @@ export interface Certificate {
   current_not_after: string | null;
   current_days_remaining: number | null;
   version_count: number;
+  /** 到期前幾天通知；null＝沿用全域預設 */
+  expiry_warn_days: number | null;
   current_is_self_signed: boolean;
   current_common_name: string | null;
   current_sans: string[] | null;
@@ -86,6 +88,19 @@ export async function createCertificate(payload: { name: string; description?: s
   const { data } = await apiClient.post("/api/v1/certificates", payload);
   return data;
 }
+/** 更新憑證設定（目前用於「到期前幾天通知」）。
+ *
+ *  `clear_expiry_warn_days` 是必要的：PATCH 裡的 `null` 意思是「這個欄位不修改」，
+ *  沒有它就沒辦法把一張憑證改回「沿用全域預設」。 */
+export async function updateCertificate(
+  id: string,
+  payload: { name?: string; description?: string | null;
+             expiry_warn_days?: number | null; clear_expiry_warn_days?: boolean },
+): Promise<Certificate> {
+  const { data } = await apiClient.patch(`/api/v1/certificates/${id}`, payload);
+  return data;
+}
+
 export async function deleteCertificate(id: string): Promise<void> {
   await apiClient.delete(`/api/v1/certificates/${id}`);
 }
@@ -94,10 +109,10 @@ export async function listVersions(id: string): Promise<CertVersion[]> {
   return data;
 }
 export async function downloadVersionFile(certId: string, versionId: string, fmt: string, password = ""): Promise<void> {
-  const res = await apiClient.get(`/api/v1/certificates/${certId}/versions/${versionId}/file`, {
-    params: { fmt, ...(password ? { password } : {}) },
-    responseType: "blob",
-  });
+  // POST、密碼放 body：放在網址參數的話，PFX 密碼會原封不動寫進 nginx 存取日誌與瀏覽器歷史
+  // （0.6.43 ZAP 登入後掃描抓到；後端現在直接拒絕網址裡帶 password）
+  const res = await apiClient.post(`/api/v1/certificates/${certId}/versions/${versionId}/file`,
+    { fmt, password }, { responseType: "blob" });
   const cd = String(res.headers["content-disposition"] ?? "");
   const m = cd.match(/filename="?([^"]+)"?/);
   const filename = m ? m[1] : `cert.${fmt}`;
@@ -128,13 +143,24 @@ export async function setCertSource(id: string, payload: CertSourcePayload): Pro
   const { data } = await apiClient.put(`/api/v1/certificates/${id}/source`, payload);
   return data;
 }
-export async function fetchCertNow(id: string): Promise<{ status: string; error?: string; fingerprint?: string; not_after?: string }> {
+export async function fetchCertNow(id: string): Promise<{
+  status: string; error?: string; fingerprint?: string; not_after?: string;
+  code?: string | null; params?: Record<string, unknown>;
+}> {
   const { data } = await apiClient.post(`/api/v1/certificates/${id}/fetch-now`);
   return data;
 }
-export async function testCertSource(id: string, payload: CertSourcePayload): Promise<{ ok: boolean; message: string }> {
+export async function testCertSource(id: string, payload: CertSourcePayload): Promise<{
+  ok: boolean; message: string; code?: string | null; params?: Record<string, unknown>;
+  /** SFTP 主機金鑰的指紋（第一次連上時記住，之後每次都要相同） */
+  host_key_fingerprint?: string | null;
+}> {
   const { data } = await apiClient.post(`/api/v1/certificates/${id}/source/test`, payload);
   return data;
+}
+/** 「重新信任主機金鑰」：SFTP 主機重灌或換了金鑰時，確認新指紋後清掉記住的，下一次連線重新記住 */
+export async function forgetCertSourceHostKey(id: string): Promise<void> {
+  await apiClient.post(`/api/v1/certificates/${id}/source/forget-host-key`);
 }
 export async function genCertSourceSshKey(id: string, payload: CertSourcePayload): Promise<{ public_key: string; installed: boolean; message: string }> {
   const { data } = await apiClient.post(`/api/v1/certificates/${id}/source/ssh-keypair`, payload);

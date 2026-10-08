@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import pytest
 from app.services.investigate import infer_role_hints
 
 
@@ -66,3 +67,55 @@ def test_the_prompt_tells_the_model_not_to_report_normal_patterns_as_contradicti
 def test_a_plain_host_gets_no_role_signal_block():
     from app.api.v1.endpoints.investigate import _prompt
     assert "角色訊號" not in _prompt(_dossier(), "zh-TW")
+
+
+def test_dhcp_lease_with_a_random_mac_means_changes_are_expected():
+    """2026-10-05：調查多了 DHCP 與網卡的事實。有租約、MAC 又是隨機的 → 位址換人、MAC 換掉都是常態。"""
+    d = _dossier(dhcp={"in_lease": True, "reserved": False, "in_pool": True},
+                 identity={"mac_random": True})
+    hints = infer_role_hints(d)
+    assert any("randomized" in h and "DHCP" in h for h in hints)
+    joined = " ".join(hints).lower()
+    for word in ("insecure", "misconfigur", "risk"):
+        assert word not in joined
+
+
+def test_pool_without_reservation_is_a_normal_dhcp_range():
+    d = _dossier(dhcp={"in_lease": False, "reserved": False, "in_pool": True})
+    assert any("DHCP pool" in h for h in infer_role_hints(d))
+
+
+def test_a_reserved_address_gets_no_dhcp_hint():
+    """固定分配的位址不會換人：不可以替「換了 MAC」找理由。"""
+    d = _dossier(dhcp={"in_lease": True, "reserved": True, "in_pool": True,
+                       "reservations": [{"mac": "00:11:22:33:44:55"}]})
+    assert not any("DHCP" in h for h in infer_role_hints(d))
+
+
+def test_the_prompt_explains_hostname_spelling_and_uses_the_compact_view():
+    """提示詞要說明主機名稱的寫法差異不算矛盾，送出的檔案是精簡版（沒有內部識別碼）。"""
+    from app.api.v1.endpoints.investigate import _prompt
+    d = _dossier(address={"ip_address_id": "8b0f4a8e-2f43-4a51-9d9c-3f0a6b1b2c3d", "hostname": "h"},
+                 conflicts=[{"code": "names", "params": {"n": 2}}])
+    zh = _prompt(d, "zh-TW")
+    assert "conflicts" in zh
+    assert "結尾的點" in zh
+    assert "8b0f4a8e-2f43-4a51-9d9c-3f0a6b1b2c3d" not in zh
+    assert "trailing dot" in _prompt(d, "en-US")
+
+
+@pytest.mark.anyio
+async def test_check_ip_exposure_reads_the_dossier_keys(monkeypatch):
+    """check_ip_exposure 以前讀 `firewall`／`hostname`（檔案裡沒有這兩個鍵），放行規則與主機名稱永遠是空的。"""
+    from app.mcp import tools
+
+    async def fake(_s, *, user, ip):
+        return {"found": True, "ip": ip, "address": {"hostname": "web01"},
+                "nat": [{"port": 443}],
+                "firewall_rules": [{"action": "pass", "port": "22"}, {"action": "block", "port": "23"}]}
+
+    monkeypatch.setattr("app.services.investigate.collect_dossier", fake)
+    out = await tools.check_ip_exposure(None, None, "192.0.2.10")  # type: ignore[arg-type]
+    assert out["hostname"] == "web01"
+    assert [r["port"] for r in out["firewall_allow_rules"]] == ["22"]
+    assert out["open_ports"] == ["22", "443"]

@@ -10,6 +10,8 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass
 
+from app.core.ui_error import UiError
+
 
 @dataclass
 class DNSRecordOp:
@@ -25,7 +27,7 @@ class DNSZoneInfo:
     kind: str  # forward / reverse
 
 
-class DNSAdapterError(Exception):
+class DNSAdapterError(UiError):
     """所有 adapter 失敗的基底例外。"""
 
 

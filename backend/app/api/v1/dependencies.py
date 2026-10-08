@@ -76,6 +76,7 @@ async def get_current_user(
         # scope 檢驗：唯讀 token 不得用會改資料的 HTTP 方法
         enforce_method_scope(token.scopes, request.method)
         request.state.api_token = token
+        request.state.user_id = user.id        # 稽核的操作者（見下方 JWT 分支的說明）
         return user
 
     # ── JWT ──
@@ -95,6 +96,9 @@ async def get_current_user(
     user = await session.get(User, user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Account inactive")
+    # 稽核的操作者：使用者管理、OPNsense、Wazuh 等 20 處稽核從這裡讀 —— 以前沒有人設定它，
+    # 那些紀錄的操作者一律是空的（正式機 45 筆，含建立帳號、改權限；2026-09-30 發現）
+    request.state.user_id = user.id
     return user
 
 

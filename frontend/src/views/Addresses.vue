@@ -34,11 +34,13 @@ import IpRoleTags from "@/components/IpRoleTags.vue";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import OsIcon from "@/components/OsIcon.vue";
+import { renderDeviceKind } from "@/utils/deviceKindCell";
 import { useScanProbes, osFamilyLabel } from "@/api/scanProbes";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { computed } from "vue";
+import { renderMacWithVendor } from "@/utils/macVendor";
 
-const { t, locale } = useI18n();
+const { t, te, locale } = useI18n();
 const { catalog } = useScanProbes();
 const msg = useMessage();
 const route = useRoute();
@@ -77,8 +79,19 @@ const usageSubnetLabel = computed(() => {
 });
 const sectionOptions = ref<SelectOption[]>([]);
 const { options: customerOptions, ensureLoaded: ensureCustomersLoaded } = useCustomers();
-const page = ref(1);
-const pageSize = ref(100);
+// 頁碼與每頁筆數也記在網址上：點進一筆再按上一頁，回到原本那一頁（使用者 2026-10-05）
+const PAGE_SIZES = [50, 100, 200, 500];
+const page = ref(Math.max(1, Math.floor(Number(route.query.page) || 1)));
+const pageSize = ref(PAGE_SIZES.includes(Number(route.query.ps)) ? Number(route.query.ps) : 100);
+watch([page, pageSize], () => {
+  // 篩選條件的 router.replace 可能還沒完成；排到下一輪再讀 route.query，才不會把剛寫進去的篩選蓋掉
+  setTimeout(() => {
+    const want = { page: page.value > 1 ? String(page.value) : undefined,
+                   ps: pageSize.value !== 100 ? String(pageSize.value) : undefined };
+    if (route.query.page === want.page && route.query.ps === want.ps) return;
+    router.replace({ query: { ...route.query, ...want } }).catch(() => {});
+  }, 0);
+});
 
 async function loadSubnets() {
   try {
@@ -216,7 +229,7 @@ const allColumns: DataTableColumns<IPAddress> = [
   {
     title: () => t("addresses.ip"), key: "ip", width: 200,
     sorter: true,
-    render: (r) => h("span", { style: "display:inline-flex;align-items:center;white-space:nowrap" }, [String(r.ip), h(IpRoleTags, { row: r })]),
+    render: (r) => h("span", { class: "ip-cell" }, [h("span", { class: "ip-cell-addr" }, String(r.ip)), h(IpRoleTags, { row: r })]),
   },
   {
     title: () => t("addresses.hostname"), key: "hostname", minWidth: 140, ellipsis: { tooltip: true },
@@ -225,7 +238,7 @@ const allColumns: DataTableColumns<IPAddress> = [
   },
   {
     title: () => t("addresses.mac"), key: "mac", width: 150,
-    render: (r) => r.mac ?? "—",
+    render: (r) => renderMacWithVendor(r.mac, r.mac_vendor),
     sorter: true,
   },
   {
@@ -265,22 +278,28 @@ const allColumns: DataTableColumns<IPAddress> = [
       ]);
     },
   },
+  {
+    // 掃描代理定期偵測判讀出的設備類型（含 Recog 指紋庫）；滑過去看廠牌型號
+    title: () => t("cols.device_kind"), key: "device_kind", width: 140, sorter: true,
+    render: (r) => renderDeviceKind(r, t, te),
+  },
 ];
 
 // 欄位顯示偏好 (per-user，後端 user_preferences.table_columns)
-const { visibleKeys, setVisible, reset } = useColumnPrefs(
+const { visibleKeys, setVisible, reset, order, setOrder, orderColumns } = useColumnPrefs(
   "addresses",
-  ["live", "ip", "hostname", "mac", "state", "owner", "switch_port", "note", "discovery_source", "os"],
+  ["live", "ip", "hostname", "mac", "state", "owner", "switch_port", "note", "discovery_source", "os",
+   "device_kind"],
   ["live", "ip", "hostname", "mac", "state", "discovery_source"],
 );
 
-// selection column 永遠顯示；其他依 visibleKeys
+// selection column 永遠顯示；其他依 visibleKeys，再照使用者拖拉的順序排
 const columns = computed<DataTableColumns<IPAddress>>(() => {
-  return allColumns.filter((c: any) => {
+  return orderColumns(allColumns.filter((c: any) => {
     if (c.type === "selection") return true;
     if (!c.key) return true;
     return visibleKeys.value.includes(String(c.key));
-  });
+  }));
 });
 
 // scroll-x 依「目前顯示的欄位」動態算總寬，而非固定 1228；隱藏欄位後就不會
@@ -306,6 +325,7 @@ const columnPickerItems = computed(() => [
   { key: "note", label: t("cols.note") },
   { key: "discovery_source", label: t("cols.source") },
   { key: "os", label: t("cols.os") },
+  { key: "device_kind", label: t("cols.device_kind") },
 ]);
 
 const sortField = ref<string | null>(null);
@@ -431,7 +451,9 @@ onMounted(() => {
       <ColumnPicker
         :all="columnPickerItems"
         :visible="visibleKeys"
+        :order="order"
         @update:visible="setVisible"
+        @update:order="setOrder"
         @reset="reset"
       />
       <ExportButton :columns="columns" :rows="rows" :fetch-all="fetchAllForExport"
@@ -475,7 +497,7 @@ onMounted(() => {
         pageSize: pageSize,
         itemCount: total,
         showSizePicker: true,
-        pageSizes: [50, 100, 200, 500],
+        pageSizes: PAGE_SIZES,
         prefix: ({ itemCount }) => t('common.total_rows', { n: itemCount ?? 0 }),
         onUpdatePage: (p) => { page = p; void refresh(); },
         onUpdatePageSize: (ps) => { pageSize = ps; page = 1; void refresh(); },

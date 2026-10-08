@@ -1,5 +1,9 @@
-"""掃描代理 push：在「指派且有開掃描」的子網路內，發現未知 IP 會自動建立
-（用我們自己的說明文字，非照抄 phpIPAM）；範圍外的 IP / 已死的 IP 不建立。"""
+"""掃描代理 push：**開啟「自動收錄未登錄的 IP」時**，在「指派且有開掃描」的子網路內
+發現未知 IP 會自動建立（用我們自己的說明文字，非照抄 phpIPAM）；
+範圍外的 IP / 已死的 IP 不建立。
+
+⚠️ 這個開關預設是**關閉**的（0117）—— 所以這裡的 fixture 必須明確打開它。
+「預設關閉時不建、而且要回報略過筆數」由 test_scan_agent_auto_create.py 負責。"""
 
 from __future__ import annotations
 
@@ -18,6 +22,8 @@ async def _setup_agent_subnet(session, *, scan_enabled: bool) -> ScanAgent:
     agent = ScanAgent(
         name="auto-add-agent",
         enabled=True,
+        # 自動收錄預設關閉，這組測試驗的是「開啟之後」的行為
+        auto_create_ips=True,
         enroll_key_hash=hashlib.sha256(RAW_KEY.encode()).hexdigest(),
     )
     session.add(agent)

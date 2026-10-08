@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.ui_error import detail_of
 from app.models.firewall import OPNsenseAliasMapping, OPNsenseFirewall
 from app.schemas.base import Paginated, StrictModel
 from app.schemas.firewall import (
@@ -78,6 +79,7 @@ async def create_firewall(
         scope_location_id=payload.scope_location_id,
         scope_customer_id=payload.scope_customer_id,
         scope_subnet_ids=payload.scope_subnet_ids,
+        auto_create_ips=bool(payload.auto_create_ips),
         iface_subnet_map=(
             {k: str(v) for k, v in payload.iface_subnet_map.items()}
             if payload.iface_subnet_map else None
@@ -162,13 +164,9 @@ async def delete_firewall(
     ).scalar_one_or_none()
     if fw is None:
         raise HTTPException(404, detail="firewall not found")
-    # dhcp_pool_ranges 已無外鍵 cascade → 自行清掉這台寫的列（不碰其他來源）
-    from sqlalchemy import delete as _delete
-
-    from app.models.dhcp import DHCPPoolRange
-    await session.execute(_delete(DHCPPoolRange).where(
-        DHCPPoolRange.source_type == "opnsense", DHCPPoolRange.source_id == fw_id,
-    ))
+    # 它寫進共用表的發放範圍／主機名稱／租約／固定分配／NAT／VPN 通道一併收回（沒有外鍵會跟著刪）
+    from app.services.integration_cleanup import forget_instance
+    await forget_instance(session, source="opnsense", source_id=fw.id)
     await session.delete(fw)
     await append_audit(
         session,
@@ -195,7 +193,7 @@ async def test_firewall(
     try:
         info = await fw_service.healthcheck(fw)
     except fw_service.OPNsenseError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "opnsense_error")) from exc
     return {"ok": True, "alias_count": len(info.get("alias", {}).get("aliases", {}).get("alias", {}) or {})}
 
 
@@ -431,7 +429,7 @@ async def sync_one_mapping(
         summary = await fw_service.sync_mapping(session, obj)
     except fw_service.OPNsenseError as exc:
         await session.commit()  # 紀錄 last_error
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "opnsense_error")) from exc
     await append_audit(
         session,
         actor_user_id=str(getattr(request.state, "user_id", "")) or None,

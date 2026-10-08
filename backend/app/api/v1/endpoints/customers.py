@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import CurrentUser, require_admin, require_object_perm
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.sqlin import in_values
 from app.models.customer import Customer
 from app.schemas.base import Paginated
 from app.schemas.customer import CustomerCreate, CustomerRead, CustomerUpdate
@@ -38,7 +39,7 @@ async def list_customers(
     from app.services.permission import visible_ids
     vis = await visible_ids(session, user=_user, object_type="customer")
     if vis is not None:
-        stmt = stmt.where(Customer.id.in_(vis)); cstmt = cstmt.where(Customer.id.in_(vis))
+        stmt = stmt.where(in_values(Customer.id, vis)); cstmt = cstmt.where(in_values(Customer.id, vis))
     stmt = stmt.order_by(Customer.name).offset((page - 1) * page_size).limit(page_size)
     rows = list((await session.execute(stmt)).scalars().all())
     total = int(await session.scalar(cstmt) or 0)
@@ -50,7 +51,7 @@ async def list_customers(
     if cust_ids:
         for cid, n in (await session.execute(
             select(Subnet.customer_id, func.count())
-            .where(Subnet.customer_id.in_(cust_ids))
+            .where(in_values(Subnet.customer_id, cust_ids))
             .group_by(Subnet.customer_id)
         )).all():
             counts[cid] = n
@@ -229,4 +230,8 @@ async def delete_customer(
         diff={"before": snapshot},
         request_id=getattr(request.state, "request_id", None),
     )
+    # 物件沒了，指向它的授權也不該留著（permissions.object_id 沒有外鍵，沒有人會自動清）
+    from app.services.permission import purge_permissions_for_object
+    await purge_permissions_for_object(session, object_type="customer", object_id=cid)
+
     await session.commit()

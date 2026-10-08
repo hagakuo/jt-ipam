@@ -1,0 +1,797 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>jt-ipam: Adoption roadmap</title>
+<meta name="description" content="How to roll jt-ipam out in an organisation, phase by phase: what to turn on, in which order, and when each phase is done." />
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<style>
+  :root{
+    --green:#18a058; --green-h:#36ad6a; --cyan:#22d3ee;
+    --ink:#0f172a; --body:#334155; --muted:#64748b;
+    --bg:#eef3ee; --card:#ffffff; --line:#e2e8e4;
+    /* 導入流程圖的兩種階段：核心（綠）與擴充（藍） */
+    --core:#18a058; --core-soft:#e8f6ee; --ext:#0284c7; --ext-soft:#e6f3fb;
+    --warn-bg:#fff7ed; --warn-line:#fed7aa; --warn-ink:#7c2d12;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","Noto Sans JP","Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;
+    color:var(--body);background:var(--bg);line-height:1.7}
+  a{color:inherit;text-decoration:none}
+  /* 三語切換：只顯示目前語言的節點。 */
+  .zh,.en,.ja{display:none}
+  body.lang-zh .zh{display:initial}
+  body.lang-en .en{display:initial}
+  body.lang-ja .ja{display:initial}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 20px}
+  /* ── 與首頁一致的頂列 ── */
+  nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.92);backdrop-filter:saturate(1.4) blur(8px);
+    border-bottom:1px solid var(--line)}
+  .nav-in{display:flex;align-items:center;gap:18px;height:60px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;color:var(--ink);font-size:18px}
+  .nav-links{display:flex;gap:16px;margin-left:auto;flex-wrap:wrap;align-items:center}
+  .nav-links a{color:var(--body);font-size:14px;font-weight:500}
+  .nav-links a:hover{color:var(--green)}
+  .nav-links a[aria-current="page"]{color:var(--green);font-weight:700}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 18px;border-radius:10px;
+    font-weight:600;font-size:15px;line-height:1.3;border:1px solid transparent;cursor:pointer;font-family:inherit}
+  .btn-ghost{background:#fff;border-color:var(--line);color:var(--ink)}
+  .btn-ghost:hover{border-color:var(--green)}
+  .btn-sm{padding:6px 12px;font-size:13px}
+  /* ── 語言切換（自訂下拉） ── */
+  .langsw{position:relative;display:inline-flex;align-items:center}
+  .langsw > button{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);
+    border-radius:10px;background:#fff;color:var(--ink);font-family:inherit;font-size:13px;
+    font-weight:600;padding:6px 11px;cursor:pointer;line-height:1.3;white-space:nowrap}
+  .langsw > button:hover{border-color:var(--green)}
+  .langsw > button:focus-visible{outline:none;border-color:var(--green);box-shadow:0 0 0 3px rgba(24,160,88,.12)}
+  .langsw .chev{width:7px;height:7px;flex:none;border-right:1.6px solid var(--muted);
+    border-bottom:1.6px solid var(--muted);transform:translateY(-2px) rotate(45deg);transition:transform .15s}
+  .langsw > button[aria-expanded="true"] .chev{transform:translateY(1px) rotate(-135deg)}
+  .langsw ul{position:absolute;top:calc(100% + 6px);right:0;z-index:60;margin:0;padding:5px;
+    list-style:none;min-width:140px;background:#fff;border:1px solid var(--line);border-radius:12px;
+    box-shadow:0 10px 28px rgba(15,23,42,.13)}
+  .langsw li{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;
+    font-size:13.5px;color:var(--body);cursor:pointer;white-space:nowrap}
+  .langsw li:hover{background:#f1f5f2;color:var(--ink)}
+  .langsw li[aria-selected="true"]{color:var(--green);font-weight:700}
+  .langsw li .tick{width:14px;flex:none;text-align:center;opacity:0}
+  .langsw li[aria-selected="true"] .tick{opacity:1}
+  @media(max-width:560px){
+    .wrap{padding:0 16px}
+    .nav-in{height:auto;padding:10px 16px;flex-wrap:wrap;gap:10px}
+    .brand{font-size:16px;white-space:nowrap}
+    .nav-links{gap:8px;width:100%;justify-content:flex-end}
+  }
+  @media(max-width:900px){.nav-links a:not(.btn){display:none}}
+
+  /* ── 頁首 ── */
+  h1{font-size:clamp(26px,4vw,36px);color:var(--ink);margin:30px 0 6px}
+  .sub{color:var(--muted);font-size:15px;margin:0 0 10px;max-width:820px}
+  .toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 6px;padding:0;list-style:none}
+  .toc a{display:inline-block;font-size:13px;font-weight:600;color:var(--ink);background:var(--card);
+    border:1px solid var(--line);border-radius:999px;padding:4px 12px}
+  .toc a:hover{border-color:var(--green);color:var(--green)}
+
+  /* ── 區塊 ── */
+  section.blk{margin:34px 0 0}
+  h2{font-size:clamp(20px,2.6vw,24px);color:var(--ink);margin:0 0 12px;line-height:1.4}
+  h3{font-size:16.5px;color:var(--ink);margin:18px 0 8px;line-height:1.5}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px 24px;
+    box-shadow:0 1px 3px rgba(15,23,42,.05)}
+  .box p{margin:8px 0;font-size:14.8px}
+  .box ul{margin:6px 0 10px;padding-left:22px;font-size:14.6px}
+  .box li{margin:4px 0}
+  code{background:#eef3ee;border:1px solid var(--line);border-radius:5px;padding:1px 5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.8px;color:var(--ink);
+    overflow-wrap:anywhere}
+  pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:12px 14px;overflow:auto;margin:10px 0;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.8px;line-height:1.6}
+  pre code{background:transparent;border:0;padding:0;color:inherit;font-size:inherit}
+  a.lnk{color:var(--green);font-weight:600}
+  a.lnk:hover{text-decoration:underline}
+  .note{border-left:3px solid var(--green);background:#f1f8f3;border-radius:8px;padding:9px 13px;margin:12px 0;font-size:14px}
+  .warn{border-left:3px solid #f59e0b;background:var(--warn-bg);border-radius:8px;padding:9px 13px;margin:12px 0;
+    font-size:14px;color:var(--warn-ink)}
+
+  /* ── 三個原則 ── */
+  .cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;
+    box-shadow:0 1px 3px rgba(15,23,42,.05)}
+  .card h3{margin:0 0 6px;font-size:15.5px}
+  .card p{margin:0;font-size:14.2px}
+  @media(max-width:820px){.cards{grid-template-columns:minmax(0,1fr)}}
+
+  /* ── 導入流程圖（純 CSS） ──
+     六個階段排成一列、中間用箭頭接起來；寬度不夠時改成兩列三個，手機改成直排、箭頭朝下。
+     上緣色條區分核心（每個站台都做）與擴充（依環境選擇）。 */
+  .legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:0 0 12px;font-size:13px;color:var(--muted)}
+  .legend span.k{display:inline-flex;align-items:center;gap:7px}
+  .legend i{width:22px;height:8px;border-radius:4px;display:inline-block}
+  .legend i.core{background:var(--core)}
+  .legend i.ext{background:var(--ext)}
+  ol.flow{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:18px}
+  ol.flow > li{position:relative;min-width:0}
+  ol.flow > li > a{display:flex;flex-direction:column;gap:4px;height:100%;background:var(--card);
+    border:1px solid var(--line);border-top:5px solid var(--c);border-radius:12px;padding:10px 12px 12px;
+    box-shadow:0 1px 3px rgba(15,23,42,.05);transition:border-color .15s, transform .15s}
+  ol.flow > li > a:hover{border-color:var(--c);transform:translateY(-1px)}
+  ol.flow > li.core{--c:var(--core);--s:var(--core-soft)}
+  ol.flow > li.ext{--c:var(--ext);--s:var(--ext-soft)}
+  .ph-n{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;
+    background:var(--c);color:#fff;font-weight:800;font-size:14px;flex:none}
+  .ph-top{display:flex;align-items:center;gap:8px}
+  .ph-k{font-size:11.5px;font-weight:700;letter-spacing:.04em;color:var(--c);text-transform:uppercase}
+  .ph-t{font-weight:800;color:var(--ink);font-size:14.5px;line-height:1.4}
+  .ph-d{font-size:12.8px;color:var(--body);line-height:1.55}
+  .ph-time{margin-top:auto;padding-top:6px;font-size:12px;color:var(--muted)}
+  .ph-time b{color:var(--ink);font-weight:700}
+  /* 箭頭：放在格線間距裡 */
+  ol.flow > li:not(:last-child)::after{content:"";position:absolute;top:50%;right:-13px;width:9px;height:9px;
+    border-top:2.5px solid #94a3b8;border-right:2.5px solid #94a3b8;transform:translateY(-50%) rotate(45deg)}
+  @media(max-width:960px){
+    ol.flow{grid-template-columns:repeat(3,minmax(0,1fr))}
+    ol.flow > li:nth-child(3)::after{display:none}
+  }
+  @media(max-width:560px){
+    ol.flow{grid-template-columns:minmax(0,1fr);gap:20px}
+    ol.flow > li:not(:last-child)::after,
+    ol.flow > li:nth-child(3)::after{display:block;top:auto;bottom:-15px;right:auto;left:50%;
+      transform:translateX(-50%) rotate(135deg)}
+  }
+
+  /* ── 兩種節奏的時間軸（與上面六個階段對齊成六欄） ── */
+  .pchart{margin:22px 0 0;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px 16px}
+  .pc-head,.pc-track{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:5px}
+  .pc-head > span{display:flex;justify-content:center}
+  .pc-head > span.core{--c:var(--core)} .pc-head > span.ext{--c:var(--ext)}
+  .pc-head .ph-n{font-style:normal;width:22px;height:22px;font-size:12.5px}
+  .pc-label{font-size:13.5px;font-weight:700;color:var(--ink);margin:12px 0 5px}
+  .pc-label small{font-weight:500;color:var(--muted);margin-left:6px;font-size:12.5px}
+  .pc-track > span{min-height:34px;border-radius:7px;display:flex;align-items:center;justify-content:center;
+    text-align:center;font-size:12px;line-height:1.25;padding:3px 4px;background:#f1f5f2;color:var(--muted)}
+  .pc-track > span.q{background:var(--core);color:#fff;font-weight:600}
+  .pc-track > span.qp{background:repeating-linear-gradient(135deg,var(--core-soft) 0 6px,#d3eedd 6px 12px);
+    color:#14532d;font-weight:600;border:1px dashed var(--core)}
+  .pc-track > span.f{background:var(--ext);color:#fff;font-weight:600}
+  .pc-note{font-size:12.5px;color:var(--muted);margin:10px 0 0}
+  /* 手機：六欄擠不下（「第 10～13 週」會折成三行）→ 改成一個階段一列的表 */
+  .pc-mobile{display:none}
+  @media(max-width:560px){
+    .pchart .pc-head,.pchart .pc-label,.pchart .pc-track{display:none}
+    .pc-mobile{display:table;width:100%;border-collapse:collapse;font-size:13.5px}
+    .pc-mobile th{font-size:12px;color:var(--muted);font-weight:600;text-align:left;padding:2px 6px 6px}
+    .pc-mobile td{padding:8px 6px;border-top:1px solid var(--line);vertical-align:middle}
+    .pc-mobile tr.core{--c:var(--core)} .pc-mobile tr.ext{--c:var(--ext)}
+    .pc-mobile td.ph{white-space:nowrap;font-weight:600;color:var(--ink)}
+    .pc-mobile td.ph .ph-n{font-style:normal;width:22px;height:22px;font-size:12.5px;margin-right:6px;vertical-align:middle}
+    .pc-mobile td.w{color:var(--core);font-weight:600}
+    .pc-mobile td.w.later{color:var(--muted);font-weight:500}
+    .pc-mobile td.q{color:var(--ext);font-weight:600}
+  }
+
+  /* ── 階段總表：桌面是表格，窄螢幕改成一階段一張卡片 ── */
+  .tbl{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);border:1px solid var(--line);
+    border-radius:14px;overflow:hidden;font-size:13.8px;box-shadow:0 1px 3px rgba(15,23,42,.05)}
+  .tbl th,.tbl td{padding:11px 13px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}
+  .tbl thead th{background:rgba(24,160,88,.07);color:var(--ink);font-weight:700;font-size:13.2px}
+  .tbl tbody tr:last-child td{border-bottom:0}
+  .tbl td.ph-cell{font-weight:800;color:var(--ink);white-space:nowrap}
+  .tbl td.ph-cell .ph-n{width:22px;height:22px;font-size:12.5px;margin-right:6px;vertical-align:-5px}
+  .tbl tr.core{--c:var(--core)} .tbl tr.ext{--c:var(--ext)}
+  .tbl td.ph-cell span.nm{display:inline}
+  .tbl ul{margin:0;padding-left:17px} .tbl li{margin:2px 0}
+  .tbl.order td.ord{font-weight:800;color:var(--ink);white-space:nowrap}
+  @media(max-width:760px){
+    .tbl,.tbl tbody,.tbl tr,.tbl td{display:block;width:100%}
+    .tbl{border:0;background:transparent;box-shadow:none;overflow:visible}
+    .tbl thead{display:none}
+    .tbl tr{background:var(--card);border:1px solid var(--line);border-top:5px solid var(--c,var(--green));
+      border-radius:12px;margin:0 0 12px;box-shadow:0 1px 3px rgba(15,23,42,.05)}
+    .tbl td{border-bottom:1px dashed var(--line);padding:9px 14px}
+    .tbl tbody tr:last-child td{border-bottom:1px dashed var(--line)}
+    .tbl tr td:last-child,.tbl tbody tr:last-child td:last-child{border-bottom:0}
+    .tbl td.ph-cell,.tbl.order td.ord{white-space:normal;font-size:15px}
+    /* 卡片裡每一格前面補上欄名（依目前語言） */
+    .tbl td[data-zh]::before{display:block;font-size:11.5px;font-weight:700;color:var(--muted);
+      letter-spacing:.03em;margin-bottom:2px}
+    body.lang-zh .tbl td[data-zh]::before{content:attr(data-zh)}
+    body.lang-en .tbl td[data-zh]::before{content:attr(data-en)}
+    body.lang-ja .tbl td[data-zh]::before{content:attr(data-ja)}
+  }
+
+  /* ── 兩條路線 ── */
+  .paths{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+  .path{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;
+    border-top:5px solid var(--c);box-shadow:0 1px 3px rgba(15,23,42,.05)}
+  .path.quick{--c:var(--core)} .path.full{--c:var(--ext)}
+  .path h3{margin:0 0 4px}
+  .path .who{font-size:13.5px;color:var(--muted);margin:0 0 8px}
+  .path ol{margin:0;padding-left:0;list-style:none;font-size:14.2px}
+  .path ol li{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;padding:7px 0;border-top:1px dashed var(--line)}
+  .path ol li:first-child{border-top:0}
+  .path .when{font-weight:700;color:var(--c);white-space:nowrap;font-size:13.2px;min-width:74px}
+  .path .out{margin:10px 0 0;font-size:13.5px;background:var(--s,#f1f8f3);border-radius:8px;padding:8px 11px}
+  .path.quick .out{background:var(--core-soft)} .path.full .out{background:var(--ext-soft)}
+  @media(max-width:820px){.paths{grid-template-columns:minmax(0,1fr)}}
+
+  /* ── 各階段細節 ── */
+  .phase{background:var(--card);border:1px solid var(--line);border-left:5px solid var(--c);border-radius:16px;
+    padding:18px 24px 20px;box-shadow:0 1px 3px rgba(15,23,42,.05);margin:0 0 18px}
+  .phase.core{--c:var(--core)} .phase.ext{--c:var(--ext)}
+  .phase > h2{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .phase > h2 .ph-n{width:30px;height:30px;font-size:15px;margin-top:2px}
+  /* anchors.js 把標題包成可換行的 inline-flex；數字圓圈與標題要留在同一列，長標題自己在文字內換行 */
+  .phase > h2 .head-link{flex-wrap:nowrap;align-items:flex-start}
+  .phase p{margin:8px 0;font-size:14.6px}
+  .phase .goal{margin:0 0 6px;font-size:15px;color:var(--ink)}
+  .phase h3{font-size:15px;margin:16px 0 6px;color:var(--ink)}
+  .phase ul{margin:4px 0 8px;padding-left:22px;font-size:14.5px}
+  .phase li{margin:5px 0}
+  /* 連結之間沒有空白可斷行，所以用 flex-wrap 讓它們自己換行（否則窄螢幕整列撐出頁面） */
+  .phase .refs{margin:14px 0 0;padding-top:10px;border-top:1px dashed var(--line);font-size:13.5px;
+    display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px}
+  .phase .refs b{color:var(--ink)}
+  .phase .refs a{color:var(--green);font-weight:600;white-space:nowrap}
+  .phase .refs a:hover{text-decoration:underline}
+  @media(max-width:560px){
+    .box,.phase{padding:16px 16px 18px}
+    .phase .refs a{white-space:normal}
+  }
+
+  footer{margin:36px 0 80px;font-size:12.5px;color:var(--muted);text-align:center}
+  footer a{color:var(--green)}
+  /* ── 階段改版（2026-10-06 使用者：「全都是字」）：每階段一張圖＋短步驟＋完成標準，地雷收進可展開。
+     視覺跟首頁的整合配線圖同一套：墨色線條、等寬字標籤、品牌綠、深色機箱；不用彩色左邊框與膠囊。 ── */
+  .phase{border-left:1px solid var(--line);border-top:3px solid var(--ink);border-radius:6px;padding:20px 24px 18px}
+  .phase > h2 .ph-n{border-radius:4px;background:var(--ink);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .ph-tag{font:600 10.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase;
+    padding:4px 7px;border-radius:3px;border:1px solid var(--c);color:var(--c);margin-left:2px}
+  .ph-body{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:22px;align-items:start;margin-top:12px}
+  @media(max-width:880px){.ph-body{grid-template-columns:minmax(0,1fr)}}
+  .phase .ph-side h3{margin:2px 0 8px;font:600 11px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.09em;
+    text-transform:uppercase;color:var(--muted)}
+  .phase .ph-side h3 + *{margin-top:0}
+  .phase .ph-side .steps + h3,.phase .ph-side pre + h3{margin-top:16px}
+  ol.steps{list-style:none;margin:0;padding:0;counter-reset:st}
+  ol.steps li{display:grid;grid-template-columns:22px minmax(0,1fr);gap:0 10px;padding:7px 0;margin:0;border-bottom:1px dashed var(--line);font-size:14px;line-height:1.5}
+  ol.steps li::before{counter-increment:st;content:counter(st);grid-row:1 / span 2;width:20px;height:20px;border-radius:3px;background:var(--ink);color:#fff;
+    font:600 11px/20px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;text-align:center;margin-top:1px}
+  ol.steps b{color:var(--ink);font-size:13.5px}
+  ol.steps span{color:var(--body);font-size:13.5px}
+  .phase .ph-side pre{margin:10px 0 0;font-size:11.5px}
+  ul.done{list-style:none;margin:0;padding:0}
+  ul.done li{position:relative;padding:5px 0 5px 24px;margin:0;font-size:14px;line-height:1.5;color:var(--ink)}
+  ul.done li::before{content:"";position:absolute;left:2px;top:9px;width:12px;height:12px;border-radius:2px;background:var(--green)}
+  ul.done li::after{content:"";position:absolute;left:6px;top:11px;width:3px;height:6px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+  details.pit{margin:16px 0 0;border-top:1px solid var(--line);padding-top:10px}
+  details.pit > summary{cursor:pointer;list-style:none;font-weight:700;font-size:14px;color:#9a3412;display:inline-flex;align-items:center;gap:8px}
+  details.pit > summary::-webkit-details-marker{display:none}
+  details.pit > summary::before{content:"";width:0;height:0;border-left:6px solid #9a3412;border-top:4.5px solid transparent;border-bottom:4.5px solid transparent;transition:transform .15s}
+  details.pit[open] > summary::before{transform:rotate(90deg)}
+  details.pit ul{margin:8px 0 4px;padding-left:20px;font-size:14px}
+  details.pit h4{margin:12px 0 4px;font-size:13.5px;color:var(--ink)}
+  details.pit b.pn{display:block;color:var(--ink);font-size:13px}
+  h3.sub-h{font-size:17px;margin:26px 0 0}
+  /* ── 圖：方格紙底、墨線節點 ── */
+  figure.dg{margin:0;border:1px solid var(--line);border-radius:6px;padding:14px 14px 16px;
+    background-color:#fafcfb;background-image:linear-gradient(#edf2ee 1px,transparent 1px),linear-gradient(90deg,#edf2ee 1px,transparent 1px);
+    background-size:18px 18px;min-width:0}
+  figure.dg figcaption{font:600 10.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin:0 0 12px}
+  .nd{display:inline-flex;flex-direction:column;justify-content:center;background:#fff;border:1.5px solid var(--ink);border-radius:4px;
+    padding:6px 10px;font-size:12.5px;font-weight:700;color:var(--ink);line-height:1.35;min-width:0}
+  .nd small{font-weight:500;font-size:11px;color:var(--muted)}
+  .nd.g{border-color:var(--green);box-shadow:inset 0 -3px 0 var(--green)}
+  .nd.dark,.box.dark{background:#0f1913;color:#e8f2eb;border:1.5px solid #0f1913}
+  .nd.dark small{color:#a9bdb0}
+  .ar{position:relative;display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:2px;background:var(--ink);flex:none;margin:0 2px}
+  .ar::after{content:"";position:absolute;right:-1px;top:-4px;border-left:7px solid var(--ink);border-top:5px solid transparent;border-bottom:5px solid transparent}
+  .ar em{position:absolute;bottom:5px;left:50%;transform:translateX(-50%);font:600 10px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-style:normal;white-space:nowrap;color:var(--muted)}
+  .chips{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:12px}
+  .chips .lbl{font:600 10.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-right:2px}
+  .chips i{font-style:normal;font-size:12px;border:1px solid #9fb3a7;border-radius:3px;padding:2px 7px;background:#fff;color:var(--ink)}
+  /* 階段 0：部署 */
+  .arch{display:flex;align-items:center;flex-wrap:wrap;gap:16px 4px}
+  .arch .ar{min-width:48px}
+  .box{display:inline-flex;flex-direction:column;gap:6px;padding:8px 10px;border-radius:5px}
+  .box b{font:700 13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .box .mods{display:grid;grid-template-columns:repeat(2,auto);gap:3px}
+  .box .mods i{font-style:normal;font-size:10.5px;padding:1px 5px;border-radius:2px;background:rgba(255,255,255,.08);color:#cfe3d6;white-space:nowrap}
+  /* 階段 1：樹狀結構 */
+  .tree{display:block}
+  .tree .t-in{display:flex;flex-direction:column;gap:6px;align-items:flex-start;padding-top:2px}
+  .tree .t-in .ar{transform:rotate(90deg);margin:10px 0 0 22px;min-width:26px}
+  ul.t,ul.t ul{list-style:none;margin:0;padding:0}
+  ul.t ul{margin-left:14px;padding-left:14px}
+  ul.t ul > li::after{content:"";position:absolute;left:-14px;top:-6px;bottom:0;border-left:1.5px solid var(--ink)}
+  ul.t ul > li:last-child::after{bottom:auto;height:21px}
+  ul.t li{position:relative;margin:6px 0 0}
+  ul.t ul > li::before{content:"";position:absolute;left:-14px;top:15px;width:12px;border-top:1.5px solid var(--ink)}
+  .tree .meter-h{display:flex;flex-wrap:wrap;align-items:center;gap:4px 12px;margin-top:14px;font:600 10.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .tree .meter-h .mh-k{display:inline-flex;font-weight:500;align-items:center;gap:5px;font:500 11.5px/1 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC",sans-serif;letter-spacing:0;text-transform:none}
+  .tree .meter-h .mh-k i{width:10px;height:10px;border-radius:2px;background:#dfe7e2;margin-left:6px}
+  .tree .meter-h .mh-k i.u{background:var(--green)} .tree .meter-h .mh-k i.r{background:#f59e0b}
+  .tree .meter{display:grid;grid-template-columns:repeat(16,minmax(0,1fr));gap:3px;margin-top:6px;max-width:300px}
+  @media(min-width:700px){.tree .meter{grid-template-columns:repeat(16,18px);max-width:none}}
+  .tree .meter i{aspect-ratio:1;border-radius:2px;background:#dfe7e2}
+  .tree .meter i.u{background:var(--green)} .tree .meter i.r{background:#f59e0b}
+  /* 階段 2：兩個網段 */
+  .seg2{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:10px;align-items:center}
+  .seg{display:flex;flex-direction:column;gap:8px;align-items:flex-start;border:1.5px dashed #8aa596;border-radius:6px;padding:10px;background:rgba(255,255,255,.7);min-height:132px}
+  .seg-h{font:600 10.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted)}
+  .hosts{display:flex;gap:4px;flex-wrap:wrap}
+  .hosts i,.legend2 i.k::before{width:12px;height:12px;border-radius:2px;display:inline-block}
+  .hosts i.on,.legend2 i.on::before{background:var(--green)}
+  .hosts i.off,.legend2 i.off::before{background:#b8c4bd}
+  .hosts i.unk,.legend2 i.unk::before{background:#fff;box-shadow:inset 0 0 0 1.5px #b8c4bd}
+  .seg-f{font-size:11.5px;line-height:1.4;color:var(--muted)}
+  .seg-f.ok{color:#0c7a43;font-weight:600}
+  .rtr{display:flex;flex-direction:column;align-items:center}
+  .legend2 i.k{font-style:normal;border:0;background:transparent;padding:0 8px 0 0;font-size:12px;display:inline-flex;align-items:center;gap:5px}
+  .legend2 i.k::before{content:""}
+  @media(max-width:560px){.seg2{grid-template-columns:minmax(0,1fr)}.rtr{flex-direction:row}}
+  /* 階段 3：疊層 */
+  .stack{display:flex;flex-direction:column;gap:6px}
+  .stack .up{font-size:11.5px;color:var(--muted)}
+  .stack ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px}
+  .stack li{display:grid;grid-template-columns:24px minmax(0,1fr);gap:0 10px;align-items:center;background:#fff;border:1.5px solid var(--ink);border-radius:4px;padding:6px 10px}
+  .stack li:last-child{background:#0f1913;color:#e8f2eb;border-color:#0f1913}
+  .stack .lv{grid-row:1 / span 2;font:700 12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--green)}
+  .stack .lp{font-size:12px;font-weight:700;color:inherit;line-height:1.35}
+  .stack .lg{font-size:11.5px;color:var(--muted)}
+  .stack li:last-child .lg{color:#a9bdb0}
+  /* 階段 4：一條鏈 */
+  .chain{display:flex;flex-wrap:wrap;align-items:center;gap:12px 2px}
+  .chain .ar{min-width:20px}
+  .dg-note{margin:12px 0 0 !important;font-size:12px !important;color:var(--muted)}
+  /* 階段 5：中樞 */
+  .hub5{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:8px 22px;align-items:center}
+  .hub5 .h-l,.hub5 .h-r{display:flex;flex-direction:column;gap:6px}
+  .hub5 .h-l .nd{position:relative}
+  .hub5 .h-l .nd::after,.hub5 .h-r .nd::before{content:"";position:absolute;top:50%;width:20px;border-top:1.5px solid var(--ink)}
+  .hub5 .h-l .nd::after{right:-22px}
+  .hub5 .h-r .nd{position:relative}
+  .hub5 .h-r .nd::before{left:-22px}
+  .hub5 .core5{padding:20px 12px;align-self:stretch;justify-content:center;align-items:center}
+  @media(max-width:560px){
+    .hub5{grid-template-columns:minmax(0,1fr)}
+    .hub5 .h-l .nd::after,.hub5 .h-r .nd::before{display:none}
+    .hub5 .core5{padding:10px}
+  }
+  /* 頁首的原則卡、流程圖、時間軸、目錄：跟各階段同一套（方角、墨色頂線、等寬字編號、不加陰影） */
+  .ph-tag{white-space:nowrap}
+  .toc a{border-radius:4px}
+  .cards{counter-reset:pr}
+  .card{border-radius:6px;box-shadow:none;border-top:3px solid var(--ink)}
+  .card h3::before{counter-increment:pr;content:"0" counter(pr);display:block;margin-bottom:4px;
+    font:600 11px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.08em;color:var(--green)}
+  .note{border-radius:4px}
+  ol.flow > li > a{border-radius:6px;box-shadow:none;border-top-width:3px}
+  ol.flow .ph-n,.pchart .ph-n,.pc-mobile .ph-n{border-radius:4px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .ph-k{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.06em}
+  .pchart{border-radius:6px;box-shadow:none}
+  .pc-track > span{border-radius:3px}
+  /* 版面改成上下排（使用者 2026-10-06：左右兩欄時左邊一大塊空白）：圖整寬放最上面、高度就是內容本身；
+     步驟改成一排排小磚塊、完成標準改成一行可換行的勾選清單，兩邊不再一長一短 */
+  .ph-body{display:block;margin-top:12px}
+  .ph-body figure.dg{margin:0 0 16px}
+  .phase .ph-side h3{margin:0 0 8px}
+  .phase .ph-side .steps + h3,.phase .ph-side pre + h3{margin-top:16px}
+  ol.steps{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px}
+  ol.steps li{border:1px solid var(--line);border-radius:4px;padding:9px 11px;background:#fff}
+  .phase .ph-side pre{margin:12px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
+  ul.done{display:flex;flex-wrap:wrap;gap:4px 22px}
+  /* 階段 1：寬的時候格子圖放在樹的右邊 */
+  @media(min-width:700px){
+    .tree{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:36px;align-items:end}
+    .tree > ul.t{grid-row:1 / span 3}
+    .tree > .chips,.tree > .meter-h,.tree > .meter{grid-column:2}
+  }
+  .dg-note{margin:12px 0 0 !important}
+  /* 磚塊：說明貼齊標題；依步驟數量排欄（6、5 個排 3 欄，4 個排一排） */
+  ol.steps li{align-content:start}
+  ol.steps{grid-template-columns:repeat(3,minmax(0,1fr))}
+  ol.steps.n4{grid-template-columns:repeat(4,minmax(0,1fr))}
+  @media(max-width:860px){ol.steps,ol.steps.n4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media(max-width:560px){ol.steps,ol.steps.n4{grid-template-columns:minmax(0,1fr)}}
+  /* 圖的內容置中，右半邊不會空著 */
+  .arch,.chain{justify-content:center}
+  figure.dg > .chips{justify-content:center}
+  .dg-note{text-align:center}
+  .stack,.hub5,.seg2{max-width:760px;margin:0 auto;width:100%}
+  @media(min-width:700px){
+    .tree{grid-template-columns:auto auto;grid-template-rows:1fr auto auto auto;justify-content:center}
+    .tree > ul.t{grid-row:1 / span 4}
+    .tree > .chips{grid-row:2;justify-content:flex-start}
+    .tree > .meter-h{grid-row:3}
+    .tree > .meter{grid-row:4}
+  }
+  /* 原則卡的小圖（使用者 2026-10-06：「這區也全是文字」） */
+  .card{display:flex;flex-direction:column}
+  .card h3::before{content:none}
+  .pv{height:92px;margin:0 0 12px;border:1px solid var(--line);border-radius:5px;padding:12px;display:flex;align-items:center;justify-content:center;gap:8px;
+    background-color:#fafcfb;background-image:linear-gradient(#edf2ee 1px,transparent 1px),linear-gradient(90deg,#edf2ee 1px,transparent 1px);background-size:14px 14px}
+  .pv1{display:grid;grid-template-columns:auto auto auto;grid-template-rows:auto auto;gap:6px 8px;align-content:center;justify-content:center}
+  .pv1 .pv-l{font:600 10.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+  .pv1 .pv-c{display:flex;gap:3px}
+  .pv1 .pv-c i{width:13px;height:13px;border-radius:2px;background:#dfe7e2}
+  .pv1 .pv-c i.u{background:var(--green)}
+  .pv1 .pv-c i.diff{outline:2px solid #f59e0b;outline-offset:1px}
+  .pv1 .pv-tag{grid-column:3;grid-row:1 / span 2;align-self:center;font-size:11px;font-weight:700;color:#b45309;border:1.5px solid #f59e0b;border-radius:3px;padding:2px 6px;background:#fff}
+  .pv2 .ar{min-width:46px}
+  .pv2 .sw{display:inline-flex;align-items:center;gap:6px;margin-left:8px;font-size:11px;color:var(--muted)}
+  .pv2 .sw i{position:relative;width:28px;height:16px;border-radius:9px;background:#cbd5d0}
+  .pv2 .sw i::after{content:"";position:absolute;left:2px;top:2px;width:12px;height:12px;border-radius:50%;background:#fff}
+  .pv3{align-items:flex-end;gap:5px}
+  .pv3 .st{position:relative;width:26px;border:1.5px solid var(--ink);border-bottom-width:1.5px;border-radius:3px 3px 0 0;background:#fff;display:flex;justify-content:center}
+  .pv3 .st.ok{background:var(--green);border-color:var(--green)}
+  .pv3 .st b{position:absolute;top:-17px;font:600 10px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted)}
+  .pv3 .st.ok::after{content:"";position:absolute;top:calc(50% - 5px);width:4px;height:7px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+  /* 導入順序圖改成路線圖：一條線串六站，核心綠、擴充藍；每站只留名稱與時間（細節在下面各階段） */
+  ol.flow{gap:0}
+  ol.flow > li > a{background:transparent;border:0;box-shadow:none;padding:0 6px;align-items:center;text-align:center;gap:6px}
+  ol.flow > li > a:hover{transform:none}
+  ol.flow > li > a:hover .ph-t{color:var(--c)}
+  ol.flow > li::before{content:"";position:absolute;top:17px;left:0;right:0;height:5px;background:var(--c)}
+  ol.flow > li:first-child::before{left:50%}
+  ol.flow > li:last-child::before{right:50%}
+  ol.flow > li:not(:last-child)::after{display:none}
+  ol.flow .ph-top{flex-direction:column;gap:6px}
+  ol.flow .ph-n{position:relative;z-index:1;width:38px;height:38px;border-radius:50%;border:5px solid var(--c);background:#fff;color:var(--ink);font-size:15px}
+  ol.flow .ph-k{font-size:10.5px}
+  ol.flow .ph-d{display:none}
+  ol.flow .ph-t{font-size:14px}
+  ol.flow .ph-time{margin-top:0;padding:2px 8px;border:1px solid var(--line);border-radius:3px;background:#fff}
+  @media(max-width:960px){
+    ol.flow{grid-template-columns:minmax(0,1fr);gap:0}
+    ol.flow > li::before,ol.flow > li:first-child::before,ol.flow > li:last-child::before{top:0;bottom:0;left:17px;right:auto;width:5px;height:auto}
+    ol.flow > li:first-child::before{top:50%}
+    ol.flow > li:last-child::before{bottom:50%}
+    ol.flow > li > a{flex-direction:row;flex-wrap:wrap;text-align:left;padding:8px 0;gap:4px 12px}
+    ol.flow .ph-top{flex-direction:row}
+    ol.flow .ph-k{display:none}
+    ol.flow > li:nth-child(3)::after{display:none}
+  }
+</style>
+<noscript><style>.en{display:initial}</style></noscript>
+</head>
+<body>
+<script>
+  /* 在內容繪製前先決定語言（避免閃爍）。優先序：網址 ?lang= > localStorage 偏好 > 預設英文。 */
+  (function(){
+    try{
+      function norm(v){ v = (v || '').toLowerCase();
+        if (v === 'en' || v === 'en-us') return 'en';
+        if (v === 'ja' || v === 'ja-jp') return 'ja';
+        if (v === 'zh' || v === 'zh-tw' || v === 'zh-hant') return 'zh';
+        return null; }
+      var u = null; try { u = norm(new URLSearchParams(location.search).get('lang')); } catch (e) {}
+      var lang = u || norm(localStorage.getItem('jtipam-doc-lang')) || 'en';
+      document.body.classList.add('lang-' + lang);
+      document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : lang === 'ja' ? 'ja' : 'zh-Hant');
+      if (u){ try {
+        localStorage.setItem('jtipam-doc-lang', u);
+        var url = new URL(location.href);
+        url.searchParams.set('lang', u === 'en' ? 'en' : u === 'ja' ? 'ja' : 'zh-TW');
+        history.replaceState(null, '', url);
+      } catch (e) {} }
+    } catch (e) {}
+  })();
+</script>
+<nav>
+  <div class="wrap nav-in">
+    <span class="brand">
+      <svg viewBox="0 0 64 64" width="28" height="28" aria-hidden="true">
+        <rect width="64" height="64" rx="14" fill="#18a058"/>
+        <g stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-opacity="0.9">
+          <line x1="18" y1="18" x2="32" y2="32"/><line x1="46" y1="18" x2="32" y2="32"/>
+          <line x1="18" y1="46" x2="32" y2="32"/><line x1="46" y1="46" x2="32" y2="32"/>
+        </g>
+        <g fill="#fff"><circle cx="18" cy="18" r="5"/><circle cx="46" cy="18" r="5"/>
+          <circle cx="18" cy="46" r="5"/><circle cx="46" cy="46" r="5"/></g>
+        <circle cx="32" cy="32" r="8" fill="#fff"/><circle cx="32" cy="32" r="3.5" fill="#18a058"/>
+      </svg>
+      jt-ipam
+    </span>
+    <div class="nav-links">
+      <a href="index.html#features"><span class="zh">特色</span><span class="en">Features</span><span class="ja">機能</span></a>
+      <a href="index.html#integrations"><span class="zh">整合</span><span class="en">Integrations</span><span class="ja">連携</span></a>
+      <a href="index.html#install"><span class="zh">安裝</span><span class="en">Install</span><span class="ja">インストール</span></a>
+      <a href="adoption.html" aria-current="page"><span class="zh">導入流程</span><span class="en">Adoption roadmap</span><span class="ja">導入ガイド</span></a>
+      <a href="features.html"><span class="zh">功能地圖</span><span class="en">Feature map</span><span class="ja">機能マップ</span></a>
+      <a href="api.html">API</a>
+      <a class="btn btn-ghost btn-sm" href="index.html"><span class="zh">回首頁</span><span class="en">Home</span><span class="ja">ホーム</span></a>
+      <a class="btn btn-ghost btn-sm" href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener">GitHub</a>
+      <span class="langsw">
+        <button type="button" id="langBtn" aria-haspopup="listbox" aria-expanded="false" aria-label="Language">
+          <span id="langCur">繁體中文</span><span class="chev" aria-hidden="true"></span>
+        </button>
+        <ul id="langMenu" role="listbox" hidden>
+          <li role="option" data-lang="zh"><span class="tick">✓</span>繁體中文</li>
+          <li role="option" data-lang="en"><span class="tick">✓</span>English</li>
+          <li role="option" data-lang="ja"><span class="tick">✓</span>日本語</li>
+        </ul>
+      </span>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap">
+  <h1><span class="zh">導入流程</span><span class="en">Adoption roadmap</span><span class="ja">導入ガイド</span></h1>
+  <p class="sub"><span class="zh">給負責把 jt-ipam 帶進公司的網管與資訊主管：從安裝到自動化分成六個階段，依序開啟功能。每個階段都有明確的完成標準，做完再往下走，資料在每一步都可信。</span><span class="en">For the network admins and IT leads bringing jt-ipam into an organisation: six phases from install to automation, turning features on in order. Each phase has a clear finish line, and you move on only when it is met, so the data can be trusted at every step.</span><span class="ja">jt-ipam を社内に導入するネットワーク管理者と情報システム部門の責任者向けのガイドです。インストールから自動化までを 6 つのフェーズに分け、順番に機能を有効にしていきます。各フェーズには完了の目安があり、それを満たしてから次へ進むので、どの段階でもデータを信頼できます。</span></p>
+  <ul class="toc">
+    <li><a href="#principles"><span class="zh">為什麼分階段</span><span class="en">Why phases</span><span class="ja">段階的に進める理由</span></a></li>
+    <li><a href="#flow"><span class="zh">導入順序圖</span><span class="en">Roadmap at a glance</span><span class="ja">導入の流れ</span></a></li>
+    <li><a href="#paths"><span class="zh">一週與一季兩種節奏</span><span class="en">One week or one quarter</span><span class="ja">1 週間と四半期の進め方</span></a></li>
+    <li><a href="#phase-0"><span class="zh">各階段細節</span><span class="en">Phase details</span><span class="ja">各フェーズの詳細</span></a></li>
+    <li><a href="#related"><span class="zh">相關文件</span><span class="en">Related docs</span><span class="ja">関連ドキュメント</span></a></li>
+  </ul>
+
+  <!-- ───────── 原則 ───────── -->
+  <section class="blk">
+    <h2 id="principles"><span class="zh">為什麼要分階段</span><span class="en">Why roll out in phases</span><span class="ja">段階的に導入する理由</span></h2>
+    <div class="cards">
+      <div class="card">
+        <div class="pv pv1" aria-hidden="true"><span class="pv-l"><span class="zh">規劃</span><span class="en">plan</span><span class="ja">計画</span></span><span class="pv-c"><i class="u"></i><i class="u"></i><i class="u"></i><i class=""></i><i class="u"></i><i class=""></i><i class=""></i><i class="u"></i><i class=""></i><i class=""></i></span><span class="pv-l"><span class="zh">掃描</span><span class="en">scan</span><span class="ja">スキャン</span></span><span class="pv-c"><i class="u"></i><i class="u"></i><i class="diff"></i><i class=""></i><i class="u"></i><i class=""></i><i class=""></i><i class="u"></i><i class="u diff"></i><i class=""></i></span><span class="pv-tag"><span class="zh">落差</span><span class="en">gap</span><span class="ja">差分</span></span></div>
+        <h3 id="principle-plan-first"><span class="zh">先有規劃，再讓機器補上事實</span><span class="en">Plan first, then let machines add the facts</span><span class="ja">まず計画、事実は機械に補わせる</span></h3>
+        <p><span class="zh">規劃是「應該如何」，掃描與整合是「實際如何」；先有規劃，落差才看得出來。</span><span class="en">The plan says how it should be; scans and integrations say how it is. Without the plan there is nothing to compare.</span><span class="ja">計画は「あるべき姿」、スキャンと連携は「実際の姿」。計画がないと差が見えません。</span></p>
+      </div>
+      <div class="card">
+        <div class="pv pv2" aria-hidden="true"><span class="nd"><span class="zh">來源</span><span class="en">source</span><span class="ja">ソース</span></span><span class="ar"><em><span class="zh">讀取</span><span class="en">read</span><span class="ja">読み取り</span></em></span><span class="nd dark">jt-ipam</span><span class="sw"><span class="zh">自動建立</span><span class="en">auto-create</span><span class="ja">自動作成</span><i></i></span></div>
+        <h3 id="principle-read-only-first"><span class="zh">先唯讀比對，再考慮自動建立</span><span class="en">Read-only first, auto-create later</span><span class="ja">まず読み取りで照合、自動作成は後で</span></h3>
+        <p><span class="zh">整合一律唯讀；自動建立除了 LibreNMS 主 IP 之外都預設關閉。</span><span class="en">Integrations only read; auto-create is off by default except LibreNMS primary IPs.</span><span class="ja">連携は読み取りのみ。自動作成は LibreNMS の主 IP 以外は既定でオフです。</span></p>
+      </div>
+      <div class="card">
+        <div class="pv pv3" aria-hidden="true"><i class="st ok" style="height:14px"><b>0</b></i><i class="st ok" style="height:23px"><b>1</b></i><i class="st ok" style="height:32px"><b>2</b></i><i class="st" style="height:41px"><b>3</b></i><i class="st" style="height:50px"><b>4</b></i><i class="st" style="height:59px"><b>5</b></i></div>
+        <h3 id="principle-finish-line"><span class="zh">每個階段都有完成標準</span><span class="en">Every phase has a finish line</span><span class="ja">各フェーズに完了の目安</span></h3>
+        <p><span class="zh">達到完成標準再往下；跳過的話，未授權 IP 這類偵測會一直誤報。</span><span class="en">Reach the finish line before moving on; skip it and checks such as unauthorised IPs keep raising false alarms.</span><span class="ja">完了の目安を満たしてから次へ。飛ばすと未承認 IP などの検知が誤報を続けます。</span></p>
+      </div>
+    </div>
+    <p class="note"><span class="zh">jt-ipam 是集中記錄與管理的工具：它<b>不會</b>發放或回收位址，也不會封鎖設備。實際的發放與阻擋仍由你的 DHCP、防火牆與 NAC 負責。詳見<a class="lnk" href="index.html#positioning">定位說明</a>。</span><span class="en">jt-ipam records and manages; it does <b>not</b> hand out or revoke addresses, and it does not block devices. Assignment and blocking stay with your DHCP, firewalls and NAC. See <a class="lnk" href="index.html#positioning">what it is</a>.</span><span class="ja">jt-ipam は記録と集中管理のための道具です。アドレスの払い出しや回収、機器の遮断は<b>行いません</b>。それらは引き続き DHCP・ファイアウォール・NAC の役割です。詳しくは<a class="lnk" href="index.html#positioning">位置づけ</a>をご覧ください。</span></p>
+  </section>
+
+  <!-- ───────── 流程圖 ───────── -->
+  <section class="blk">
+    <h2 id="flow"><span class="zh">導入順序圖</span><span class="en">Roadmap at a glance</span><span class="ja">導入の流れ</span></h2>
+    <div class="legend">
+      <span class="k"><i class="core"></i><span class="zh">核心：每個站台都要做</span><span class="en">Core: every site does these</span><span class="ja">コア：どのサイトでも実施</span></span>
+      <span class="k"><i class="ext"></i><span class="zh">擴充：依你已有的系統與需求選擇</span><span class="en">Extend: pick by the systems you run and what you need</span><span class="ja">拡張：既存のシステムと必要に応じて選択</span></span>
+    </div>
+    <ol class="flow" aria-label="Adoption phases 0 to 5">
+      <li class="core"><a href="#phase-0">
+        <span class="ph-top"><span class="ph-n">0</span><span class="ph-k"><span class="zh">階段 0</span><span class="en">Phase 0</span><span class="ja">フェーズ 0</span></span></span>
+        <span class="ph-t"><span class="zh">安裝與安全</span><span class="en">Install and secure</span><span class="ja">インストールと保護</span></span>
+        <span class="ph-d"><span class="zh">HTTPS、管理員密碼、LDAP / SSO、群組與權限、備份</span><span class="en">HTTPS, admin password, LDAP / SSO, groups and permissions, backups</span><span class="ja">HTTPS、管理者パスワード、LDAP / SSO、グループと権限、バックアップ</span></span>
+        <span class="ph-time"><span class="zh">約 <b>1 天</b></span><span class="en">about <b>1 day</b></span><span class="ja">約 <b>1 日</b></span></span>
+      </a></li>
+      <li class="core"><a href="#phase-1">
+        <span class="ph-top"><span class="ph-n">1</span><span class="ph-k"><span class="zh">階段 1</span><span class="en">Phase 1</span><span class="ja">フェーズ 1</span></span></span>
+        <span class="ph-t"><span class="zh">IP 規劃成為唯一依據</span><span class="en">The IP plan becomes the source of truth</span><span class="ja">IP 計画を唯一の拠り所に</span></span>
+        <span class="ph-d"><span class="zh">區段、子網路、VLAN、VRF、匯入、位址範圍、單位、IP 申請</span><span class="en">Sections, subnets, VLANs, VRFs, import, address ranges, customers, IP requests</span><span class="ja">セクション、サブネット、VLAN、VRF、取り込み、アドレス範囲、顧客、IP 申請</span></span>
+        <span class="ph-time"><span class="zh">約 <b>2 天至 2 週</b></span><span class="en">about <b>2 days to 2 weeks</b></span><span class="ja">約 <b>2 日〜2 週間</b></span></span>
+      </a></li>
+      <li class="core"><a href="#phase-2">
+        <span class="ph-top"><span class="ph-n">2</span><span class="ph-k"><span class="zh">階段 2</span><span class="en">Phase 2</span><span class="ja">フェーズ 2</span></span></span>
+        <span class="ph-t"><span class="zh">探索與上線狀態</span><span class="en">Discovery and liveness</span><span class="ja">検出と死活</span></span>
+        <span class="ph-d"><span class="zh">掃描代理、上線判定、各來源最後出現、IP 異動記錄、異常偵測</span><span class="en">Scan agents, liveness, last seen by source, IP change log, anomaly detection</span><span class="ja">スキャンエージェント、死活、ソース別の最終確認、IP 変更履歴、異常検知</span></span>
+        <span class="ph-time"><span class="zh">約 <b>1 至 2 週</b></span><span class="en">about <b>1 to 2 weeks</b></span><span class="ja">約 <b>1〜2 週間</b></span></span>
+      </a></li>
+      <li class="ext"><a href="#phase-3">
+        <span class="ph-top"><span class="ph-n">3</span><span class="ph-k"><span class="zh">階段 3</span><span class="en">Phase 3</span><span class="ja">フェーズ 3</span></span></span>
+        <span class="ph-t"><span class="zh">用整合印證現況</span><span class="en">Integrations confirm reality</span><span class="ja">連携で実態を裏付け</span></span>
+        <span class="ph-d"><span class="zh">LibreNMS、防火牆、DHCP、DNS、虛擬化、Wazuh / OCS / Zabbix / RustDesk</span><span class="en">LibreNMS, firewalls, DHCP, DNS, virtualization, Wazuh / OCS / Zabbix / RustDesk</span><span class="ja">LibreNMS、ファイアウォール、DHCP、DNS、仮想化、Wazuh / OCS / Zabbix / RustDesk</span></span>
+        <span class="ph-time"><span class="zh">每個整合約 <b>1 週</b></span><span class="en">about <b>1 week</b> per integration</span><span class="ja">連携ごとに約 <b>1 週間</b></span></span>
+      </a></li>
+      <li class="ext"><a href="#phase-4">
+        <span class="ph-top"><span class="ph-n">4</span><span class="ph-k"><span class="zh">階段 4</span><span class="en">Phase 4</span><span class="ja">フェーズ 4</span></span></span>
+        <span class="ph-t"><span class="zh">裝置與實體</span><span class="en">Devices and the physical layer</span><span class="ja">機器と物理</span></span>
+        <span class="ph-d"><span class="zh">機房 / 地點、機櫃、裝置、連接埠與佈線、纜線追蹤、電力</span><span class="en">Rooms / locations, racks, devices, ports and cabling, cable trace, power</span><span class="ja">サーバルーム/拠点、ラック、機器、ポートと配線、ケーブル追跡、電源</span></span>
+        <span class="ph-time"><span class="zh">可與階段 3 並行</span><span class="en">can run alongside phase 3</span><span class="ja">フェーズ 3 と並行可</span></span>
+      </a></li>
+      <li class="ext"><a href="#phase-5">
+        <span class="ph-top"><span class="ph-n">5</span><span class="ph-k"><span class="zh">階段 5</span><span class="en">Phase 5</span><span class="ja">フェーズ 5</span></span></span>
+        <span class="ph-t"><span class="zh">維運與自動化</span><span class="en">Operations and automation</span><span class="ja">運用と自動化</span></span>
+        <span class="ph-d"><span class="zh">主控台、調查、通知、憑證派送、API 權杖、MCP、AI（選用）</span><span class="en">Consoles, Investigate, notifications, certificates, API tokens, MCP, AI (optional)</span><span class="ja">コンソール、調査、通知、証明書、API トークン、MCP、AI（任意）</span></span>
+        <span class="ph-time"><span class="zh">持續擴充</span><span class="en">ongoing</span><span class="ja">継続的に拡張</span></span>
+      </a></li>
+    </ol>
+    <h3 id="paths" class="sub-h"><span class="zh">兩種節奏：一週快速上線、一季完整導入</span><span class="en">Two paces: one week, or a full quarter</span><span class="ja">2 つの進め方：1 週間か、四半期かけて</span></h3>
+
+    <div class="pchart" aria-label="Quick start and full rollout timeline">
+      <div class="pc-head" aria-hidden="true"><span class="core"><i class="ph-n">0</i></span><span class="core"><i class="ph-n">1</i></span><span class="core"><i class="ph-n">2</i></span><span class="ext"><i class="ph-n">3</i></span><span class="ext"><i class="ph-n">4</i></span><span class="ext"><i class="ph-n">5</i></span></div>
+      <div class="pc-label"><span class="zh">一週快速上線</span><span class="en">One-week quick start</span><span class="ja">1 週間で立ち上げ</span><small><span class="zh">（工作天）</span><span class="en">(working days)</span><span class="ja">（営業日）</span></small></div>
+      <div class="pc-track">
+        <span class="q"><span class="zh">第 1 天</span><span class="en">Day 1</span><span class="ja">1 日目</span></span>
+        <span class="q"><span class="zh">第 2～3 天</span><span class="en">Days 2–3</span><span class="ja">2〜3 日目</span></span>
+        <span class="q"><span class="zh">第 4 天</span><span class="en">Day 4</span><span class="ja">4 日目</span></span>
+        <span class="qp"><span class="zh">第 5 天：接一個</span><span class="en">Day 5: one source</span><span class="ja">5 日目：1 つだけ</span></span>
+        <span></span>
+        <span></span>
+      </div>
+      <div class="pc-label"><span class="zh">一季完整導入</span><span class="en">Full rollout over a quarter</span><span class="ja">四半期で全面導入</span><small><span class="zh">（週）</span><span class="en">(weeks)</span><span class="ja">（週）</span></small></div>
+      <div class="pc-track">
+        <span class="f"><span class="zh">第 1～2 週</span><span class="en">Wk 1–2</span><span class="ja">1〜2 週</span></span>
+        <span class="f"><span class="zh">第 2～4 週</span><span class="en">Wk 2–4</span><span class="ja">2〜4 週</span></span>
+        <span class="f"><span class="zh">第 4～6 週</span><span class="en">Wk 4–6</span><span class="ja">4〜6 週</span></span>
+        <span class="f"><span class="zh">第 6～10 週</span><span class="en">Wk 6–10</span><span class="ja">6〜10 週</span></span>
+        <span class="f"><span class="zh">第 7～11 週</span><span class="en">Wk 7–11</span><span class="ja">7〜11 週</span></span>
+        <span class="f"><span class="zh">第 10～13 週</span><span class="en">Wk 10–13</span><span class="ja">10〜13 週</span></span>
+      </div>
+      <table class="pc-mobile">
+        <thead><tr><th><span class="zh">階段</span><span class="en">Phase</span><span class="ja">フェーズ</span></th><th><span class="zh">一週快速上線</span><span class="en">One-week quick start</span><span class="ja">1 週間で立ち上げ</span></th><th><span class="zh">一季完整導入</span><span class="en">Full quarter</span><span class="ja">四半期で全面導入</span></th></tr></thead>
+        <tbody>
+        <tr class="core"><td class="ph"><i class="ph-n">0</i><span class="zh">安裝與安全</span><span class="en">Install and secure</span><span class="ja">インストールと保護</span></td><td class="w"><span class="zh">第 1 天</span><span class="en">Day 1</span><span class="ja">1 日目</span></td><td class="q"><span class="zh">第 1～2 週</span><span class="en">Wk 1–2</span><span class="ja">1〜2 週</span></td></tr>
+        <tr class="core"><td class="ph"><i class="ph-n">1</i><span class="zh">IP 規劃</span><span class="en">IP plan</span><span class="ja">IP 計画</span></td><td class="w"><span class="zh">第 2～3 天</span><span class="en">Days 2–3</span><span class="ja">2〜3 日目</span></td><td class="q"><span class="zh">第 2～4 週</span><span class="en">Wk 2–4</span><span class="ja">2〜4 週</span></td></tr>
+        <tr class="core"><td class="ph"><i class="ph-n">2</i><span class="zh">探索與上線</span><span class="en">Discovery</span><span class="ja">検出と死活</span></td><td class="w"><span class="zh">第 4 天</span><span class="en">Day 4</span><span class="ja">4 日目</span></td><td class="q"><span class="zh">第 4～6 週</span><span class="en">Wk 4–6</span><span class="ja">4〜6 週</span></td></tr>
+        <tr class="ext"><td class="ph"><i class="ph-n">3</i><span class="zh">整合</span><span class="en">Integrations</span><span class="ja">連携</span></td><td class="w"><span class="zh">第 5 天：接一個</span><span class="en">Day 5: one source</span><span class="ja">5 日目：1 つだけ</span></td><td class="q"><span class="zh">第 6～10 週</span><span class="en">Wk 6–10</span><span class="ja">6〜10 週</span></td></tr>
+        <tr class="ext"><td class="ph"><i class="ph-n">4</i><span class="zh">裝置與實體</span><span class="en">Devices</span><span class="ja">機器と物理</span></td><td class="w later"><span class="zh">之後</span><span class="en">Later</span><span class="ja">後で</span></td><td class="q"><span class="zh">第 7～11 週</span><span class="en">Wk 7–11</span><span class="ja">7〜11 週</span></td></tr>
+        <tr class="ext"><td class="ph"><i class="ph-n">5</i><span class="zh">維運與自動化</span><span class="en">Operations</span><span class="ja">運用と自動化</span></td><td class="w later"><span class="zh">之後</span><span class="en">Later</span><span class="ja">後で</span></td><td class="q"><span class="zh">第 10～13 週</span><span class="en">Wk 10–13</span><span class="ja">10〜13 週</span></td></tr>
+        </tbody>
+      </table>
+      <p class="pc-note"><span class="zh">時間只是參考，依網段數量與資料整理的程度而定。快速上線只接一個網路來源（LibreNMS 或主要防火牆），其餘留到後面。</span><span class="en">Durations are a guide; they depend on how many networks you have and how tidy the existing data is. The quick start connects just one network source (LibreNMS or the main firewall) and leaves the rest for later.</span><span class="ja">期間は目安で、ネットワークの数と既存データの整理具合によって変わります。クイックスタートではネットワーク系のソースを 1 つ（LibreNMS か主要なファイアウォール）だけ接続し、残りは後に回します。</span></p>
+    </div>
+  </section>
+
+  <!-- ───────── 總表 ───────── -->
+  <!-- ───────── 兩種節奏 ───────── -->
+  <!-- ───────── 各階段細節 ───────── -->
+  <section class="blk">
+    <div class="phase core">
+      <h2 id="phase-0"><span class="ph-n">0</span><span class="zh">階段 0：安裝與安全</span><span class="en">Phase 0: install and secure</span><span class="ja">フェーズ 0：インストールと保護</span><span class="ph-tag"><span class="zh">核心</span><span class="en">core</span><span class="ja">コア</span></span></h2>
+      <p class="goal"><span class="zh">先把地基打好：資料還沒進來之前，就決定好誰能登入、誰能看什麼、壞了怎麼救回來。</span><span class="en">Lay the foundation before any data arrives: who can sign in, who sees what, and how you recover when something breaks.</span><span class="ja">データを入れる前に土台を固めます。誰がログインでき、誰が何を見られ、壊れたときにどう復旧するかを決めておきます。</span></p>
+      <div class="ph-body"><figure class="dg"><figcaption><span class="zh">部署架構</span><span class="en">Deployment</span><span class="ja">構成</span></figcaption><div class="arch"><span class="nd"><span class="zh">使用者</span><span class="en">Users</span><span class="ja">利用者</span><small><span class="zh">瀏覽器</span><span class="en">browser</span><span class="ja">ブラウザ</span></small></span><span class="ar"><em>HTTPS</em></span><span class="box dark"><b>jt-ipam</b><span class="mods"><i>nginx</i><i><span class="zh">後端</span><span class="en">backend</span><span class="ja">バックエンド</span></i><i>PostgreSQL</i><i>Redis</i><i>guacd</i><i><span class="zh">掃描代理</span><span class="en">scan agent</span><span class="ja">スキャンエージェント</span></i></span></span><span class="ar"><em><span class="zh">每天 03:30</span><span class="en">daily 03:30</span><span class="ja">毎日 03:30</span></em></span><span class="nd"><span class="zh">異地備份</span><span class="en">Off-host backup</span><span class="ja">別ホストへ退避</span><small><span class="zh">保留 14 天</span><span class="en">kept 14 days</span><span class="ja">14 日保持</span></small></span></div><div class="chips"><span class="lbl"><span class="zh">登入</span><span class="en">Sign-in</span><span class="ja">サインイン</span></span><i><span class="zh">本機帳號＋TOTP</span><span class="en">local + TOTP</span><span class="ja">ローカル＋TOTP</span></i><i>LDAP / AD</i><i>OIDC</i><i>SAML 2.0</i></div></figure><div class="ph-side"><h3 id="phase-0-configure"><span class="zh">設定步驟</span><span class="en">Steps</span><span class="ja">設定の手順</span></h3><ol class="steps n6"><li><b><span class="zh">安裝</span><span class="en">Install</span><span class="ja">インストール</span></b><span><span class="zh">一行指令裝好全部元件</span><span class="en">one command installs every component</span><span class="ja">1 行で全部入る</span></span></li><li><b>HTTPS</b><span><span class="zh">換上正式憑證</span><span class="en">install a real certificate</span><span class="ja">正式な証明書に差し替え</span></span></li><li><b><span class="zh">管理員</span><span class="en">Admin</span><span class="ja">管理者</span></b><span><span class="zh">換掉初始密碼，啟用 TOTP</span><span class="en">change the initial password, turn on TOTP</span><span class="ja">初期パスワードを変更し TOTP を有効化</span></span></li><li><b><span class="zh">登入方式</span><span class="en">Sign-in</span><span class="ja">サインイン</span></b><span>LDAP / AD · OIDC · SAML</span></li><li><b><span class="zh">權限</span><span class="en">Access</span><span class="ja">権限</span></b><span><span class="zh">群組＋五個內建角色，可給到單位或子網路</span><span class="en">groups + 5 built-in roles, down to a tenant or subnet</span><span class="ja">グループ＋5 つの組み込みロール、テナントやサブネット単位まで</span></span></li><li><b><span class="zh">備份</span><span class="en">Backup</span><span class="ja">バックアップ</span></b><span><span class="zh">啟用每日備份，複製到另一台</span><span class="en">enable the daily backup, copy it off-host</span><span class="ja">日次バックアップを有効化し別ホストへ</span></span></li></ol><pre><code>sudo apt-get update &amp;&amp; sudo apt-get install -y curl
+curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-ipam/main/scripts/bootstrap.sh | sudo bash</code></pre><h3 id="phase-0-check"><span class="zh">完成標準</span><span class="en">Done when</span><span class="ja">完了の目安</span></h3><ul class="done"><li><span class="zh"><code>doctor</code> 全部通過</span><span class="en"><code>doctor</code> is all green</span><span class="ja"><code>doctor</code> がすべて合格</span></li><li><span class="zh">非管理員看不到沒授權的資料</span><span class="en">a non-admin sees only what they should</span><span class="ja">管理者以外は許可された範囲だけ見える</span></li><li><span class="zh">還原演練成功</span><span class="en">a restore drill worked</span><span class="ja">復元テストが成功</span></li><li><span class="zh">稽核記錄看得到登入與異動</span><span class="en">the audit log shows sign-ins and changes</span><span class="ja">監査ログにサインインと変更が残る</span></li></ul></div></div>
+      <details class="pit"><summary id="phase-0-pitfalls"><span class="zh">常見地雷</span><span class="en">Common pitfalls</span><span class="ja">よくある落とし穴</span></summary><ul>
+        <li><span class="zh">還原需要同一把 <code>ENCRYPTION_KEY</code>（在 <code>/etc/jt-ipam/backend.env</code>）才解得開整合帳密等加密欄位。備份檔已包含這個檔案，所以異地備份要當機密保管。</span><span class="en">A restore needs the same <code>ENCRYPTION_KEY</code> (in <code>/etc/jt-ipam/backend.env</code>) to decrypt integration credentials and other encrypted fields. The backup includes that file, so treat off-site copies as secrets.</span><span class="ja">復元には同じ <code>ENCRYPTION_KEY</code>（<code>/etc/jt-ipam/backend.env</code> 内）が必要で、これがないと連携の認証情報などの暗号化項目を復号できません。バックアップにはこのファイルが含まれるので、外部保管のコピーは機密として扱ってください。</span></li>
+        <li><span class="zh">在 jt-ipam 前面再放一層自己的反向代理或負載平衡器時，那一層也要設同一套安全標頭；安全標頭不會自動跨過多出來的那一跳。</span><span class="en">If you put your own reverse proxy or load balancer in front, it must send the same security headers; they do not survive the extra hop on their own.</span><span class="ja">jt-ipam の前段に独自のリバースプロキシやロードバランサーを置く場合、そこでも同じセキュリティヘッダーを設定してください。ヘッダーは余分な中継を自動では通り抜けません。</span></li>
+        <li><span class="zh">主機規格照建議值準備（4 核心、8 GB、50 GB）：稽核記錄、IP 歷程與備份會一直成長。自架 LLM 不要和 jt-ipam 放同一台。</span><span class="en">Size the host at the recommended 4 vCPU, 8 GB and 50 GB: the audit log, IP history and backups keep growing. Do not run a self-hosted LLM on the same machine.</span><span class="ja">ホストは推奨値（4 コア、8 GB、50 GB）で用意してください。監査ログ、IP の履歴、バックアップは増え続けます。自前の LLM を同じマシンで動かすのは避けてください。</span></li>
+      </ul></details>
+      <p class="refs"><b><span class="zh">相關</span><span class="en">See also</span><span class="ja">関連</span></b><a href="index.html#install"><span class="zh">部署</span><span class="en">Deployment</span><span class="ja">デプロイ</span></a><a href="https://github.com/jasoncheng7115/jt-ipam/blob/main/docs/INSTALL.md" target="_blank" rel="noopener">INSTALL</a><a href="troubleshooting.html#qa-doctor"><span class="zh">疑難排解：doctor</span><span class="en">Troubleshooting: doctor</span><span class="ja">トラブルシューティング：doctor</span></a><a href="troubleshooting.html#login"><span class="zh">登入問題</span><span class="en">Sign-in problems</span><span class="ja">ログインの問題</span></a><a href="features.html#security-admin"><span class="zh">安全與管理</span><span class="en">Security &amp; admin</span><span class="ja">セキュリティと管理</span></a><a href="api.html#rbac"><span class="zh">權限模型</span><span class="en">Permission model</span><span class="ja">権限モデル</span></a></p>
+    </div>
+
+    <div class="phase core">
+      <h2 id="phase-1"><span class="ph-n">1</span><span class="zh">階段 1：IP 規劃成為唯一依據</span><span class="en">Phase 1: the IP plan becomes the source of truth</span><span class="ja">フェーズ 1：IP 計画を唯一の拠り所に</span><span class="ph-tag"><span class="zh">核心</span><span class="en">core</span><span class="ja">コア</span></span></h2>
+      <p class="goal"><span class="zh">把「應該如何」完整建進 jt-ipam，讓它取代試算表。這一階段只靠人工與匯入，還不需要任何掃描或整合。</span><span class="en">Put the whole "what should be" into jt-ipam so it replaces the spreadsheet. This phase is manual work and imports only; no scans or integrations yet.</span><span class="ja">「あるべき姿」をすべて jt-ipam に入れ、表計算を置き換えます。このフェーズは手作業と取り込みだけで、スキャンや連携はまだ使いません。</span></p>
+      <div class="ph-body"><figure class="dg"><figcaption><span class="zh">資料結構</span><span class="en">Data model</span><span class="ja">データ構造</span></figcaption><div class="tree"><ul class="t"><li><span class="nd"><span class="zh">單位</span><span class="en">Tenant</span><span class="ja">テナント</span><small><span class="zh">選用</span><span class="en">optional</span><span class="ja">任意</span></small></span><ul><li><span class="nd"><span class="zh">區段</span><span class="en">Section</span><span class="ja">セクション</span><small><span class="zh">總部、分公司…</span><span class="en">HQ, branch…</span><span class="ja">本社・支社…</span></small></span><ul><li><span class="nd g">198.51.100.0/24<small><span class="zh">上層子網路</span><span class="en">parent subnet</span><span class="ja">上位サブネット</span></small></span><ul><li><span class="nd">198.51.100.0/26<small><span class="zh">實際使用</span><span class="en">in use</span><span class="ja">実際に使用</span></small></span><ul><li><span class="nd"><span class="zh">位址範圍</span><span class="en">Ranges</span><span class="ja">範囲</span><small><span class="zh">DHCP 集區、保留</span><span class="en">DHCP pool, reserved</span><span class="ja">DHCP プール・予約</span></small></span></li><li><span class="nd"><span class="zh">IP 位址</span><span class="en">IP addresses</span><span class="ja">IP アドレス</span><small><span class="zh">主機名稱、MAC、負責人</span><span class="en">hostname, MAC, owner</span><span class="ja">ホスト名・MAC・担当</span></small></span></li></ul></li></ul></li></ul></li></ul></li></ul><div class="chips"><span class="lbl"><span class="zh">匯入</span><span class="en">Import</span><span class="ja">取り込み</span></span><i>CSV · <span class="zh">先 Dry-run</span><span class="en">dry-run first</span><span class="ja">先にドライラン</span></i><i>phpIPAM</i></div><div class="meter-h"><span class="zh">IP 指示計</span><span class="en">IP meter</span><span class="ja">IP メーター</span><b class="mh-k"><i class="u"></i><span class="zh">使用中</span><span class="en">in use</span><span class="ja">使用中</span><i class="r"></i><span class="zh">保留</span><span class="en">reserved</span><span class="ja">予約</span><i></i><span class="zh">空著</span><span class="en">free</span><span class="ja">空き</span></b></div><div class="meter" aria-hidden="true"><i class="u"></i><i class="u"></i><i class="u"></i><i class="u"></i><i class="r"></i><i class="r"></i><i class="u"></i><i class="u"></i><i class="f"></i><i class="f"></i><i class="u"></i><i class="u"></i><i class="u"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="u"></i><i class="u"></i><i class="r"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="u"></i><i class="u"></i><i class="u"></i><i class="u"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i></div></div></figure><div class="ph-side"><h3 id="phase-1-configure"><span class="zh">設定步驟</span><span class="en">Steps</span><span class="ja">設定の手順</span></h3><ol class="steps n6"><li><b><span class="zh">區段</span><span class="en">Sections</span><span class="ja">セクション</span></b><span><span class="zh">依組織、地區或用途，不要分太細</span><span class="en">by org, region or purpose; keep it coarse</span><span class="ja">組織・地域・用途ごと、細かくしすぎない</span></span></li><li><b><span class="zh">單位</span><span class="en">Tenants</span><span class="ja">テナント</span></b><span><span class="zh">管多家公司或客戶時先建</span><span class="en">first, if you manage several companies or clients</span><span class="ja">複数の会社や顧客を扱うなら最初に</span></span></li><li><b>VLAN · VRF</b><span><span class="zh">有用到才建；重疊網段用 VRF</span><span class="en">only if used; VRF for overlapping ranges</span><span class="ja">使う場合だけ、重複レンジは VRF で</span></span></li><li><b><span class="zh">子網路</span><span class="en">Subnets</span><span class="ja">サブネット</span></b><span><span class="zh">大網段當上層，往下切</span><span class="en">large block on top, carve below</span><span class="ja">大きなブロックを上位に、その下を分割</span></span></li><li><b><span class="zh">位址範圍</span><span class="en">Ranges</span><span class="ja">範囲</span></b><span><span class="zh">標出 DHCP 集區與保留</span><span class="en">mark DHCP pools and reservations</span><span class="ja">DHCP プールと予約を明示</span></span></li><li><b><span class="zh">匯入</span><span class="en">Import</span><span class="ja">取り込み</span></b><span><span class="zh">CSV（先 Dry-run）或 phpIPAM</span><span class="en">CSV (dry-run first) or phpIPAM</span><span class="ja">CSV（先にドライラン）か phpIPAM</span></span></li></ol><h3 id="phase-1-check"><span class="zh">完成標準</span><span class="en">Done when</span><span class="ja">完了の目安</span></h3><ul class="done"><li><span class="zh">使用率與 IP 指示計符合認知</span><span class="en">utilisation and the IP meter match reality</span><span class="ja">使用率と IP メーターが実態と一致</span></li><li><span class="zh">每個區段都有資料負責人</span><span class="en">every section has a data owner</span><span class="ja">各セクションにデータ責任者がいる</span></li><li><span class="zh">新位址都從 jt-ipam 配發</span><span class="en">new addresses come from jt-ipam</span><span class="ja">新しいアドレスは jt-ipam から払い出す</span></li><li><span class="zh">舊試算表已改唯讀</span><span class="en">the old spreadsheet is read-only</span><span class="ja">旧スプレッドシートは読み取り専用</span></li></ul></div></div>
+      <details class="pit"><summary id="phase-1-pitfalls"><span class="zh">常見地雷</span><span class="en">Common pitfalls</span><span class="ja">よくある落とし穴</span></summary><ul>
+        <li><span class="zh">先建子網路再匯入：CSV 匯入是逐個子網路進行，子網路裡已經有的位址會略過。</span><span class="en">Create subnets before importing: the CSV import runs per subnet, and addresses the subnet already has are skipped.</span><span class="ja">取り込みの前にサブネットを作成してください。CSV の取り込みはサブネット単位で行われ、すでにあるアドレスはスキップされます。</span></li>
+        <li><span class="zh">不要把試算表裡過時的資料原樣搬進來就算數。拿不準的先標成「保留」或在備註寫明來源，階段 2 的掃描會告訴你哪些其實已經不在（失聯 IP）。</span><span class="en">Do not trust stale spreadsheet rows just because they imported. Mark doubtful ones as reserved or note their origin; phase 2 scanning will show which are really gone (ghost IPs).</span><span class="ja">表計算の古い行を、取り込めたからといってそのまま信用しないでください。怪しいものは「予約」にするかメモに出どころを書いておけば、フェーズ 2 のスキャンで実際にはもう無いもの（ゴースト IP）が分かります。</span></li>
+        <li><span class="zh">舊試算表的退場日期要明講並改成唯讀，否則兩邊會一直分歧。</span><span class="en">Announce a retirement date for the old spreadsheet and make it read-only, or the two will keep drifting apart.</span><span class="ja">旧表計算の廃止日をはっきり伝えて読み取り専用にしてください。そうしないと両者がずっと食い違い続けます。</span></li>
+      </ul></details>
+      <p class="refs"><b><span class="zh">相關</span><span class="en">See also</span><span class="ja">関連</span></b><a href="features.html#core-ipam"><span class="zh">IPAM 核心</span><span class="en">Core IPAM</span><span class="ja">IPAM のコア</span></a><a href="index.html#multi-tenant"><span class="zh">多單位管理</span><span class="en">Many companies or clients</span><span class="ja">複数組織の管理</span></a><a href="api.html#addresses-csv-import"><span class="zh">CSV 匯入 API</span><span class="en">CSV import API</span><span class="ja">CSV 取り込み API</span></a><a href="api.html#phpipam"><span class="zh">phpIPAM 相容 API</span><span class="en">phpIPAM-compatible API</span><span class="ja">phpIPAM 互換 API</span></a></p>
+    </div>
+
+    <div class="phase core">
+      <h2 id="phase-2"><span class="ph-n">2</span><span class="zh">階段 2：探索與上線狀態</span><span class="en">Phase 2: discovery and liveness</span><span class="ja">フェーズ 2：検出と死活</span><span class="ph-tag"><span class="zh">核心</span><span class="en">core</span><span class="ja">コア</span></span></h2>
+      <p class="goal"><span class="zh">讓掃描代理回報「實際如何」，每個 IP 有了最後看到的時間，規劃與現況的落差開始浮現。</span><span class="en">Scan agents report what actually is: every IP gets a last-seen time and the gaps between plan and reality start to show.</span><span class="ja">スキャンエージェントに「実際の姿」を報告させます。すべての IP に最終確認の時刻が付き、計画と実態の差が見え始めます。</span></p>
+      <div class="ph-body"><figure class="dg"><figcaption><span class="zh">掃描代理擺放</span><span class="en">Where agents go</span><span class="ja">エージェントの配置</span></figcaption><div class="seg2"><div class="seg"><span class="seg-h">VLAN 10 · 192.0.2.0/24</span><span class="nd dark"><span class="zh">掃描代理</span><span class="en">Agent</span><span class="ja">エージェント</span></span><span class="hosts"><i class="on"></i><i class="on"></i><i class="off"></i><i class="on"></i><i class="on"></i><i class="unk"></i></span><span class="seg-f ok"><span class="zh">同網段：ICMP＋ARP / MAC＋廠牌</span><span class="en">same segment: ICMP + ARP / MAC + vendor</span><span class="ja">同一セグメント：ICMP＋ARP / MAC＋ベンダー</span></span></div><div class="rtr"><span class="nd"><span class="zh">路由器</span><span class="en">Router</span><span class="ja">ルーター</span></span></div><div class="seg"><span class="seg-h">VLAN 20 · 198.51.100.0/24</span><span class="hosts"><i class="on"></i><i class="on"></i><i class="on"></i><i class="off"></i><i class="on"></i><i class="on"></i></span><span class="seg-f"><span class="zh">跨過路由：只剩 ICMP</span><span class="en">across a router: ICMP only</span><span class="ja">ルーター越し：ICMP のみ</span></span></div></div><div class="chips legend2"><i class="k on"><span class="zh">上線</span><span class="en">online</span><span class="ja">オンライン</span></i><i class="k off"><span class="zh">離線</span><span class="en">offline</span><span class="ja">オフライン</span></i><i class="k unk"><span class="zh">未知</span><span class="en">unknown</span><span class="ja">不明</span></i></div></figure><div class="ph-side"><h3 id="phase-2-configure"><span class="zh">設定步驟</span><span class="en">Steps</span><span class="ja">設定の手順</span></h3><ol class="steps n5"><li><b><span class="zh">本機代理</span><span class="en">Local agent</span><span class="ja">ローカル</span></b><span><span class="zh">先指派它連得到的子網路</span><span class="en">assign the subnets it can reach</span><span class="ja">届くサブネットを割り当てる</span></span></li><li><b><span class="zh">其他網段</span><span class="en">Other segments</span><span class="ja">他のセグメント</span></b><span><span class="zh">每段一台 Linux 裝代理，由代理主動連回</span><span class="en">one Linux host per segment; the agent dials out</span><span class="ja">各セグメントの Linux に導入、エージェントから接続</span></span></li><li><b><span class="zh">掃描項目</span><span class="en">Probes</span><span class="ja">探査</span></b><span><span class="zh">預設只有 ICMP，再勾 ARP、NetBIOS、mDNS</span><span class="en">ICMP by default; add ARP, NetBIOS, mDNS</span><span class="ja">既定は ICMP、ARP・NetBIOS・mDNS を追加</span></span></li><li><b><span class="zh">上線判定</span><span class="en">Online rule</span><span class="ja">オンライン判定</span></b><span><span class="zh">閾值至少是掃描週期的兩倍</span><span class="en">threshold at least twice the scan cycle</span><span class="ja">しきい値はスキャン周期の 2 倍以上</span></span></li><li><b><span class="zh">異常偵測</span><span class="en">Anomalies</span><span class="ja">異常検知</span></b><span><span class="zh">先選整理好的子網路，再排程</span><span class="en">start with tidy subnets, then schedule</span><span class="ja">整理済みのサブネットから、のちに定期実行</span></span></li></ol><h3 id="phase-2-check"><span class="zh">完成標準</span><span class="en">Done when</span><span class="ja">完了の目安</span></h3><ul class="done"><li><span class="zh">上線、離線、未知的比例合理</span><span class="en">online / offline / unknown ratios look right</span><span class="ja">オンライン・オフライン・不明の比率が妥当</span></li><li><span class="zh">掃描代理負載沒有「過重」</span><span class="en">no agent shows “overloaded”</span><span class="ja">エージェントの負荷が「過大」でない</span></li><li><span class="zh">失聯、未授權、衝突 IP 逐筆處理一輪</span><span class="en">stale, unauthorised and conflicting IPs handled once</span><span class="ja">失効・未承認・衝突 IP を一通り処理</span></li></ul></div></div>
+      <details class="pit"><summary id="phase-2-pitfalls"><span class="zh">常見地雷</span><span class="en">Common pitfalls</span><span class="ja">よくある落とし穴</span></summary><ul>
+        <li><span class="zh">代理的位置決定看得到什麼：ARP 與 MAC 只在同一個廣播網域拿得到，要知道 MAC 與廠牌，代理就要放在那個網段裡（或在那個 VLAN 有介面的主機上）；跨過路由就只剩 ICMP。</span><span class="en">Where an agent sits decides what it sees: ARP and MACs are only available inside the same broadcast domain, so to learn MACs and vendors the agent must live in that network (or on a host with an interface in that VLAN). Across a router, only ICMP is left.</span><span class="ja">エージェントの設置場所で見えるものが決まります。ARP と MAC は同じブロードキャストドメイン内でしか取得できないため、MAC とメーカーを知りたいならエージェントをそのネットワーク内（またはその VLAN にインターフェースを持つホスト）に置きます。ルーターを越えると ICMP しか使えません。</span></li>
+        <li><span class="zh">代理與目標之間有防火牆擋 ICMP 時，整段會看起來都離線；先確認代理到目標網段的 ICMP 是通的。</span><span class="en">A firewall that drops ICMP between agent and target makes a whole network look offline; check that ICMP from the agent reaches it first.</span><span class="ja">エージェントと対象の間に ICMP を遮断するファイアウォールがあると、ネットワーク全体がオフラインに見えます。まずエージェントから対象ネットワークへ ICMP が通ることを確認してください。</span></li>
+        <li><span class="zh">「自動收錄未登錄的 IP」預設關閉，建議維持關閉：位址一旦收錄，私接的設備就不會再出現在未授權 IP 清單。</span><span class="en">"Record unregistered IPs automatically" is off by default; keep it off. Once an address is recorded, an unauthorised device no longer shows up under unauthorised IPs.</span><span class="ja">「未登録の IP を自動的に記録する」は既定で無効です。無効のままを推奨します。いったん記録されると、無断で接続された機器は未許可の IP の一覧に現れなくなります。</span></li>
+        <li><span class="zh">OS 偵測屬於侵入性探測，可能觸發 IDS 告警；開啟前先知會資安團隊，間隔拉長。DHCP 伺服器偵測會在網段上廣播，逐個子網路決定要不要開。</span><span class="en">OS detection is an intrusive probe that may trip IDS alerts; tell your security team first and keep the interval long. DHCP server discovery broadcasts on the network, so decide per subnet.</span><span class="ja">OS 検出は侵入的な探査で、IDS の警告を引き起こすことがあります。有効にする前にセキュリティ担当へ知らせ、間隔を長めにしてください。DHCP サーバーの検出はネットワーク上でブロードキャストするので、サブネットごとに判断してください。</span></li>
+      </ul></details>
+      <p class="refs"><b><span class="zh">相關</span><span class="en">See also</span><span class="ja">関連</span></b><a href="features.html#core-ipam"><span class="zh">掃描代理與 IPAM 核心</span><span class="en">Scan agents and core IPAM</span><span class="ja">スキャンエージェントと IPAM のコア</span></a><a href="index.html#autocreate"><span class="zh">哪些來源會自己新增 IP</span><span class="en">Which sources create IPs</span><span class="ja">IP を自動作成するソース</span></a><a href="api.html#agents-scan-agent"><span class="zh">掃描代理協定</span><span class="en">Scan agent protocol</span><span class="ja">スキャンエージェントのプロトコル</span></a></p>
+    </div>
+
+    <div class="phase ext">
+      <h2 id="phase-3"><span class="ph-n">3</span><span class="zh">階段 3：用整合印證現況</span><span class="en">Phase 3: integrations confirm reality</span><span class="ja">フェーズ 3：連携で実態を裏付け</span><span class="ph-tag"><span class="zh">擴充</span><span class="en">extension</span><span class="ja">拡張</span></span></h2>
+      <p class="goal"><span class="zh">把你已經在用的系統接進來，補上掃描看不到的東西：交換器埠、閘道的 ARP、DHCP 租約、DNS 名稱、VM 與端點代理。每個整合都在「管理」底下各自的頁面新增，之後由排程自動同步（預設每 5 分鐘一輪）。</span><span class="en">Connect the systems you already run to add what scans cannot see: switch ports, gateway ARP, DHCP leases, DNS names, VMs and endpoint agents. Each integration is added on its own page under Admin and then synced on a schedule (every 5 minutes by default).</span><span class="ja">すでに使っているシステムを接続し、スキャンでは見えないもの（スイッチのポート、ゲートウェイの ARP、DHCP リース、DNS 名、VM、端末のエージェント）を補います。各連携は「管理」の下のそれぞれのページで追加し、その後はスケジュールで自動同期されます（既定は 5 分ごと）。</span></p>
+      <div class="ph-body"><figure class="dg" id="phase-3-order"><figcaption><span class="zh">從網路底層往上接</span><span class="en">Connect bottom-up</span><span class="ja">下の層から順に</span></figcaption><div class="stack"><span class="up">↑ <span class="zh">越上層越依賴底下的資料</span><span class="en">upper layers rely on the ones below</span><span class="ja">上の層ほど下の層に依存</span></span><ol><li><span class="lv">6</span><span class="lp">Wazuh · OCS · Zabbix · RustDesk</span><span class="lg"><span class="zh">缺口清單</span><span class="en">coverage gaps</span><span class="ja">未導入の洗い出し</span></span></li><li><span class="lv">5</span><span class="lp">Proxmox VE · VMware</span><span class="lg"><span class="zh">VM 與容器</span><span class="en">VMs and containers</span><span class="ja">VM とコンテナ</span></span></li><li><span class="lv">4</span><span class="lp">PowerDNS · BIND9 · Unbound · Windows DNS · UCS · AdGuard Home</span><span class="lg"><span class="zh">名稱</span><span class="en">names</span><span class="ja">名前</span></span></li><li><span class="lv">3</span><span class="lp">Windows DHCP · Kea · ISC DHCP</span><span class="lg"><span class="zh">動態還是固定</span><span class="en">dynamic or fixed</span><span class="ja">動的か固定か</span></span></li><li><span class="lv">2</span><span class="lp">OPNsense · pfSense · FortiGate · Palo Alto · MikroTik</span><span class="lg"><span class="zh">閘道 ARP、租約、規則、VPN</span><span class="en">gateway ARP, leases, rules, VPN</span><span class="ja">ゲートウェイ ARP・リース・ルール・VPN</span></span></li><li><span class="lv">1</span><span class="lp">LibreNMS</span><span class="lg"><span class="zh">位置：MAC、交換器埠、LLDP</span><span class="en">where: MAC, switch port, LLDP</span><span class="ja">位置：MAC・スイッチポート・LLDP</span></span></li></ol></div></figure><div class="ph-side"><h3 id="phase-3-configure"><span class="zh">設定步驟</span><span class="en">Steps</span><span class="ja">設定の手順</span></h3><ol class="steps n4"><li><b><span class="zh">唯讀帳號</span><span class="en">Read-only</span><span class="ja">読み取り専用</span></b><span><span class="zh">會寫回的功能要你明確開啟</span><span class="en">write-back only when you enable it</span><span class="ja">書き戻しは明示的に有効化したときだけ</span></span></li><li><b><span class="zh">限定子網路</span><span class="en">Scope</span><span class="ja">範囲を限定</span></b><span><span class="zh">有重疊網段時每個整合都要設</span><span class="en">required per integration when ranges overlap</span><span class="ja">重複レンジがあれば連携ごとに設定</span></span></li><li><b><span class="zh">上線來源</span><span class="en">Online evidence</span><span class="ja">オンラインの根拠</span></b><span><span class="zh">防火牆 ARP 採信；LibreNMS ARP 不建議</span><span class="en">trust firewall ARP, not LibreNMS ARP</span><span class="ja">ファイアウォールの ARP は採用、LibreNMS の ARP は非推奨</span></span></li><li><b><span class="zh">一次接一個</span><span class="en">One at a time</span><span class="ja">1 つずつ</span></b><span><span class="zh">自動建立先關，觀察一週</span><span class="en">auto-create off, watch for a week</span><span class="ja">自動作成はオフで 1 週間観察</span></span></li></ol><h3 id="phase-3-check"><span class="zh">完成標準</span><span class="en">Done when</span><span class="ja">完了の目安</span></h3><ul class="done"><li><span class="zh">同步成功、筆數合理</span><span class="en">syncs succeed with sensible counts</span><span class="ja">同期が成功し件数が妥当</span></li><li><span class="zh">抽查「各來源最後出現」都合理</span><span class="en">a spot-check of “last seen by source” looks right</span><span class="ja">「ソース別の最終確認」の抜き取りが妥当</span></li><li><span class="zh">拓樸圖補上存取層與骨幹</span><span class="en">the topology gains access and core layers</span><span class="ja">トポロジーにアクセス層と基幹が加わる</span></li></ul></div></div>
+      <details class="pit"><summary id="phase-3-pitfalls"><span class="zh">常見地雷</span><span class="en">Common pitfalls</span><span class="ja">よくある落とし穴</span></summary><ul>
+        <li><span class="zh">一次接好幾個整合又同時開自動建立，事後很難分辨紀錄從哪來。一次接一個、自動建立先全關，觀察一週再逐一決定。</span><span class="en">Connecting several integrations at once with auto-create on makes it hard to tell later where records came from. One at a time, auto-create off, a week of watching, then decide each switch.</span><span class="ja">複数の連携を一度に接続して自動作成も有効にすると、後からレコードの出どころが分からなくなります。1 つずつ接続し、自動作成はまず無効にして 1 週間観察してから個別に判断してください。</span></li>
+        <li><span class="zh">刪除整合會收回它寫入的資料，不要用「刪掉重建」來修設定，改編輯就好。</span><span class="en">Deleting an integration removes the data it wrote, so do not delete and recreate to fix a setting; edit it.</span><span class="ja">連携を削除すると、その連携が書き込んだデータも回収されます。設定を直すために削除して作り直すのではなく、編集してください。</span></li>
+      </ul><h4><span class="zh">各整合先注意</span><span class="en">Per-integration notes</span><span class="ja">連携ごとの注意</span></h4><ul><li><b class="pn"><b>LibreNMS</b></b><span class="zh">「自動建立裝置主 IP」預設開啟，第一次同步前決定要不要；「依 ARP 表自動建立 IP」預設關閉。</span><span class="en">"Auto-create device primary IPs" is on by default; decide before the first sync. "Create IPs from the ARP table" is off by default.</span><span class="ja">「機器の主 IP を自動作成する」は既定で有効なので、初回の同期の前に判断してください。「ARP テーブルから IP を作成する」は既定で無効です。</span></li><li><b class="pn"><span class="zh"><b>閘道與防火牆</b>：OPNsense、pfSense、FortiGate、Palo Alto（Beta）、MikroTik RouterOS（Beta）</span><span class="en"><b>Gateways and firewalls</b>: OPNsense, pfSense, FortiGate, Palo Alto (Beta), MikroTik RouterOS (Beta)</span><span class="ja"><b>ゲートウェイとファイアウォール</b>：OPNsense、pfSense、FortiGate、Palo Alto（Beta）、MikroTik RouterOS（Beta）</span></b><span class="zh">pfSense 要先裝 pfSense-pkg-RESTAPI；MikroTik 通常是主路由器，較吃資源的區段預設關閉；OPNsense / pfSense 的「自動建立 IPAM 沒有的位址」預設關閉。</span><span class="en">pfSense needs pfSense-pkg-RESTAPI installed first; a MikroTik is usually the main router, so its heavier sections are off by default; on OPNsense / pfSense "Create addresses IPAM does not have" is off by default.</span><span class="ja">pfSense は先に pfSense-pkg-RESTAPI が必要です。MikroTik は通常メインのルーターなので、負荷の大きいセクションは既定で無効です。OPNsense / pfSense の「IPAM に無いアドレスを作成する」は既定で無効です。</span></li><li><b class="pn"><span class="zh"><b>DHCP</b>：Windows DHCP（Beta）、Kea DHCP、ISC DHCP</span><span class="en"><b>DHCP</b>: Windows DHCP (Beta), Kea DHCP, ISC DHCP</span><span class="ja"><b>DHCP</b>：Windows DHCP（Beta）、Kea DHCP、ISC DHCP</span></b><span class="zh">ISC DHCP 沒有 API，要在 DHCP 主機上裝掃描代理讀檔；Kea 要載入 lease_cmds 才拿得到租約；Windows 要能用 WinRM 連線（預設 5986/HTTPS）。</span><span class="en">ISC DHCP has no API, so a scan agent on the DHCP host reads its files; Kea needs the lease_cmds hook for leases; Windows needs WinRM reachable (5986/HTTPS by default).</span><span class="ja">ISC DHCP には API が無いので、DHCP ホストにスキャンエージェントを入れてファイルを読みます。Kea でリースを取得するには lease_cmds が必要です。Windows は WinRM で接続できる必要があります（既定 5986/HTTPS）。</span></li><li><b class="pn"><span class="zh"><b>DNS</b>：PowerDNS、BIND9、Unbound（OPNsense）、Windows DNS、Univention UCS、AdGuard Home</span><span class="en"><b>DNS</b>: PowerDNS, BIND9, Unbound (OPNsense), Windows DNS, Univention UCS, AdGuard Home</span><span class="ja"><b>DNS</b>：PowerDNS、BIND9、Unbound（OPNsense）、Windows DNS、Univention UCS、AdGuard Home</span></b><span class="zh">預設只讀取比對；名稱要以哪個來源為準，在「管理 → 名稱/ARP 來源順序」調整。</span><span class="en">It reads and compares by default; which source wins for names is set in Admin → Name / ARP source order.</span><span class="ja">既定では読み取りと照合のみです。名前にどのソースを優先するかは「管理 → 名称/ARP のソース順」で調整します。</span></li><li><b class="pn"><span class="zh"><b>虛擬化</b>：Proxmox VE、VMware ESXi / vCenter（Beta）</span><span class="en"><b>Virtualization</b>: Proxmox VE, VMware ESXi / vCenter (Beta)</span><span class="ja"><b>仮想化</b>：Proxmox VE、VMware ESXi / vCenter（Beta）</span></b><span class="zh">「信任虛擬化取得的 IP」預設關閉；打開的話，測試機與臨時複製的 VM 也會被收錄。</span><span class="en">"Trust addresses reported by virtualization" is off by default; turned on, test machines and temporary clones get recorded too.</span><span class="ja">「仮想化から報告されたアドレスを信頼する」は既定で無効です。有効にすると、テスト機や一時的に複製した VM も記録されます。</span></li><li><b class="pn"><span class="zh"><b>端點與監控</b>：Wazuh、OCS Inventory NG、Zabbix、RustDesk Server（開源版）</span><span class="en"><b>Endpoints and monitoring</b>: Wazuh, OCS Inventory NG, Zabbix, RustDesk Server (open source)</span><span class="ja"><b>端末と監視</b>：Wazuh、OCS Inventory NG、Zabbix、RustDesk Server（オープンソース版）</span></b><span class="zh">這些缺口清單要在 IP 規劃完整之後才有意義，否則會被沒登記的位址灌爆。RustDesk 要在 RustDesk 主機上裝專用代理。</span><span class="en">These gap lists only mean something once the IP plan is complete; otherwise unregistered addresses flood them. RustDesk needs its dedicated agent on the RustDesk host.</span><span class="ja">これらの抜けの一覧は IP 計画が揃ってから意味を持ちます。そうでないと未登録のアドレスで埋め尽くされます。RustDesk は RustDesk ホストに専用エージェントが必要です。</span></li></ul></details>
+      <p class="refs"><b><span class="zh">相關</span><span class="en">See also</span><span class="ja">関連</span></b><a href="index.html#integrations"><span class="zh">整合總覽</span><span class="en">Integration map</span><span class="ja">連携の全体像</span></a><a href="index.html#autocreate"><span class="zh">哪些來源會自己新增 IP</span><span class="en">Which sources create IPs</span><span class="ja">IP を自動作成するソース</span></a><a href="features.html#integrations-network"><span class="zh">網路與防火牆</span><span class="en">Network &amp; firewalls</span><span class="ja">ネットワークとファイアウォール</span></a><a href="features.html#integrations-dns-dhcp"><span class="zh">DNS 與 DHCP</span><span class="en">DNS &amp; DHCP</span><span class="ja">DNS と DHCP</span></a><a href="features.html#virtualization"><span class="zh">虛擬化</span><span class="en">Virtualization</span><span class="ja">仮想化</span></a><a href="features.html#integrations-inventory"><span class="zh">資產、監控與記錄</span><span class="en">Inventory, monitoring &amp; logs</span><span class="ja">資産・監視・ログ</span></a><a href="troubleshooting.html#qa-integration"><span class="zh">整合一直同步失敗</span><span class="en">An integration keeps failing</span><span class="ja">連携の同期が失敗し続ける</span></a></p>
+    </div>
+
+    <div class="phase ext">
+      <h2 id="phase-4"><span class="ph-n">4</span><span class="zh">階段 4：裝置與實體</span><span class="en">Phase 4: devices and the physical layer</span><span class="ja">フェーズ 4：機器と物理</span><span class="ph-tag"><span class="zh">擴充</span><span class="en">extension</span><span class="ja">拡張</span></span></h2>
+      <p class="goal"><span class="zh">把 IP 背後的實體補齊：在哪個機房、哪一櫃哪一 U、接哪個埠、走哪條線、用哪路電。可以和階段 3 並行。</span><span class="en">Fill in the physical side behind each IP: which room, which rack and U, which port, which cable, which power feed. It can run alongside phase 3.</span><span class="ja">IP の背後にある物理の情報を揃えます。どのサーバルームの、どのラックの何 U に、どのポートで、どのケーブルで、どの電源系統か。フェーズ 3 と並行できます。</span></p>
+      <div class="ph-body"><figure class="dg"><figcaption><span class="zh">從 IP 一路點到實體</span><span class="en">From an IP down to the floor</span><span class="ja">IP から物理まで</span></figcaption><div class="chain"><span class="nd"><span class="zh">地點</span><span class="en">Location</span><span class="ja">拠点</span><small><span class="zh">平面圖</span><span class="en">floor plan</span><span class="ja">平面図</span></small></span><span class="ar"></span><span class="nd"><span class="zh">機櫃</span><span class="en">Rack</span><span class="ja">ラック</span><small><span class="zh">U、正背面、層架</span><span class="en">U, front / rear, shelves</span><span class="ja">U・前背面・棚</span></small></span><span class="ar"></span><span class="nd g"><span class="zh">裝置</span><span class="en">Device</span><span class="ja">機器</span><small>LibreNMS · CSV</small></span><span class="ar"></span><span class="nd"><span class="zh">連接埠</span><span class="en">Port</span><span class="ja">ポート</span><small><span class="zh">跳接面板穿透</span><span class="en">patch pass-through</span><span class="ja">パッチ通過</span></small></span><span class="ar"></span><span class="nd"><span class="zh">線路</span><span class="en">Cable</span><span class="ja">ケーブル</span><small><span class="zh">纜線追蹤</span><span class="en">cable trace</span><span class="ja">ケーブル追跡</span></small></span><span class="ar"></span><span class="nd"><span class="zh">電力</span><span class="en">Power</span><span class="ja">電源</span><small><span class="zh">配電盤 → 插座</span><span class="en">panel → outlet</span><span class="ja">分電盤 → コンセント</span></small></span></div><p class="dg-note"><span class="zh">可以和階段 3 並行</span><span class="en">can run alongside phase 3</span><span class="ja">フェーズ 3 と並行可</span></p></figure><div class="ph-side"><h3 id="phase-4-configure"><span class="zh">設定步驟</span><span class="en">Steps</span><span class="ja">設定の手順</span></h3><ol class="steps n6"><li><b><span class="zh">地點</span><span class="en">Locations</span><span class="ja">拠点</span></b><span><span class="zh">在平面圖上擺放機櫃</span><span class="en">place racks on the floor plan</span><span class="ja">平面図にラックを配置</span></span></li><li><b><span class="zh">機櫃</span><span class="en">Racks</span><span class="ja">ラック</span></b><span><span class="zh">U 數、正背面；也支援層架</span><span class="en">U count, front / rear; shelves too</span><span class="ja">U 数・前背面、棚にも対応</span></span></li><li><b><span class="zh">裝置</span><span class="en">Devices</span><span class="ja">機器</span></b><span><span class="zh">從 LibreNMS 帶進來，其他用 CSV / xlsx</span><span class="en">from LibreNMS; others via CSV / xlsx</span><span class="ja">LibreNMS から、ほかは CSV / xlsx</span></span></li><li><b><span class="zh">連接埠</span><span class="en">Ports</span><span class="ja">ポート</span></b><span><span class="zh">從來源匯入；跳接面板設穿透</span><span class="en">import from source; patch panels pass through</span><span class="ja">ソースから取り込み、パッチパネルは通過設定</span></span></li><li><b><span class="zh">佈線</span><span class="en">Cabling</span><span class="ja">配線</span></b><span><span class="zh">建立纜線，用纜線追蹤看路徑</span><span class="en">create cables, trace the path</span><span class="ja">ケーブルを作成し経路を追跡</span></span></li><li><b><span class="zh">電力</span><span class="en">Power</span><span class="ja">電源</span></b><span><span class="zh">配電盤 → 饋線 → 插座</span><span class="en">panel → feed → outlet</span><span class="ja">分電盤 → フィード → コンセント</span></span></li></ol><h3 id="phase-4-check"><span class="zh">完成標準</span><span class="en">Done when</span><span class="ja">完了の目安</span></h3><ul class="done"><li><span class="zh">從伺服器 IP 一路點到交換器</span><span class="en">click from a server IP through to its switch</span><span class="ja">サーバーの IP からスイッチまでたどれる</span></li><li><span class="zh">抽查幾櫃，與現場一致</span><span class="en">spot-checked racks match the floor</span><span class="ja">抜き取りのラックが現場と一致</span></li></ul></div></div>
+      <details class="pit"><summary id="phase-4-pitfalls"><span class="zh">常見地雷</span><span class="en">Common pitfalls</span><span class="ja">よくある落とし穴</span></summary><ul>
+        <li><span class="zh">想一次把所有機房建完，通常會半途而廢。先做核心機房與網路設備，其餘依優先順序補。</span><span class="en">Trying to model every room at once usually stalls halfway. Start with core rooms and network gear and add the rest by priority.</span><span class="ja">すべてのサーバルームを一度に作ろうとすると、たいてい途中で止まります。主要なサーバルームとネットワーク機器から始め、残りは優先度順に追加してください。</span></li>
+        <li><span class="zh">佈線與電力沒有任何系統會自動回報，只能靠人維護：指定負責人，並納入上架、搬遷、汰換的變更流程。</span><span class="en">Nothing reports cabling and power automatically; people maintain them. Name an owner and make updates part of the change process for installs, moves and removals.</span><span class="ja">配線と電源を自動で報告してくれるシステムはなく、人が維持するしかありません。担当者を決め、設置・移設・撤去の変更手順に更新を組み込んでください。</span></li>
+      </ul></details>
+      <p class="refs"><b><span class="zh">相關</span><span class="en">See also</span><span class="ja">関連</span></b><a href="features.html#physical-assets"><span class="zh">實體資產</span><span class="en">Physical assets</span><span class="ja">物理資産</span></a><a href="index.html#shelves"><span class="zh">層架</span><span class="en">Shelving</span><span class="ja">棚</span></a><a href="api.html#devices-device-import"><span class="zh">裝置匯入 API</span><span class="en">Device import API</span><span class="ja">機器の取り込み API</span></a><a href="api.html#rack-embed"><span class="zh">機櫃圖嵌入</span><span class="en">Rack embedding</span><span class="ja">ラック図の埋め込み</span></a></p>
+    </div>
+
+    <div class="phase ext">
+      <h2 id="phase-5"><span class="ph-n">5</span><span class="zh">階段 5：維運與自動化</span><span class="en">Phase 5: operations and automation</span><span class="ja">フェーズ 5：運用と自動化</span><span class="ph-tag"><span class="zh">擴充</span><span class="en">extension</span><span class="ja">拡張</span></span></h2>
+      <p class="goal"><span class="zh">資料可信之後，讓日常工作直接在 jt-ipam 裡完成，並把它接到通知與其他系統。</span><span class="en">With data you can trust, do the daily work inside jt-ipam and connect it to notifications and other systems.</span><span class="ja">データを信頼できるようになったら、日常業務を jt-ipam の中で行い、通知や他のシステムとつなぎます。</span></p>
+      <div class="ph-body"><figure class="dg"><figcaption><span class="zh">日常在 jt-ipam 完成</span><span class="en">Day-to-day in jt-ipam</span><span class="ja">日常業務は jt-ipam で</span></figcaption><div class="hub5"><div class="h-l"><span class="nd"><span class="zh">主控台</span><span class="en">Consoles</span><span class="ja">コンソール</span><small>SSH · SFTP · RDP · VNC · RustDesk</small></span><span class="nd"><span class="zh">調查</span><span class="en">Investigate</span><span class="ja">調査</span><small><span class="zh">一個 IP 的所有線索</span><span class="en">every clue for an IP</span><span class="ja">IP の手がかり</span></small></span><span class="nd"><span class="zh">探測</span><span class="en">Identify</span><span class="ja">探査</span><small><span class="zh">這是什麼設備</span><span class="en">what is this device</span><span class="ja">何の機器か</span></small></span></div><span class="box dark core5"><b>jt-ipam</b></span><div class="h-r"><span class="nd"><span class="zh">通知</span><span class="en">Notifications</span><span class="ja">通知</span><small><span class="zh">事件 → 條件 → 動作</span><span class="en">event → condition → action</span><span class="ja">イベント → 条件 → 動作</span></small></span><span class="nd"><span class="zh">API 權杖 · MCP</span><span class="en">API tokens · MCP</span><span class="ja">API トークン · MCP</span></span><span class="nd"><span class="zh">憑證派送</span><span class="en">Certificates</span><span class="ja">証明書配布</span><small>nginx · Apache · IIS</small></span><span class="nd">Graylog<small><span class="zh">記錄補上主機名稱</span><span class="en">log enrichment</span><span class="ja">ホスト名付与</span></small></span><span class="nd"><span class="zh">AI（選用）</span><span class="en">AI (optional)</span><span class="ja">AI（任意）</span><small><span class="zh">自備 LLM</span><span class="en">your own LLM</span><span class="ja">自前の LLM</span></small></span></div></div></figure><div class="ph-side"><h3 id="phase-5-configure"><span class="zh">設定步驟</span><span class="en">Steps</span><span class="ja">設定の手順</span></h3><ol class="steps n6"><li><b><span class="zh">主控台</span><span class="en">Consoles</span><span class="ja">コンソール</span></b><span><span class="zh">逐 IP 開啟 SSH、SFTP、RDP、VNC、RustDesk</span><span class="en">turn on SSH, SFTP, RDP, VNC, RustDesk per IP</span><span class="ja">IP ごとに SSH・SFTP・RDP・VNC・RustDesk を有効化</span></span></li><li><b><span class="zh">調查與探測</span><span class="en">Investigate</span><span class="ja">調査と探査</span></b><span><span class="zh">一個 IP 的線索收在一起</span><span class="en">every clue for one IP in one place</span><span class="ja">1 つの IP の手がかりを 1 か所に</span></span></li><li><b><span class="zh">通知</span><span class="en">Notifications</span><span class="ja">通知</span></b><span><span class="zh">事件規則：事件 → 條件 → 動作</span><span class="en">event rules: event → condition → action</span><span class="ja">イベントルール：イベント → 条件 → 動作</span></span></li><li><b><span class="zh">憑證派送</span><span class="en">Certificates</span><span class="ja">証明書配布</span></b><span><span class="zh">代理定期取用，失敗自動還原</span><span class="en">agents fetch; failures roll back on their own</span><span class="ja">エージェントが取得、失敗時は自動で戻す</span></span></li><li><b><span class="zh">自動化</span><span class="en">Automation</span><span class="ja">自動化</span></b><span><span class="zh">API 權杖、MCP、Graylog</span><span class="en">API tokens, MCP, Graylog</span><span class="ja">API トークン・MCP・Graylog</span></span></li><li><b><span class="zh">AI（選用）</span><span class="en">AI (optional)</span><span class="ja">AI（任意）</span></b><span><span class="zh">自備 LLM 伺服器</span><span class="en">bring your own LLM server</span><span class="ja">自前の LLM サーバー</span></span></li></ol><h3 id="phase-5-check"><span class="zh">完成標準</span><span class="en">Done when</span><span class="ja">完了の目安</span></h3><ul class="done"><li><span class="zh">值班能從 IP 開主控台、用調查找原因</span><span class="en">on-call opens consoles and investigates from the IP</span><span class="ja">当番が IP からコンソールと調査を使える</span></li><li><span class="zh">事件規則試跑，通知送得到</span><span class="en">a test run of event rules delivers notifications</span><span class="ja">イベントルールのテストで通知が届く</span></li><li><span class="zh">API 權杖都有期限、權限最小</span><span class="en">API tokens expire and are least-privilege</span><span class="ja">API トークンに期限と最小権限がある</span></li></ul></div></div>
+      <details class="pit"><summary id="phase-5-pitfalls"><span class="zh">常見地雷</span><span class="en">Common pitfalls</span><span class="ja">よくある落とし穴</span></summary><ul>
+        <li><span class="zh">改用外部 OpenAI 相容服務時，子網路、主機名稱與拓樸會送到該服務；資料不能離開公司就維持自架。</span><span class="en">Switching to an external OpenAI-compatible service sends subnets, hostnames and topology to that provider; keep it self-hosted if the data must not leave.</span><span class="ja">外部の OpenAI 互換サービスに切り替えると、サブネット、ホスト名、トポロジーがその事業者に送られます。データを社外に出せない場合は自前のままにしてください。</span></li>
+        <li><span class="zh">嵌入模型的維度要和資料庫欄位一致（預設 768），否則語意搜尋不會報錯，只是永遠找不到東西；換模型後在設定頁按「檢查維度」。</span><span class="en">The embedding model's dimension must match the database column (768 by default); otherwise semantic search raises no error and simply never finds anything. After changing models, press "Check dimension" on the settings page.</span><span class="ja">埋め込みモデルの次元はデータベースの列と一致させてください（既定 768）。一致しないと意味検索はエラーを出さず、ただ何も見つからなくなります。モデルを変えたら設定ページで「次元を確認」を押してください。</span></li>
+        <li><span class="zh">升級或重啟服務會切斷進行中的主控台連線與檔案上傳，請挑維護時段進行。</span><span class="en">Upgrades and service restarts cut console sessions and file uploads in progress; schedule them in a maintenance window.</span><span class="ja">アップグレードやサービスの再起動は、進行中のコンソール接続とファイルのアップロードを切断します。メンテナンスの時間帯に行ってください。</span></li>
+        <li><span class="zh">憑證代理的金鑰等同它範圍內所有憑證的私鑰，要當最高機密保管。</span><span class="en">A certificate agent's key is as good as the private keys of every certificate in its scope; guard it as a top-tier secret.</span><span class="ja">証明書エージェントのキーは、その範囲内のすべての証明書の秘密鍵に相当します。最高機密として保管してください。</span></li>
+      </ul></details>
+      <p class="refs"><b><span class="zh">相關</span><span class="en">See also</span><span class="ja">関連</span></b><a href="features.html#remote-console"><span class="zh">瀏覽器連線管理</span><span class="en">In-browser remote console</span><span class="ja">ブラウザ内リモートコンソール</span></a><a href="bmc-sol.html"><span class="zh">BMC / SOL 設定</span><span class="en">BMC / SOL setup</span><span class="ja">BMC / SOL 設定</span></a><a href="features.html#ai-assistant"><span class="zh">AI 助理</span><span class="en">AI assistant</span><span class="ja">AI アシスタント</span></a><a href="features.html#certificates"><span class="zh">憑證派送</span><span class="en">Certificates</span><span class="ja">証明書</span></a><a href="api.html#auth"><span class="zh">API 權杖</span><span class="en">API tokens</span><span class="ja">API トークン</span></a><a href="api.html#mcp">MCP</a><a href="api.html#automation-event-rules"><span class="zh">事件規則</span><span class="en">Event rules</span><span class="ja">イベントルール</span></a><a href="troubleshooting.html#console"><span class="zh">主控台問題</span><span class="en">Console problems</span><span class="ja">コンソールの問題</span></a></p>
+    </div>
+  </section>
+
+  <!-- ───────── 相關文件 ───────── -->
+  <section class="blk">
+    <h2 id="related"><span class="zh">相關文件</span><span class="en">Related docs</span><span class="ja">関連ドキュメント</span></h2>
+    <div class="box">
+      <ul>
+        <li><a class="lnk" href="features.html"><span class="zh">功能地圖</span><span class="en">Feature map</span><span class="ja">機能マップ</span></a><span class="zh">：所有功能的樹狀總覽。</span><span class="en">: every feature as a tree.</span><span class="ja">：全機能のツリー表示。</span></li>
+        <li><a class="lnk" href="index.html#install"><span class="zh">安裝</span><span class="en">Install</span><span class="ja">インストール</span></a><span class="zh">與完整的安裝維運手冊：</span><span class="en"> and the full install and operations manual: </span><span class="ja">と、インストールと運用の完全な手順書：</span><a class="lnk" href="https://github.com/jasoncheng7115/jt-ipam/blob/main/docs/INSTALL_zh-TW.md" target="_blank" rel="noopener">INSTALL_zh-TW.md</a> · <a class="lnk" href="https://github.com/jasoncheng7115/jt-ipam/blob/main/docs/INSTALL.md" target="_blank" rel="noopener">INSTALL.md</a> · <a class="lnk" href="https://github.com/jasoncheng7115/jt-ipam/blob/main/docs/INSTALL_ja.md" target="_blank" rel="noopener">INSTALL_ja.md</a></li>
+        <li><a class="lnk" href="troubleshooting.html"><span class="zh">安裝與升級疑難排解</span><span class="en">Install &amp; upgrade troubleshooting</span><span class="ja">インストールとアップグレードのトラブルシューティング</span></a></li>
+        <li><a class="lnk" href="api.html"><span class="zh">API 使用手冊</span><span class="en">API manual</span><span class="ja">API マニュアル</span></a><span class="zh">：權杖、匯入、MCP 與代理協定。</span><span class="en">: tokens, imports, MCP and the agent protocols.</span><span class="ja">：トークン、取り込み、MCP、エージェントのプロトコル。</span></li>
+        <li><a class="lnk" href="index.html#autocreate"><span class="zh">哪些來源會自己新增 IP 紀錄</span><span class="en">Which sources create IP records on their own</span><span class="ja">自分で IP レコードを作るソース</span></a></li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    <span class="zh">完整原始碼與文件見 </span><span class="en">Full source &amp; docs at </span><span class="ja">ソースとドキュメントは </span>
+    <a href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener">GitHub</a>
+  </footer>
+</div>
+
+<script>
+  (function(){
+    // 初始語言已由 <body> 開頭的 inline script 決定（避免閃爍）；這裡只負責切換按鈕。
+    var KEY = 'jtipam-doc-lang';
+    var btn = document.getElementById('langBtn');
+    var menu = document.getElementById('langMenu');
+    var label = document.getElementById('langCur');
+    var items = menu ? Array.prototype.slice.call(menu.querySelectorAll('li')) : [];
+    function cur(){ return document.body.classList.contains('lang-ja') ? 'ja'
+                         : document.body.classList.contains('lang-en') ? 'en' : 'zh'; }
+    function mark(){
+      var c = cur();
+      items.forEach(function(li){ li.setAttribute('aria-selected', String(li.dataset.lang === c)); });
+      var on = items.filter(function(li){ return li.dataset.lang === c; })[0];
+      if (label && on) label.textContent = on.textContent.replace('✓', '').trim();
+    }
+    function open(v){
+      if (!menu || !btn) return;
+      menu.hidden = !v;
+      btn.setAttribute('aria-expanded', String(v));
+    }
+    function set(l){
+      document.body.classList.remove('lang-zh','lang-en','lang-ja');
+      document.body.classList.add('lang-' + l);
+      document.documentElement.setAttribute('lang', l === 'en' ? 'en' : l === 'ja' ? 'ja' : 'zh-Hant');
+      try {
+        localStorage.setItem(KEY, l);
+        var u = new URL(location.href);
+        u.searchParams.set('lang', l === 'en' ? 'en' : l === 'ja' ? 'ja' : 'zh-TW');
+        history.replaceState(null, '', u);
+      } catch (e) {}
+      mark(); open(false);
+      document.dispatchEvent(new CustomEvent('jtipam:langchange', { detail: { lang: l } }));
+    }
+    if (btn) btn.addEventListener('click', function(e){ e.stopPropagation(); open(menu.hidden); });
+    items.forEach(function(li){ li.addEventListener('click', function(){ set(li.dataset.lang); }); });
+    document.addEventListener('click', function(e){ if (menu && !menu.hidden && !menu.contains(e.target)) open(false); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape') open(false); });
+    mark();
+  })();
+</script>
+<script>
+  /* <title> / description / <html lang> 跟著語言走；靜態值放預設語言（英文）。 */
+  (function(){
+    var META = {"zh": ["jt-ipam：導入流程", "企業依序導入 jt-ipam 做 IP 管理：每個階段要開啟的功能、順序與完成標準。"], "en": ["jt-ipam: Adoption roadmap", "How to roll jt-ipam out in an organisation, phase by phase: what to turn on, in which order, and when each phase is done."], "ja": ["jt-ipam：導入ガイド", "企業で jt-ipam を段階的に導入する手順：各フェーズで有効にする機能、順番、完了の目安。"]};
+    function cur(){
+      var c = document.body.className;
+      return c.indexOf('lang-ja') >= 0 ? 'ja' : c.indexOf('lang-zh') >= 0 ? 'zh' : 'en';
+    }
+    function apply(l){
+      var m = META[l] || META.en;
+      document.title = m[0];
+      var d = document.querySelector('meta[name="description"]');
+      if (d) d.setAttribute('content', m[1]);
+      document.documentElement.setAttribute('lang', {"zh": "zh-Hant", "en": "en", "ja": "ja"}[l] || 'en');
+    }
+    document.addEventListener('jtipam:langchange', function(e){ apply(e.detail.lang); });
+    apply(cur());
+  })();
+</script>
+<script src="anchors.js" defer></script>
+</body>
+</html>

@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import (
     ARRAY,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -92,8 +93,19 @@ class Subnet(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         index=True,
     )
 
+    # 主控台的連線出口（issue #24）：空＝直連；IP 上的設定會覆寫這一欄
+    jump_host_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jump_hosts.id", ondelete="SET NULL"), index=True,
+    )
+    # 或經由掃描代理中繼（issue #24 階段二，0175）：必須是這個子網路的掃描代理；與 jump_host_id 只能擇一
+    console_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("scan_agents.id", ondelete="SET NULL"), index=True,
+    )
+
     custom_fields: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     __table_args__ = (
         Index("ix_subnets_cidr_gist", "cidr", postgresql_using="gist"),
+        CheckConstraint("jump_host_id IS NULL OR console_agent_id IS NULL",
+                        name="subnet_console_egress_one"),
     )

@@ -24,6 +24,8 @@ class ESXiBase(StrictModel):
     verify_tls: bool = True
     sync_interval_seconds: Annotated[int, Field(ge=30, le=86400)] = 300
     scope_subnet_ids: list[str] | None = None
+    # 信任虛擬化回報的 IP：IPAM 沒有時自動建立（預設關閉；風險見模型註解）
+    auto_create_ips: bool | None = None
     description: Annotated[str | None, Field(max_length=2048)] = None
 
 
@@ -41,6 +43,8 @@ class ESXiUpdate(StrictModel):
     verify_tls: bool | None = None
     sync_interval_seconds: Annotated[int | None, Field(ge=30, le=86400)] = None
     scope_subnet_ids: list[str] | None = None
+    # 信任虛擬化回報的 IP：IPAM 沒有時自動建立（預設關閉；風險見模型註解）
+    auto_create_ips: bool | None = None
     description: Annotated[str | None, Field(max_length=2048)] = None
 
 

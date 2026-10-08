@@ -219,17 +219,18 @@ const allColumns: DataTableColumns<Subnet> = [
   },
 ];
 
-const { visibleKeys, setVisible, reset } = useColumnPrefs(
+const { visibleKeys, setVisible, reset, order, setOrder, orderColumns } = useColumnPrefs(
   "subnets",
-  ["pinned", "cidr", "description", "usage", "ip_total", "gateway", "customer_id", "scan_enabled", "actions"],
-  ["pinned", "cidr", "description", "usage", "ip_total", "gateway", "customer_id", "scan_enabled", "actions"],
+  ["cidr", "pinned", "description", "usage", "ip_total", "gateway", "customer_id", "scan_enabled", "actions"],
+  ["cidr", "pinned", "description", "usage", "ip_total", "gateway", "customer_id", "scan_enabled", "actions"],
 );
 const columns = computed<DataTableColumns<Subnet>>(() =>
-  allColumns.filter((c: any) => c.type === "selection" || visibleKeys.value.includes(c.key)),
+  orderColumns(allColumns.filter((c: any) => c.type === "selection" || visibleKeys.value.includes(c.key))),
 );
+// 選單順序與表格欄位一致：拖拉排序以選單上看到的順序為準
 const columnPickerItems = computed(() => [
-  { key: "pinned", label: t("cols.pinned") },
   { key: "cidr", label: "CIDR" },
+  { key: "pinned", label: t("cols.pinned") },
   { key: "description", label: t("cols.description") },
   { key: "usage", label: t("cols.usage") },
   { key: "gateway", label: t("subnets.gateway") },
@@ -279,14 +280,29 @@ function applyView() {
   rows.value = treeMode.value ? buildTree(flatRows.value) : flatRows.value;
 }
 
+/** 分頁抓到完。只抓第一頁的話，超過 500 個子網路的站台會少掉後面全部 ——
+ *  而且分頁與搜尋都在前端，畫面連「共 N 筆」都會跟著錯。區段頁曾經就是這樣
+ *  （GitHub issue #27），子網路頁是同一個形狀。 */
+const MAX_ROWS = 5000;
+async function fetchAllSubnets() {
+  const all: Subnet[] = [];
+  const big = 500;   // 後端 page_size 上限
+  for (let p = 1; ; p += 1) {
+    const res = await listSubnets({ page: p, pageSize: big, archived: showArchived.value });
+    all.push(...res.items);
+    if (res.items.length === 0 || all.length >= res.total || all.length >= MAX_ROWS) break;
+  }
+  return all;
+}
+
 async function refresh() {
   loading.value = true;
   try {
-    const res = await listSubnets({ page: 1, pageSize: 500, archived: showArchived.value });
-    flatRows.value = res.items;
+    const items = await fetchAllSubnets();
+    flatRows.value = items;
     applyView();
     const usages = await Promise.all(
-      res.items.map(async (s) => {
+      items.map(async (s) => {
         try {
           return await getSubnetUsage(s.id);
         } catch {
@@ -350,7 +366,8 @@ onMounted(() => {
         {{ t("common.create") }}
       </n-button>
       <ColumnPicker :all="columnPickerItems" :visible="visibleKeys"
-                    @update:visible="setVisible" @reset="reset" />
+                    @update:visible="setVisible" @reset="reset"
+                    :order="order" @update:order="setOrder" />
       <ExportButton :columns="columns" :rows="rows" filename="subnets" :title="t('nav.subnets')" />
       <n-space align="center" :size="6" style="margin-left: 4px">
         <span style="font-size: 13px; opacity: .75">{{ t("subnets.tree_view") }}</span>

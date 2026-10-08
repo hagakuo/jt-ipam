@@ -15,6 +15,10 @@ const input: ReportInput = {
   ],
   narrative: "這台是反向代理，多個域名指向同一個位址是正常的。",
   narrativeNote: "以下是推測，不是查核過的結論。",
+  labels: {
+    title: "192.0.2.10 調查報告", generatedAt: "產生時間", conflicts: "矛盾",
+    narrative: "AI 判讀", csvSection: "區塊", csvContent: "內容", htmlLang: "zh-Hant",
+  },
 };
 
 describe("調查報告", () => {

@@ -1,7 +1,7 @@
 import { apiClient } from "@/api/client";
 import type { Paginated } from "@/types";
 
-// FortiGate 整合（Beta）。路徑帶 /api/v1 前綴（baseURL 為 /）。
+// FortiGate 整合。路徑帶 /api/v1 前綴（baseURL 為 /）。
 
 export interface FortiGateFirewall {
   id: string;
@@ -47,8 +47,16 @@ export interface FortiGateWrite {
 export interface FortiGateDiagnosis {
   api_url: string;
   vdoms: string[];
+  /** 裝置自己回報的模式：no-vdom / split-vdom / multi-vdom（讀不到為 null） */
+  vdom_mode?: string | null;
+  /** 這次查詢有沒有指定 VDOM 範圍。false＝沒開 VDOM 或問不到，請求不帶 vdom 參數 */
+  vdom_scoped?: boolean;
   ok_count: number;
-  checks: { endpoint: string; ok: boolean; rows?: number; error?: string }[];
+  checks: {
+    endpoint: string; ok: boolean; rows?: number; error?: string;
+    /** 帶 VDOM 失敗、改成不帶就成功 —— 代表 VDOM 範圍設錯了，不是端點不存在 */
+    without_vdom?: boolean; vdom_error?: string;
+  }[];
 }
 
 export interface FortiGatePolicy {

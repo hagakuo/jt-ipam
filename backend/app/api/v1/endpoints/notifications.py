@@ -14,6 +14,7 @@ from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.safe_http import UnsafeOutboundURL, assert_url_safe
+from app.core.ui_error import detail_of
 from app.models.notification import Notification, WebhookSubscription
 from app.schemas.base import Paginated, StrictModel
 from app.schemas.notification import (
@@ -247,7 +248,7 @@ async def email_test(
             body_text=payload.body,
         )
     except email_service.EmailNotConfigured as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=detail_of(exc, "email_not_configured")) from exc
     except email_service.EmailSendError as exc:
         # 失敗也記入 audit（A09）
         await append_audit(

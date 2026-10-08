@@ -25,11 +25,13 @@ import {
 } from "@/api/chat";
 import { fmtRelative, fmtDateTime } from "@/utils/datetime";
 import { BubbleStar } from "@iconoir/vue";
-import { CancelIcon, SendIcon, ChatHistoryIcon, ToolsIcon, RefreshIcon, WarnIcon } from "@/icons";
+import { humanToolName } from "@/utils/toolLabel";
+import { CancelIcon, SendIcon, ChatHistoryIcon, ToolsIcon, RefreshIcon, WarnIcon, ExpandIcon, ReduceIcon } from "@/icons";
 import { useAuthStore } from "@/stores/auth";
 import { renderMarkdown } from "@/utils/markdown";
+import { aiErrText } from "@/utils/wsError";
 
-const { t } = useI18n();
+const { t, te } = useI18n();
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthStore();
@@ -92,9 +94,20 @@ function goRef(r: ChatRef) {
 }
 
 const open = ref(false);
+// 放大模式：往左、往上擴展到約 2/3 畫面（仍固定右下角）
+const expanded = ref(false);
 const input = ref("");
 const messages = ref<UiMessage[]>([]);
 const loading = ref(false);
+/** 進行中的請求：按「停止」時中止它 —— 連線一斷，LLM 伺服器那端也會停止推論 */
+let inflight: AbortController | null = null;
+const stopping = ref(false);
+
+function stopGenerating() {
+  if (!inflight) return;
+  stopping.value = true;
+  inflight.abort();
+}
 // 最近一次回應用的 model（給 badge tooltip 顯示）
 const lastModel = computed<string | null>(() => {
   for (let i = messages.value.length - 1; i >= 0; i--) {
@@ -113,6 +126,15 @@ watch(lastModel, async (m) => {
   if (modelInfo.value?.model === m) return;
   try { modelInfo.value = await getModelInfo(m); } catch { modelInfo.value = null; }
 }, { immediate: true });
+// 泡泡上的服務標籤：以前寫死「本地 Ollama」，接 OpenAI 相容服務也一樣（GitHub issue #37）。
+// 打開對話時問一次實際的服務類型；問到之前不顯示，免得先閃一下錯的標籤。
+const provider = ref<string | null>(null);
+watch(open, async (v) => {
+  if (!v || provider.value) return;
+  try { provider.value = (await getModelInfo()).provider || "ollama"; } catch { /* 標籤不顯示即可 */ }
+});
+const providerBadge = computed(() =>
+  provider.value == null ? "" : provider.value === "openai" ? t("chat.openai_badge") : t("chat.local_badge"));
 const modelTip = computed(() => {
   if (!lastModel.value) return t("chat.model_tip_none");
   const mi = modelInfo.value;
@@ -125,6 +147,26 @@ const modelTip = computed(() => {
 });
 const partial = ref("");        // 串流中累積的最終答案
 const toolStatus = ref("");     // 正在執行的工具提示
+// 進度顯示：不要讓使用者對著轉圈圈空等，猜不出是還在跑還是當掉了
+type Phase = "connecting" | "thinking" | "tool" | "composing" | "answering";
+const phase = ref<Phase>("connecting");
+const thinkingChars = ref(0);
+const roundNo = ref(1);
+const elapsed = ref(0);
+let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+
+const phaseText = computed(() => {
+  switch (phase.value) {
+    case "thinking":
+      return thinkingChars.value
+        ? t("chat.phase_thinking_n", { n: Math.round(thinkingChars.value / 100) / 10 })
+        : t("chat.phase_thinking");
+    case "tool": return toolStatus.value;
+    case "composing": return t("chat.phase_composing");
+    case "answering": return t("chat.phase_answering");
+    default: return t("chat.phase_connecting");
+  }
+});
 const trace = ref<ChatMessage[]>([]);
 const showTrace = ref(false);
 const conversationId = ref<string | null>(null);   // 多輪同一段對話 → 後端 append
@@ -165,8 +207,15 @@ async function send() {
   messages.value.push(userMsg);
   input.value = "";
   loading.value = true;
+  stopping.value = false;
   partial.value = "";
   toolStatus.value = "";
+  inflight = new AbortController();
+  phase.value = "connecting";
+  thinkingChars.value = 0;
+  roundNo.value = 1;
+  elapsed.value = 0;
+  elapsedTimer = setInterval(() => { elapsed.value = Math.round((Date.now() - startTs) / 1000); }, 1000);
   const startTs = Date.now();
   await scroll();
   try {
@@ -178,11 +227,19 @@ async function send() {
       4,
       (ev) => {
         if (ev.type === "token") {
+          phase.value = "answering";
           partial.value += ev.text;
           void scroll();
+        } else if (ev.type === "thinking") {
+          phase.value = "thinking";
+          thinkingChars.value = ev.chars;
         } else if (ev.type === "tool") {
-          toolStatus.value = t("chat.tool_running", { name: ev.name });
+          phase.value = "tool";
+          toolStatus.value = t("chat.tool_running", { name: humanToolName(ev.name, t, te) });
         } else if (ev.type === "tool_round") {
+          phase.value = "composing";
+          roundNo.value += 1;
+          thinkingChars.value = 0;
           partial.value = "";   // 該輪非最終答案，清掉暫存
         } else if (ev.type === "pending_action") {
           // AI 想做異動 → 不自動執行，掛在訊息上等使用者確認
@@ -210,16 +267,29 @@ async function send() {
           partial.value = "";
           toolStatus.value = "";
         } else if (ev.type === "error") {
-          msg.error(friendlyChatError(ev.detail));
+          // 有代碼就照語系翻（管理員另外附原因）；舊格式才走字串比對
+          msg.error(ev.code ? aiErrText(ev) : friendlyChatError(ev.detail));
         }
       },
-      undefined,
+      inflight.signal,
       pageContext.value,
       conversationId.value,
     );
   } catch (e: any) {
-    msg.error(friendlyChatError(e?.message));
+    // 使用者主動中止不是錯誤，不要跳紅色訊息
+    if (stopping.value || e?.name === "AbortError") {
+      messages.value.push({
+        role: "assistant",
+        content: t("chat.stopped"),
+        ts: new Date().toISOString(),
+      });
+    } else {
+      msg.error(friendlyChatError(e?.message));
+    }
   } finally {
+    if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+    inflight = null;
+    stopping.value = false;
     loading.value = false;
     partial.value = "";
     toolStatus.value = "";
@@ -322,20 +392,21 @@ async function removeConversation(id: string) {
     <n-icon :size="26"><BubbleStar /></n-icon>
   </button>
 
-  <div v-if="open" class="chat-shell">
+  <div v-if="open" class="chat-shell" :class="{ 'chat-shell--max': expanded }">
     <n-card size="small" :bordered="false">
       <template #header>
         <n-space class="chat-title-row" align="center" :size="6" :wrap="false">
           <span class="chat-title">jt-ipam AI</span>
           <n-tooltip :z-index="10001">
             <template #trigger>
-              <n-tag size="tiny" type="info" :bordered="false" class="chat-badge">{{ t("chat.local_badge") }}</n-tag>
+              <n-tag v-if="providerBadge" size="tiny" type="info" :bordered="false" class="chat-badge">{{ providerBadge }}</n-tag>
             </template>
             <div style="white-space:pre-line">{{ modelTip }}</div>
           </n-tooltip>
         </n-space>
       </template>
-      <template #header-extra>
+      <!-- 控制列：自標題列搬到內文最上方 -->
+      <n-space align="center" justify="end" style="margin-bottom: 10px">
         <div class="chat-actions">
           <!-- 三顆動作鈕收進一個有外框 + 分隔線的分段控制，明顯看得出是按鈕 -->
           <div class="chat-seg">
@@ -355,8 +426,18 @@ async function removeConversation(id: string) {
           <n-button quaternary circle size="small" :title="t('common.cancel')" @click="open = false">
             <template #icon><n-icon :size="18"><CancelIcon /></n-icon></template>
           </n-button>
+          <n-button quaternary circle size="small" class="chat-expand-btn"
+                    :title="expanded ? t('chat.collapse') : t('chat.expand')"
+                    @click="expanded = !expanded">
+            <template #icon>
+              <n-icon :size="17">
+                <ReduceIcon v-if="expanded" />
+                <ExpandIcon v-else />
+              </n-icon>
+            </template>
+          </n-button>
         </div>
-      </template>
+      </n-space>
 
       <div v-if="showHistory" class="chat-history">
         <n-spin v-if="historyLoading" size="small" style="margin: 8px" />
@@ -417,8 +498,12 @@ async function removeConversation(id: string) {
           <!-- eslint-disable-next-line vue/no-v-html -->
           <div class="md" v-html="renderMarkdown(partial)"></div>
         </div>
-        <div v-if="loading && toolStatus" class="tool-status">{{ toolStatus }}</div>
-        <n-spin v-if="loading && !partial" size="small" style="margin: 8px 0" />
+        <div v-if="loading" class="chat-progress">
+          <n-spin size="small" />
+          <span class="cp-text">{{ phaseText }}</span>
+          <span v-if="roundNo > 1" class="cp-dim">{{ t("chat.phase_round", { n: roundNo }) }}</span>
+          <span class="cp-dim">{{ t("chat.phase_elapsed", { n: elapsed }) }}</span>
+        </div>
       </div>
 
       <details v-if="showTrace && trace.length" class="trace">
@@ -436,7 +521,12 @@ async function removeConversation(id: string) {
           @keydown.enter.exact.prevent="send"
           style="flex: 1 1 auto; min-width: 0"
         />
-        <n-button type="primary" :loading="loading" :disabled="!input.trim()"
+        <n-button v-if="loading" type="error" ghost class="chat-send-btn"
+                  :loading="stopping" @click="stopGenerating">
+          <template #icon><n-icon><CancelIcon /></n-icon></template>
+          {{ t("chat.stop") }}
+        </n-button>
+        <n-button v-else type="primary" :disabled="!input.trim()"
                   @click="send" class="chat-send-btn">
           <template #icon><n-icon><SendIcon /></n-icon></template>
           {{ t("chat.send") }}
@@ -485,7 +575,10 @@ async function removeConversation(id: string) {
   font-size: 24px;
   cursor: pointer;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-  z-index: 9000;
+  /* 在頁面內容之上、但在彈出層底下：Naive UI 的確認框／下拉／對話框從 2000 起跳，
+   *  原本 9000 會把開在右下角的「確定」蓋住（點到的是 AI 助手）；手機側欄 2000 也要蓋得過它。
+   *  （e2e/chat-fab-overlays.spec.ts） */
+  z-index: 1900;
   /* 平常半透明、不搶視覺；移過去才變實心 */
   opacity: 0.45;
   transition: opacity .15s ease, transform .15s ease;
@@ -510,6 +603,29 @@ async function removeConversation(id: string) {
   flex-direction: column;
   /* 讓 header 動作鈕能依「視窗實際寬度」決定要不要收成 icon */
   container-type: inline-size;
+}
+/* 放大模式：固定右下角不動，往左與上擴到約 2/3 畫面；對話區改用彈性高度吃滿 */
+.chat-shell--max {
+  width: min(66vw, calc(100vw - 48px));
+  height: min(72vh, calc(100vh - 48px));
+  max-height: none;
+}
+.chat-shell--max :deep(.n-card) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.chat-shell--max :deep(.n-card-content) {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.chat-shell--max .chat-scroll,
+.chat-shell--max .chat-history {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
 }
 /* 標題：字體調小 + 不換行，避免把「本地 Ollama」標籤擠到第二行 */
 /* 標題列與動作區放不下時整列換行（動作區掉到第二列），避免標題/標籤與按鈕重疊 */
@@ -546,6 +662,8 @@ async function removeConversation(id: string) {
   --n-color-hover: rgba(24, 160, 88, 0.12);
 }
 .chat-seg :deep(.seg-btn .n-button__content) { align-items: center; line-height: 1; }
+.chat-seg :deep(.seg-btn .n-button__icon) { display: flex; align-items: center; justify-content: center; line-height: 1; }
+.chat-seg :deep(.seg-btn .n-icon) { display: flex; }
 .chat-seg :deep(.seg-btn + .seg-btn) {
   border-left: 1px solid var(--n-border-color, rgba(128, 128, 128, 0.28));
 }
@@ -554,6 +672,9 @@ async function removeConversation(id: string) {
    分段外框 + 分隔線仍讓它明顯是一組可按的按鈕。 */
 @container (max-width: 520px) {
   .chat-act-label { display: none; }
+  /* 只剩 icon 時：n-button 仍為 icon 預留與文字的間距（icon margin），
+     icon 就會偏左；行高再把它壓低半格。歸零間距並強制置中。 */
+  .chat-seg :deep(.seg-btn .n-button__icon) { margin: 0; }
   .chat-seg :deep(.seg-btn) { padding: 0 9px; }
 }
 .chat-input-row {
@@ -685,4 +806,12 @@ async function removeConversation(id: string) {
   padding: 8px;
   border-radius: 4px;
 }
+
+/* 進度列：告訴使用者現在在做什麼、第幾輪、已經多久 —— 空轉的轉圈圈看起來像當機 */
+.chat-progress {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 8px 0; font-size: 12px; opacity: .85;
+}
+.cp-text { font-weight: 500; }
+.cp-dim { opacity: .6; }
 </style>

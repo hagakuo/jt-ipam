@@ -4,22 +4,23 @@
  *
  * 進行中區塊每 3 秒 auto-refresh；歷史頁手動。
  */
-import { computed, h, onMounted, onUnmounted, ref } from "vue";
+import { computed, h, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   NCard, NDataTable, NSpace, NIcon, NButton, NTag, NTabs, NTabPane,
-  NProgress, NPopover,
+  NProgress, NPopover, NInput, NSelect,
   useMessage, type DataTableColumns,
 } from "naive-ui";
-import { TasksIcon, RefreshIcon, PendingIcon, ListIcon } from "@/icons";
-import { listTasks, type BackgroundTask } from "@/api/tasks";
+import { TasksIcon, RefreshIcon, PendingIcon, ListIcon, SearchIcon } from "@/icons";
+import { listTaskKinds, listTasks, type BackgroundTask } from "@/api/tasks";
 import { autoSort } from "@/composables/useTableSort";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { fmtDateTime } from "@/utils/datetime";
 const { t } = useI18n();
 
-const { visibleKeys: tkVis, setVisible: tkSet, reset: tkReset } = useColumnPrefs(
+const { visibleKeys: tkVis, setVisible: tkSet, reset: tkReset,
+  order: tkOrder, setOrder: tkSetOrder, orderColumns: tkOrderCols } = useColumnPrefs(
   "tasks_history",
   ["kind", "target_label", "status", "progress", "queued_at", "duration", "finished_at", "summary"],
   ["kind", "target_label", "status", "progress", "queued_at", "duration", "finished_at", "summary"],
@@ -45,6 +46,32 @@ const loadingHistory = ref(false);
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
+// 歷史的搜尋與篩選（跟其他清單頁一樣；條件送到後端，分頁與總數才會對）
+const q = ref("");
+const fKind = ref<string | null>(null);
+const fStatus = ref<string | null>(null);
+const fTrigger = ref<"manual" | "scheduled" | null>(null);
+const kindOptions = ref<{ label: string; value: string }[]>([]);
+const statusOptions = computed(() => (["succeeded", "failed", "cancelled"] as const)
+  .map((s) => ({ label: t(`tasks.status_${s}`), value: s })));
+const triggerOptions = computed(() => [
+  { label: t("tasks.trigger_scheduled"), value: "scheduled" },
+  { label: t("tasks.trigger_manual"), value: "manual" },
+]);
+async function fetchKinds() {
+  try {
+    kindOptions.value = (await listTaskKinds()).map((k) => ({ label: k, value: k }));
+  } catch {
+    // 選項拿不到不影響清單
+  }
+}
+let qTimer: ReturnType<typeof setTimeout> | null = null;
+watch(q, () => {
+  if (qTimer) clearTimeout(qTimer);
+  qTimer = setTimeout(() => { historyPage.value = 1; void fetchHistory(); }, 300);
+});
+watch([fKind, fStatus, fTrigger], () => { historyPage.value = 1; void fetchHistory(); });
+
 async function fetchActive() {
   try {
     const res = await listTasks({ active_only: true, page: 1, pageSize: 200 });
@@ -58,7 +85,10 @@ async function fetchHistory() {
   loadingHistory.value = true;
   try {
     const res = await listTasks({
-      status_in: "succeeded,failed,cancelled",
+      status_in: fStatus.value || "succeeded,failed,cancelled",
+      kind: fKind.value || undefined,
+      trigger: fTrigger.value || undefined,
+      q: q.value.trim() || undefined,
       page: historyPage.value,
       pageSize: historyPageSize.value,
     });
@@ -215,6 +245,43 @@ function formatSummary(kind: string, summary: any): string {
     return lines.join("；");
   }
 
+  // 1a) 代理推上來的回報與資料庫更新：各有自己的形狀，直接講結果
+  if (kind === "rustdesk.sync") {
+    const p = [t("tasks.summary.rustdesk", { peers: num(summary.peers), online: num(summary.online),
+                                            matched: num(summary.matched) })];
+    if (num(summary.removed)) p.push(t("tasks.summary.removed_n", { n: num(summary.removed) }));
+    return p.join("．");
+  }
+  if (kind === "isc_dhcp.sync") {
+    return t("tasks.summary.isc_dhcp", { pools: num(summary.pools), reservations: num(summary.reservations),
+                                         leases: num(summary.leases) });
+  }
+  if (kind === "oui.refresh") {
+    return t("tasks.summary.oui", { parsed: num(summary.parsed), inserted: num(summary.inserted),
+                                    updated: num(summary.updated) });
+  }
+  if (kind === "recog.refresh") {
+    if (summary.status === "updated") {
+      return t("tasks.summary.recog_updated", { from: summary.previous || "—", to: summary.release || "—",
+                                                n: num(summary.fingerprints) });
+    }
+    if (summary.status === "up_to_date") return t("tasks.summary.recog_up_to_date", { v: summary.release || "—" });
+    return "—";
+  }
+  if (kind === "geoip.refresh") {
+    if (summary.error === "not_configured") return t("tasks.summary.geoip_not_configured");
+    const res = (summary.results || {}) as Record<string, { ok?: boolean; error?: string }>;
+    const p = Object.entries(res).map(([ed, r]) => (r?.ok ? `${ed} ✓` : `${ed} ✗ ${r?.error || ""}`.trim()));
+    return p.length ? p.join("；") : "—";
+  }
+
+  // 1b) IP 探測：{job_id, agent, ip, device_type?, os?, ports?}
+  if (kind === "ip.identify") {
+    if (!summary.device_type) return t("tasks.summary.identify_running", { agent: summary.agent ?? "—" });
+    return t("tasks.summary.identify_done", {
+      type: t(`identify.type.${summary.device_type}`), os: summary.os || "—", ports: num(summary.ports) });
+  }
+
   // 2) OPNsense sync 風格：{firewall, tasks, details: [{task, seen, matched}, ...]}
   if (Array.isArray(summary.details)) {
     for (const d of summary.details) {
@@ -287,6 +354,14 @@ function formatSummary(kind: string, summary: any): string {
   kn(summary.arp?.inserted, t("tasks.summary.arp_inserted"));
   kn(summary.fdb?.seen, "FDB");
   k("ip_mac_filled", t("tasks.summary.ip_mac_filled"));
+  // 依 ARP 自動建立 IP（#48）：建了幾筆，沒建的列出最多的三個原因（管理員才知道為什麼沒長出來）
+  kn(summary.arp?.ips_created, t("tasks.summary.arp_ips_created"));
+  const skipped = summary.arp?.create_skipped as Record<string, number> | undefined;
+  if (skipped && Object.keys(skipped).length) {
+    const top = Object.entries(skipped).sort((a, b) => b[1] - a[1]).slice(0, 3)
+      .map(([why, n]) => `${t(`librenms_admin.arp_skip.${why}`)} ${n}`);
+    lines.push(`${t("tasks.summary.arp_create_skipped")}（${top.join("、")}）`);
+  }
 
   // 4) AdGuard 風格：{clients_result: {clients, ips_seen, ips_matched}, ...}
   if (summary.clients_result) {
@@ -308,6 +383,9 @@ function formatSummary(kind: string, summary: any): string {
   return lines.join("；");
 }
 
+const TEXT_SUMMARY_KINDS = new Set(["ip.identify", "rustdesk.sync", "isc_dhcp.sync",
+                                    "oui.refresh", "recog.refresh", "geoip.refresh"]);
+
 const allHistoryCols = computed<DataTableColumns<BackgroundTask>>(() => autoSort([
   ...commonCols.value,
   { title: t("tasks.col_finished"), key: "finished_at", width: 170, render: (r) => fmtTs(r.finished_at) },
@@ -315,6 +393,15 @@ const allHistoryCols = computed<DataTableColumns<BackgroundTask>>(() => autoSort
     title: t("tasks.col_summary"), key: "summary", width: 280,
     render: (r) => {
       const isErr = r.status === "failed" && r.error;
+      // 失敗卻沒有錯誤訊息（例如探測代理沒說原因）：講清楚是失敗，不要顯示成四個 0
+      if (r.status === "failed" && !r.error) {
+        return h("span", { style: "color: var(--err-color, #e88080); font-size: 12px;" }, t("tasks.summary.failed_no_detail"));
+      }
+      // 探測、代理回報與資料庫更新的結果不是「新增／更新幾筆」，四個數字永遠是 0（使用者回報）→ 直接顯示結論
+      if (!isErr && TEXT_SUMMARY_KINDS.has(r.kind)) {
+        const text = formatSummary(r.kind, r.summary);
+        return h("span", { style: "font-size: 12px;", title: text, "data-testid": "task-summary-text" }, text);
+      }
       const c = aggregateCounts(r.summary);
       const detailTxt = isErr
         ? r.error!
@@ -357,12 +444,13 @@ const allHistoryCols = computed<DataTableColumns<BackgroundTask>>(() => autoSort
 
 const historyCols = computed<DataTableColumns<BackgroundTask>>(() =>
   // 觸發方式（排程／手動）永遠顯示，不受欄位選擇隱藏
-  allHistoryCols.value.filter((c: any) => c.key === "trigger" || tkVis.value.includes(c.key)),
+  tkOrderCols(allHistoryCols.value.filter((c: any) => c.key === "trigger" || tkVis.value.includes(c.key))),
 );
 
 onMounted(() => {
   void fetchActive();
   void fetchHistory();
+  void fetchKinds();
   pollTimer = setInterval(() => { void fetchActive(); }, 3000);
 });
 
@@ -380,12 +468,13 @@ onUnmounted(() => {
           <span>{{ t("nav.tasks") }}</span>
         </n-space>
       </template>
-      <template #header-extra>
-        <n-button size="small" @click="() => { fetchActive(); fetchHistory(); }">
+      <!-- 控制列：自標題列搬到內文最上方 -->
+      <n-space align="center" justify="end" style="margin-bottom: 10px">
+        <n-button size="small" @click="() => { fetchActive(); fetchHistory(); fetchKinds(); }">
           <template #icon><n-icon><RefreshIcon /></n-icon></template>
           {{ t("common.refresh") }}
         </n-button>
-      </template>
+      </n-space>
 
       <n-tabs type="line" animated>
         <n-tab-pane name="active">
@@ -411,9 +500,22 @@ onUnmounted(() => {
           <template #tab>
             <span style="display:inline-flex;align-items:center;gap:6px"><n-icon :size="16"><ListIcon /></n-icon>{{ t('tasks.tab_history') }}</span>
           </template>
-          <n-space style="margin-bottom: 8px">
+          <n-space justify="space-between" style="margin-bottom: 8px">
+            <n-space :size="8">
+              <n-input v-model:value="q" clearable size="small" :placeholder="t('tasks.search')"
+                       style="width: 240px" data-testid="tasks-search">
+                <template #prefix><n-icon :component="SearchIcon" /></template>
+              </n-input>
+              <n-select v-model:value="fKind" :options="kindOptions" clearable filterable size="small"
+                        :placeholder="t('tasks.filter_kind')" style="width: 180px" data-testid="tasks-filter-kind" />
+              <n-select v-model:value="fStatus" :options="statusOptions" clearable size="small"
+                        :placeholder="t('tasks.filter_status')" style="width: 120px" data-testid="tasks-filter-status" />
+              <n-select v-model:value="fTrigger" :options="triggerOptions" clearable size="small"
+                        :placeholder="t('tasks.filter_trigger')" style="width: 120px" data-testid="tasks-filter-trigger" />
+            </n-space>
             <ColumnPicker :all="tkPicker" :visible="tkVis"
-                          @update:visible="tkSet" @reset="tkReset" />
+                          @update:visible="tkSet" @reset="tkReset"
+                          :order="tkOrder" @update:order="tkSetOrder" />
           </n-space>
           <n-data-table
             :columns="historyCols"

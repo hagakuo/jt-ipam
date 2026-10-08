@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { apiClient } from "@/api/client";
 import {
   listFirewalls, createFirewall, syncFirewall,
-  listWazuh, listMissingAgents,
+  listWazuh, listMissingAgentsPage,
   listPlugins,
 } from "@/api/integrations";
 
@@ -60,10 +60,12 @@ describe("integrations API", () => {
       });
     });
 
-    it("listMissingAgents 走 /wazuh/missing-agents", async () => {
-      getSpy.mockResolvedValueOnce({ data: [] });
-      await listMissingAgents();
-      expect(getSpy).toHaveBeenCalledWith("/api/v1/wazuh/missing-agents");
+    it("listMissingAgentsPage 走 /wazuh/missing-agents 並帶分頁與篩選參數", async () => {
+      getSpy.mockResolvedValueOnce({ data: { items: [], total: 0, total_all: 0, facets: {} } });
+      await listMissingAgentsPage({ page: 2, page_size: 50, status: "offline", sort: "hostname", order: "desc" });
+      expect(getSpy).toHaveBeenCalledWith("/api/v1/wazuh/missing-agents", {
+        params: { page: 2, page_size: 50, status: "offline", sort: "hostname", order: "desc" },
+      });
     });
   });
 

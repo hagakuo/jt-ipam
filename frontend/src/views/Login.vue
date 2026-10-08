@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { safeNextPath } from "@/utils/safeRedirect";
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
@@ -22,7 +23,7 @@ import { apiClient } from "@/api/client";
 import { LoginIcon } from "@/icons";
 import { ShieldCheck, Globe } from "@iconoir/vue";
 
-const { t } = useI18n();
+const { t, te } = useI18n();
 const route = useRoute();
 const auth = useAuthStore();
 const { mfaToken } = storeToRefs(auth);
@@ -33,12 +34,13 @@ const { locale } = storeToRefs(ui);
 const localeMenuOptions = [
   { label: "繁體中文", key: "zh-TW" },
   { label: "English", key: "en-US" },
+  { label: "日本語", key: "ja-JP" },
 ];
 const currentLocaleLabel = computed(
   () => localeMenuOptions.find((o) => o.key === locale.value)?.label ?? "",
 );
 function pickLocale(k: string | number) {
-  ui.setLocale(String(k) as "zh-TW" | "en-US", false);
+  ui.setLocale(String(k) as "zh-TW" | "en-US" | "ja-JP", false);
 }
 
 const username = ref("");
@@ -49,7 +51,11 @@ const errorMsg = ref<string | null>(null);
 
 // 領域（PVE 風）：本機 / LDAP，預設本機
 const realm = ref("local");
-const realms = ref<{ label: string; value: string }[]>([{ label: "本機", value: "local" }]);
+const realms = ref<{ label: string; value: string; label_key?: string }[]>(
+  [{ label: "本機", value: "local", label_key: "login.realm_local" }]);
+// 登入頁可以切語言，所以顯示用的標籤要是 computed。後端給的 `label` 只是沒有翻譯鍵時的退路
+const realmOptions = computed(() => realms.value.map(
+  (r) => ({ value: r.value, label: r.label_key && te(r.label_key) ? t(r.label_key) : r.label })));
 // 只在後端回報該 SSO 供應商已啟用時才顯示對應按鈕，避免點了未設定的 SSO 跳出原始錯誤
 const ssoAvail = ref<{ oidc: boolean; saml: boolean }>({ oidc: false, saml: false });
 // 先用上次快取的 realms / sso 立刻渲染（避免冷啟動時一閃才出現／沒出現），再向後端刷新
@@ -79,7 +85,7 @@ onMounted(async () => {
   }
   try {
     const { data } = await apiClient.get<{
-      realms: { label: string; value: string }[];
+      realms: { label: string; value: string; label_key?: string }[];
       sso?: { oidc: boolean; saml: boolean };
     }>("/api/v1/auth/realms");
     if (data.realms?.length) {
@@ -93,10 +99,9 @@ onMounted(async () => {
   } catch { /* 預設只有本機 */ }
 });
 
+// 只接受本站路徑：`//evil.example` 這類也以 / 開頭的會被當成別的網站（開放式轉址，見 utils/safeRedirect）
 function targetAfterLogin(): string {
-  const next = route.query.next;
-  if (typeof next === "string" && next.startsWith("/")) return next;
-  return "/";
+  return safeNextPath(route.query.next);
 }
 
 
@@ -153,8 +158,7 @@ function ssoOidc() {
 }
 
 function ssoSaml() {
-  const next = route.query.next;
-  const returnTo = typeof next === "string" && next.startsWith("/") ? next : "/";
+  const returnTo = safeNextPath(route.query.next);
   window.location.assign(`/api/v1/auth/saml/login?return_to=${encodeURIComponent(returnTo)}`);
 }
 </script>
@@ -202,7 +206,7 @@ function ssoSaml() {
           />
         </n-form-item>
         <n-form-item v-if="realms.length > 1" :label="t('login.realm')">
-          <n-select v-model:value="realm" :options="realms" :disabled="loading" />
+          <n-select v-model:value="realm" :options="realmOptions" :disabled="loading" />
         </n-form-item>
         <n-space justify="end">
           <n-button type="primary" :loading="loading" @click="submitLogin">

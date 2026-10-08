@@ -17,6 +17,7 @@ from app.api.v1.dependencies import (
 )
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.sqlin import in_values
 from app.models.section import Section
 from app.models.subnet import Subnet
 from app.schemas.base import Paginated, StrictModel
@@ -31,7 +32,7 @@ async def _subnet_counts_by_section(
         return {}
     stmt = (
         select(Subnet.section_id, func.count().label("c"))
-        .where(Subnet.section_id.in_(section_ids))
+        .where(in_values(Subnet.section_id, section_ids))
         .group_by(Subnet.section_id)
     )
     return {row.section_id: int(row.c) for row in (await session.execute(stmt)).all()}
@@ -62,8 +63,8 @@ async def list_sections(
     if vis is not None:                    # None＝全部可見（admin 或萬用授權）
         if not vis:                        # 空 set＝完全沒有可見範圍
             return Paginated[SectionRead](items=[], total=0, page=page, page_size=page_size)
-        stmt = stmt.where(Section.id.in_(vis))
-        count_stmt = count_stmt.where(Section.id.in_(vis))
+        stmt = stmt.where(in_values(Section.id, vis))
+        count_stmt = count_stmt.where(in_values(Section.id, vis))
 
     rows = list((await session.execute(
         stmt.order_by(Section.display_order, Section.name)
@@ -201,6 +202,10 @@ async def delete_section(
         request_id=getattr(request.state, "request_id", None),
     )
     await session.delete(section)
+    # 物件沒了，指向它的授權也不該留著（permissions.object_id 沒有外鍵，沒有人會自動清）
+    from app.services.permission import purge_permissions_for_object
+    await purge_permissions_for_object(session, object_type="section", object_id=section_id)
+
     await session.commit()
 
 

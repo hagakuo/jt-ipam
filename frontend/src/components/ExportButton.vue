@@ -38,13 +38,14 @@ const exportCols = computed<ExportColumn[]>(() => {
   return columnsForExport(props.columns);
 });
 
-const options = [
+// computed 而不是 const：換語言時下拉選單要跟著換
+const options = computed(() => [
   { label: "CSV", key: "csv" },
   { label: "Markdown (.md)", key: "md" },
   { label: "PDF", key: "pdf" },
   { label: "Excel (.xlsx)", key: "xlsx" },
-  { label: "OpenDocument 試算表 (.ods)", key: "ods" },
-];
+  { label: t("export.fmt_ods_sheet"), key: "ods" },
+]);
 
 async function onSelect(key: ExportFormat) {
   if (loading.value) return;

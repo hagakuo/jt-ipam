@@ -7,12 +7,13 @@
         </n-tag>
       </CardTitle>
     </template>
-    <template #header-extra>
+    <!-- 控制列：自標題列搬到內文最上方 -->
+    <n-space align="center" justify="end" style="margin-bottom: 10px">
       <n-button size="small" @click="go()">
         <template #icon><n-icon :component="ListIcon" /></template>
         {{ t("ai_audit.view_all") }}
       </n-button>
-    </template>
+    </n-space>
 
     <n-empty v-if="!summary.total" :description="t('ai_audit.none')" size="small" />
     <div v-else class="ai-row">
@@ -38,7 +39,7 @@
 import { onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
-import { NButton, NCard, NEmpty, NIcon, NTag } from "naive-ui";
+import { NButton, NCard, NEmpty, NIcon, NSpace, NTag } from "naive-ui";
 import { AnomalyIcon, ListIcon } from "@/icons";
 import CardTitle from "@/components/CardTitle.vue";
 import { fmtDateTime } from "@/utils/datetime";

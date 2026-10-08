@@ -9,13 +9,14 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.ui_error import detail_of
 from app.models.windows_dhcp import WindowsDhcpServer
 from app.schemas.base import Paginated
 from app.schemas.windows_dhcp import (
@@ -110,11 +111,9 @@ async def delete_server(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> None:
     inst = await _get_or_404(session, server_id)
-    # dhcp_pool_ranges 無外鍵 cascade → 自行清掉這台寫的列（不碰其他來源）
-    from app.models.dhcp import DHCPPoolRange
-    await session.execute(delete(DHCPPoolRange).where(
-        DHCPPoolRange.source_type == "windows_dhcp", DHCPPoolRange.source_id == server_id,
-    ))
+    # 它寫進共用表的發放範圍／主機名稱／租約／固定分配／NAT／VPN 通道一併收回（沒有外鍵會跟著刪）
+    from app.services.integration_cleanup import forget_instance
+    await forget_instance(session, source="windows_dhcp", source_id=inst.id)
     await session.delete(inst)
     await append_audit(
         session, actor_user_id=str(user.id),
@@ -135,7 +134,7 @@ async def test_server(
     try:
         return await svc.healthcheck(inst)
     except svc.WindowsDhcpError as exc:
-        raise HTTPException(502, detail=str(exc)) from exc
+        raise HTTPException(502, detail=detail_of(exc, "windows_dhcp_error")) from exc
 
 
 @router.post("/servers/{server_id}/sync")

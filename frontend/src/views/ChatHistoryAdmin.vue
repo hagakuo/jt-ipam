@@ -118,31 +118,30 @@ const columns = computed<DataTableColumns<ConversationSummary>>(() => autoSort<C
         <span>{{ t("nav.chat_history") }}</span>
       </n-space>
     </template>
-    <template #header-extra>
-      <n-space align="center">
-        <span>{{ t("chat_admin.retention_label") }}</span>
-        <n-input-number v-model:value="retention" :min="0" :max="3650" style="width: 120px"
-          :placeholder="t('chat_admin.days')" />
-        <span>{{ t("chat_admin.days") }}</span>
-        <n-button size="small" :loading="savingRetention" @click="saveRetention">
-          <template #icon><n-icon><SaveIcon /></n-icon></template>
-          {{ t("common.save") }}
-        </n-button>
-        <n-popconfirm @positive-click="purgeNow">
-          <template #trigger>
-            <n-button size="small" type="warning" ghost>
-              <template #icon><n-icon><DeleteIcon /></n-icon></template>
-              {{ t("chat_admin.purge_now") }}
-            </n-button>
-          </template>
-          {{ t("chat_admin.purge_confirm") }}
-        </n-popconfirm>
-        <n-button size="small" :loading="loading" @click="load">
-          <template #icon><n-icon><RefreshIcon /></n-icon></template>
-          {{ t("common.refresh") }}
-        </n-button>
-      </n-space>
-    </template>
+    <!-- 控制列：自標題列搬到內文最上方 -->
+    <n-space align="center" justify="end" style="margin-bottom: 10px">
+      <span>{{ t("chat_admin.retention_label") }}</span>
+      <n-input-number v-model:value="retention" :min="0" :max="3650" style="width: 120px"
+        :placeholder="t('chat_admin.days')" />
+      <span>{{ t("chat_admin.days") }}</span>
+      <n-button size="small" :loading="savingRetention" @click="saveRetention">
+        <template #icon><n-icon><SaveIcon /></n-icon></template>
+        {{ t("common.save") }}
+      </n-button>
+      <n-popconfirm @positive-click="purgeNow">
+        <template #trigger>
+          <n-button size="small" type="warning" ghost>
+            <template #icon><n-icon><DeleteIcon /></n-icon></template>
+            {{ t("chat_admin.purge_now") }}
+          </n-button>
+        </template>
+        {{ t("chat_admin.purge_confirm") }}
+      </n-popconfirm>
+      <n-button size="small" :loading="loading" @click="load">
+        <template #icon><n-icon><RefreshIcon /></n-icon></template>
+        {{ t("common.refresh") }}
+      </n-button>
+    </n-space>
 
     <p style="opacity:.6;font-size:13px;margin-top:0">{{ t("chat_admin.retention_hint") }}</p>
 

@@ -42,6 +42,8 @@ export interface SshTicket {
   host_key_pinned: boolean;
   default_port: number;
   ttl: number;
+  /** 這次用哪個引擎（系統設定）；`guacd` 時畫面交給 GuacView */
+  engine?: string;
 }
 
 // 換發短期一次性 ticket（之後用它開 WebSocket）。注意帶 /api/v1 首碼。

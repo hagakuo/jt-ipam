@@ -1,7 +1,7 @@
 import { apiClient } from "@/api/client";
 
 export interface UserPreferences {
-  locale: "zh-TW" | "en-US";
+  locale: "zh-TW" | "en-US" | "ja-JP";
   theme: "light" | "dark" | "auto";
   timezone: string;
   calendar: "gregorian" | "minguo";
@@ -12,6 +12,8 @@ export interface UserPreferences {
   pinned_subnet_ids: string[] | null;
   // 通用釘選：{namespace: [id,...]}（機房 / 地點 / 機櫃…）
   pinned: Record<string, string[]> | null;
+  // SFTP 檔案清單：資料夾優先（與檔案總管一致）或與檔案一起排（像 ls）
+  sftp_sort_dirs_first: boolean;
 }
 
 export async function getPreferences(): Promise<UserPreferences> {

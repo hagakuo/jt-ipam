@@ -27,11 +27,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
+from app.core.ui_error import UiError
 from app.models.user import User
 
 
-class SAMLNotConfigured(RuntimeError):
+class SAMLNotConfigured(UiError, RuntimeError):
     pass
 
 
@@ -86,7 +87,8 @@ async def _fetch_idp_metadata(cfg: Any) -> _IdPInfo:
             return info
 
     if not url and not inline_xml:
-        raise SAMLNotConfigured("SAML_IDP_METADATA_URL 或 SAML_IDP_METADATA_XML 必填")
+        raise SAMLNotConfigured("SAML_IDP_METADATA_URL 或 SAML_IDP_METADATA_XML 必填",
+                                code="saml_metadata_required")
 
     if url:
         try:
@@ -94,7 +96,7 @@ async def _fetch_idp_metadata(cfg: Any) -> _IdPInfo:
         except UnsafeOutboundURL as exc:
             raise SAMLError(f"SSRF guard rejected metadata URL: {exc}") from exc
         except httpx.HTTPError as exc:
-            raise SAMLError(f"transport: {exc.__class__.__name__}") from exc
+            raise SAMLError(f"transport: {transport_detail(exc)}") from exc
         if resp.status_code != 200:
             raise SAMLError(f"SAML metadata HTTP {resp.status_code}")
         xml = resp.text
@@ -333,7 +335,14 @@ async def upsert_user_from_saml(
     else:
         user.email = email or user.email
         user.display_name = display_name or user.display_name
-        user.is_admin = is_admin
+        # 只有設定過管理員群組對應時才由 IdP 決定（見 services/auth.py 的說明）——
+        # 沒設定就寫 False 等於把「沒有設定」當成「不是管理員」，會把本機開的權限
+        # 在下次登入時安靜地關掉。
+        from app.services.auth import _would_orphan_admins
+        if cfg.admin_groups and not (
+            user.is_admin and not is_admin and await _would_orphan_admins(session, user)
+        ):
+            user.is_admin = is_admin
 
     user.last_login_at = datetime.now(UTC)
     user.last_login_ip = actor_ip

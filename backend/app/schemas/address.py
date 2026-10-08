@@ -34,6 +34,10 @@ class IPAddressBase(StrictModel):
     ptr_ignore: bool = False
     note: Annotated[str | None, Field(max_length=2048)] = None
     customer_id: uuid.UUID | None = None
+    #: 主控台的連線出口（issue #24）：空＝繼承上層或直連
+    jump_host_id: uuid.UUID | None = None
+    #: 或經由掃描代理中繼（階段二）：必須是所屬子網路的掃描代理；與 jump_host_id 擇一
+    console_agent_id: uuid.UUID | None = None
     custom_fields: dict[str, Any] | None = None
 
     @field_validator("ip", mode="before")
@@ -72,7 +76,12 @@ class IPAddressBase(StrictModel):
     @field_validator("state")
     @classmethod
     def _state_valid(cls, v: str) -> str:
-        allowed = {"active", "reserved", "offline", "dhcp", "used"}
+        # active/used/dhcp/offline 是既有字彙（混了觀測與意圖，維持相容不動）；
+        # deprecated/quarantine 是生命週期用的意圖標記：
+        #   deprecated — 準備退場，不要再拿來配新服務
+        #   quarantine — 有疑慮（資安事件／衝突），暫時不得使用
+        allowed = {"active", "reserved", "offline", "dhcp", "used",
+                   "deprecated", "quarantine"}
         if v not in allowed:
             raise ValueError(f"state must be one of {sorted(allowed)}")
         return v
@@ -112,6 +121,10 @@ class IPAddressUpdate(StrictModel):
     ptr_ignore: bool | None = None
     note: Annotated[str | None, Field(max_length=2048)] = None
     customer_id: uuid.UUID | None = None
+    #: 主控台的連線出口（issue #24）：空＝繼承上層或直連
+    jump_host_id: uuid.UUID | None = None
+    #: 或經由掃描代理中繼（階段二）：必須是所屬子網路的掃描代理；與 jump_host_id 擇一
+    console_agent_id: uuid.UUID | None = None
     custom_fields: dict[str, Any] | None = None
     # feature A：固定以某來源 hostname 為準（"" / null = 跟全域優先序）
     hostname_source_pin: Annotated[str | None, Field(max_length=16)] = None
@@ -127,6 +140,8 @@ class IPAddressUpdate(StrictModel):
     novnc_enabled: bool | None = None
     # BMC OOB主控台（IPMI SOL）開關
     bmc_enabled: bool | None = None
+    # 「以 RustDesk 連線」按鈕開關（沿用 IP 編輯權限）
+    rustdesk_enabled: bool | None = None
     # 手動標記此 IP 是 DHCP 伺服器（清單視覺化用）
     is_dhcp_server: bool | None = None
     # ip / subnet_id 不允許更新；如要搬移走專用 endpoint
@@ -143,7 +158,7 @@ class PveConsoleTarget(StrictModel):
 class IPAddressRead(IPAddressBase):
     id: uuid.UUID
     discovery_source: str
-    in_dhcp_lease: bool = False   # 自動判定：目前有 DHCP 租約（由 OPNsense lease 同步維護）
+    in_dhcp_lease: bool = False   # 自動判定：目前有 DHCP 租約（由各 DHCP 來源推導，見 services/dhcp_leases.py）
     # DHCP 上有把這個位址固定綁給某張網卡。與「有租約」意義不同：有租約＝現在有人在用，
     # 固定分配＝這個位址不會被換人用（位址被回收再發給別台，正是資料張冠李戴的來源）。
     dhcp_reserved: bool = False
@@ -161,17 +176,42 @@ class IPAddressRead(IPAddressBase):
     os_guess: str | None = None
     os_family: str | None = None
     os_source: str | None = None   # 有效 OS 來自哪個來源（scanner/librenms/wazuh）
+    device_kind: str | None = None             # 掃描代理判讀出的設備類型（services/device_identity）
+    device_model: str | None = None            # 廠牌型號
+    device_identified_at: datetime | None = None
     probe_last_run: dict[str, Any] | None = None
     # 此 IP 實際會被執行的探測（subnet.scan_method − excluded − ∩ agent 能力），後端算好
     effective_probes: list[str] | None = None
     last_seen_scanner: datetime | None
     last_seen_librenms: datetime | None
+    # ARP 證據獨立回傳：它沒有時間概念，前端要能標成弱證據而不是混進 LibreNMS
+    last_seen_arp: datetime | None = None
+    #: Wazuh agent 的 keep-alive（manager 端維護，會過期 → 可宣稱上線）
+    last_seen_wazuh: datetime | None = None
+    #: Zabbix 最後一次回報可用（server 端輪詢維護）
+    last_seen_zabbix: datetime | None = None
+    #: 防火牆給的逐來源觀測時間：`{"arp:opnsense": "…", "lease:pfsense": "…"}`。
+    #: 這些原本全都被寫進 last_seen_scanner，畫面上就變成沒有掃描代理卻顯示
+    #: 「上線 (scanner)」（見 services/arp_seen.py）。
+    arp_seen: dict[str, str] = {}
     last_seen_dns: datetime | None
+    #: OCS Inventory 最後一次盤點到這個 IP（顯示用、非活性訊號）
+    last_seen_ocs: datetime | None = None
     effective_status: str | None
     # 所屬 subnet 是否啟用掃描；前端用來判定「沒掃描的網段不該標離線紅燈」
     subnet_scan_enabled: bool | None = None
     # SSH 連線管理：是否已啟用 + 目前使用者是否可用（後端依權限算好給前端顯示按鈕）
     ssh_enabled: bool = False
+    # 虛擬化對應：這個 IP 是虛擬化平台回報的某台 VM →（顯示用）。
+    # None＝比對不到，**不代表實體機**（整合可能沒涵蓋），前端不得反向標示。
+    virt_vm: dict | None = None
+    # 上線判定規則（只在單筆讀取帶）：{minutes, sources}，與 recompute_effective_status 用同一份系統設定。
+    # 畫面「各來源最後出現」據此標出每個來源算不算上線證據、是否還在時限內
+    liveness_rule: dict | None = None
+    # RustDesk Server（開源版）整合：對應到這個 IP 的 RustDesk ID。connect_uri 只給有遠端主控台權限的人
+    rustdesk: dict[str, Any] | None = None
+    # 這個 IP 沒有 RustDesk 裝置、但同一台裝置的其他 IP 有：[{address_id, ip, rustdesk_id, enabled}]（只列看得到的）
+    rustdesk_elsewhere: list[dict[str, Any]] = Field(default_factory=list)
     ssh_available: bool = False
     # SFTP 檔案傳輸：是否已啟用 + 目前使用者是否可用
     sftp_enabled: bool = False
@@ -189,6 +229,10 @@ class IPAddressRead(IPAddressBase):
     # BMC OOB主控台（IPMI SOL）：是否已啟用 + 目前使用者是否可用
     bmc_enabled: bool = False
     bmc_available: bool = False
+    # RustDesk 連線按鈕是否已啟用（可不可用看 rustdesk.connect_uri 有沒有值）
+    rustdesk_enabled: bool = False
+    # 連線管理頁：相容 RustDesk 的網頁連線可用（IP 啟用、對應到裝置、伺服器開放網頁連線、使用者有權限）
+    rustdesk_web_available: bool = False
     # 後端從 oui_vendors 表 lookup 帶上來；前端不用自己查
     mac_vendor: str | None = None
     # 關聯裝置名稱（清單顯示用，前端不用再查）

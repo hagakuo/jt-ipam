@@ -77,7 +77,7 @@ async function patchPref<K extends keyof UserPreferences>(
   try {
     const updated = await updatePreferences({ [key]: value } as Partial<UserPreferences>);
     prefs.value = updated;
-    if (key === "locale") ui.setLocale(value as "zh-TW" | "en-US");
+    if (key === "locale") ui.setLocale(value as "zh-TW" | "en-US" | "ja-JP");
     if (key === "theme") ui.setTheme(value as "light" | "dark" | "auto");
   } catch {
     msg.error(t("errors.network"));
@@ -167,6 +167,7 @@ function cancelEnroll() {
 const localeOptions = [
   { label: "繁體中文", value: "zh-TW" },
   { label: "English", value: "en-US" },
+  { label: "日本語", value: "ja-JP" },
 ];
 const themeOptions = computed(() => [
   { label: t("settings.prefs.theme_light"), value: "light" },

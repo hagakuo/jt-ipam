@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="zh-Hant">
+<html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>jt-ipam — 為整合而生的 IPAM</title>
+<title>jt-ipam: an IPAM built for integration</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
-<meta name="description" content="jt-ipam：可自架、以整合為核心的 IP 位址管理系統，整合 DNS / LibreNMS / OPNsense / pfSense / FortiGate / Windows DHCP Server / Wazuh / Proxmox VE / VMware ESXi / LLM Server，並可從 phpIPAM 匯入資料、無痛遷移。systemd 部署、強制 HTTPS、OWASP Top 10:2025。" />
+<meta name="description" content="jt-ipam: a self-hosted, integration-first IP address management system. Works with DNS / LibreNMS / OPNsense / pfSense / FortiGate / Palo Alto / MikroTik / Windows DHCP Server / Kea / ISC DHCP / Wazuh / Zabbix / OCS Inventory NG / RustDesk Server / Proxmox VE / VMware ESXi / LLM servers, and imports from phpIPAM for a painless migration. systemd deployment, HTTPS enforced, OWASP Top 10:2025." />
 <style>
   :root{
     --green:#18a058; --green-h:#36ad6a; --green-d:#0c7a43;
@@ -21,9 +21,12 @@
   a{color:var(--green-d);text-decoration:none}
   a:hover{text-decoration:underline}
   h1,h2,h3{color:var(--ink);line-height:1.25;letter-spacing:.2px}
-  .en{display:none}
-  body.lang-en .zh{display:none}
+  /* 三語切換：只顯示目前語言的節點。搜尋與各種 innerText 讀不到 display:none 的內容，
+     所以同一段程式對三種語言都成立。 */
+  .zh,.en,.ja{display:none}
+  body.lang-zh .zh{display:initial}
   body.lang-en .en{display:initial}
+  body.lang-ja .ja{display:initial}
   .wrap{max-width:1080px;margin:0 auto;padding:0 20px}
   /* nav */
   nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.92);backdrop-filter:saturate(1.4) blur(8px);
@@ -42,6 +45,34 @@
   .btn-ghost{background:#fff;border-color:var(--line);color:var(--ink)}
   .btn-ghost:hover{border-color:var(--green);text-decoration:none}
   .btn-sm{padding:6px 12px;font-size:13px}
+  /* ── 語言切換（自訂下拉） ── */
+  /* 不用原生 <select>：桌面瀏覽器會叫出作業系統自己的彈出視窗，長相與站上其他元件
+     完全不同，也套不上我們的配色與圓角。面板自己畫，行為才一致。
+     也不用三顆並排：那在窄視窗會把頂列擠開，每加一種語言就更擠。 */
+  .langsw{position:relative;display:inline-flex;align-items:center}
+  .langsw > button{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);
+    border-radius:10px;background:#fff;color:var(--ink);font-family:inherit;font-size:13px;
+    font-weight:600;padding:6px 11px;cursor:pointer;line-height:1.3;white-space:nowrap}
+  .langsw > button:hover{border-color:var(--green)}
+  .langsw > button:focus-visible{outline:none;border-color:var(--green);box-shadow:0 0 0 3px rgba(24,160,88,.12)}
+  .langsw .chev{width:7px;height:7px;flex:none;border-right:1.6px solid var(--muted);
+    border-bottom:1.6px solid var(--muted);transform:translateY(-2px) rotate(45deg);transition:transform .15s}
+  .langsw > button[aria-expanded="true"] .chev{transform:translateY(1px) rotate(-135deg)}
+  .langsw ul{position:absolute;top:calc(100% + 6px);right:0;z-index:60;margin:0;padding:5px;
+    list-style:none;min-width:140px;background:#fff;border:1px solid var(--line);border-radius:12px;
+    box-shadow:0 10px 28px rgba(15,23,42,.13)}
+  .langsw li{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;
+    font-size:13.5px;color:var(--body);cursor:pointer;white-space:nowrap}
+  .langsw li:hover{background:#f1f5f2;color:var(--ink)}
+  .langsw li[aria-selected="true"]{color:var(--green);font-weight:700}
+  .langsw li .tick{width:14px;flex:none;text-align:center;opacity:0}
+  .langsw li[aria-selected="true"] .tick{opacity:1}
+  /* 手機：頂列讓它自己長高換行，不要硬壓在 60px 裡把品牌名擠成兩行。 */
+  @media(max-width:560px){
+    .nav-in{height:auto;padding:10px 16px;flex-wrap:wrap;gap:10px}
+    .brand{font-size:16px;white-space:nowrap}
+    .nav-links{gap:8px;width:100%;justify-content:flex-end}
+  }
   /* hero */
   .hero{background:
       radial-gradient(1100px 560px at 50% -14%,rgba(34,211,238,.12),transparent 60%),
@@ -84,7 +115,9 @@
   .grid{display:grid;gap:18px}
   .g3{grid-template-columns:repeat(3,1fr)}
   .g2{grid-template-columns:repeat(2,1fr)}
-  @media(max-width:820px){.g3,.g2{grid-template-columns:1fr}.nav-links a:not(.btn){display:none}}
+  @media(max-width:820px){.g3,.g2{grid-template-columns:1fr}}
+  /* 頂列的文字連結在放不下一列之前就收起（含「導入流程」後，英文版到 1005px 會擠成兩列） */
+  @media(max-width:1010px){.nav-links a:not(.btn){display:none}}
   .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:22px;
     box-shadow:0 2px 10px rgba(15,23,42,.04);transition:.18s}
   .card:hover{box-shadow:0 8px 24px rgba(15,23,42,.09);transform:translateY(-2px)}
@@ -148,21 +181,110 @@
   #screens .screen-txt p{color:rgba(255,255,255,0.82)}
   #screens .num{background:rgba(110,231,168,0.18);color:#aaf0c8}
   #screens .shot{box-shadow:0 16px 44px rgba(0,0,0,0.42);cursor:zoom-in;border-color:rgba(255,255,255,0.10)}
+  /* 層架專區：上面六點條列（兩欄），下面兩張直式截圖並排。
+     兩張圖的長寬比不同（層架約 1:1.28、設定畫面約 1:1.76），寬度按比例分配才會一樣高，換圖要重算。 */
+  .shelf-list{margin:0 auto 34px;padding:0;list-style:none;display:grid;grid-template-columns:1fr 1fr;gap:16px 34px;max-width:1040px}
+  .shelf-list li{position:relative;padding-left:26px;color:var(--body);line-height:1.65;font-size:15px}
+  .shelf-list li::before{content:"";position:absolute;left:4px;top:.62em;width:9px;height:9px;border-radius:3px;
+    background:linear-gradient(135deg,var(--green),var(--teal))}
+  .shelf-shots{display:grid;grid-template-columns:58fr 42fr;gap:26px;align-items:start;max-width:1040px;margin:0 auto}
+  .shelf-shots .shelf-wide{grid-column:1/-1}
+  #shelves figure{margin:0}
+  #shelves figcaption{margin-top:10px;font-size:13px;color:var(--muted);text-align:center;line-height:1.55}
+  #shelves .shot{cursor:zoom-in}
+  .tm-note{margin:26px auto 0;max-width:820px;text-align:center;font-size:12px;color:var(--muted)}
+  @media(max-width:820px){.shelf-list,.shelf-shots{grid-template-columns:1fr}}
   /* 點圖放大(lightbox) */
   #lightbox{position:fixed;inset:0;z-index:2000;display:none;align-items:center;justify-content:center;
     padding:24px;background:rgba(8,14,10,0.88);cursor:zoom-out;backdrop-filter:blur(2px)}
   #lightbox.on{display:flex}
   #lightbox img{max-width:96vw;max-height:92vh;border-radius:10px;box-shadow:0 24px 70px rgba(0,0,0,0.6)}
   .hub-wrap{margin:0 0 26px}
-  .hub-svg{width:100%;max-width:760px;height:auto;display:block;margin:0 auto}
-  .hub-node text{paint-order:stroke}
+  /* 整合架構圖：資料來源 → jt-ipam → 提供給其他系統 */
+  /* 「哪些來源會自己新增 IP 紀錄」 */
+  .src-sub{font-size:14px;font-weight:700;color:var(--ink);margin:18px 0 8px}
+  .src-tbl td.src-name{font-weight:700;color:var(--ink)}
+  .src-toggle{margin-bottom:4px}
+  .src-blocks{display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-top:6px}
+  .src-block{background:#fff;border:1px solid var(--line);border-radius:12px;padding:4px 16px 14px}
+  .src-block p{margin:0;font-size:13.5px;color:var(--body);line-height:1.7}
+  .src-chips{display:flex;flex-wrap:wrap;gap:6px}
+  .src-chips > span{font-size:12.5px;padding:2px 9px;border-radius:999px;background:#f1f5f2;border:1px solid var(--line);white-space:nowrap}
+  @media(max-width:820px){.src-blocks{grid-template-columns:1fr}}
+  /* 整合配線圖（2026-10-06 改版）：以前是彩色左邊框卡片＋粉彩膠囊＋漸層圓球（使用者：「一看就很 AI」）。
+     改成配線表：每類一列（類別、產品），括號收起整欄、拉一條線接到中間的機箱面板；只用墨色與品牌綠。 */
+  /* 左右兩邊放在同一個格線裡、共用每一列的高度：哪一邊換行，另一邊同一列也跟著高，
+     分隔線左右永遠對齊（使用者：「還是感覺不夠整齊」）。兩邊都是 8 列；類別欄寬跟著該邊最長的類別走。 */
+  .wire{display:grid;grid-template-columns:fit-content(11em) minmax(0,1.3fr) 200px fit-content(11em) minmax(0,1fr);
+    margin:10px 0 8px}
+  /* 寬螢幕上圖比內文寬（最寬 1240px）：大部分列才放得進一行，不會這邊換行、那邊空一截 */
+  @media(min-width:1100px){.wire{margin-inline:calc((100% - min(1240px, 100vw - 64px)) / 2)}}
+  .w-in,.w-out,.w-row{display:contents}
+  .w-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding-bottom:7px;
+    border-bottom:1.5px solid var(--ink);font:600 11px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    letter-spacing:.09em;text-transform:uppercase;color:var(--ink);grid-row:1;align-self:end}
+  .w-head em{font-style:normal;font-weight:500;letter-spacing:.02em;text-transform:none;color:var(--muted)}
+  .w-in > .w-head{grid-column:1/3;margin-right:30px}
+  .w-out > .w-head{grid-column:4/6;margin-left:30px}
+  .w-row:nth-child(2) > *{grid-row:2}
+  .w-row:nth-child(3) > *{grid-row:3}
+  .w-row:nth-child(4) > *{grid-row:4}
+  .w-row:nth-child(5) > *{grid-row:5}
+  .w-row:nth-child(6) > *{grid-row:6}
+  .w-row:nth-child(7) > *{grid-row:7}
+  .w-row:nth-child(8) > *{grid-row:8}
+  .w-row:nth-child(9) > *{grid-row:9}
+  /* 每一格：類別＋產品；同一列的格子底線連成一條 */
+  .w-k,.w-v,.w-s{padding:10px 0;border-bottom:1px solid #edf1ee}
+  /* 內容在格子裡垂直置中：另一邊同一列換行變高時，這一列看起來是刻意留白、不是掉了一截 */
+  .w-k{display:flex;align-items:center;padding-right:14px;font-size:13.5px;font-weight:700;color:var(--ink);line-height:1.5}
+  .w-v{display:flex;flex-wrap:wrap;align-content:center;gap:5px 6px;font-size:13px;color:var(--body);line-height:1.5}
+  /* 每個產品一個淡框：名稱裡有空格的（Windows DHCP、Palo Alto）才不會被看成兩樣東西（使用者 2026-10-07）。
+     細框＋極淡底、小圓角，不做膠囊 */
+  .w-v i{font-style:normal;white-space:nowrap;padding:0 7px;border:1px solid var(--line);border-radius:4px;background:#f7faf8}
+  .w-in .w-k{grid-column:1}
+  .w-in .w-v{grid-column:2;margin-right:30px}
+  .w-out .w-k{grid-column:4;margin-left:30px}
+  .w-out .w-v{grid-column:5}
+  /* 右欄的小標（寫回的兩列）：佔一列，字貼在格子底部，像下面兩列的標題 */
+  .w-s{grid-column:4/6;margin-left:30px;display:flex;align-items:flex-end;padding:0 0 6px;
+    font:600 10.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.06em;color:var(--muted)}
+  /* 括號把整欄收起來，只拉一條線到中樞 */
+  .w-brk{grid-row:2/10;position:relative;width:9px;margin:14px 0;border:1.5px solid #9fb6a8;pointer-events:none}
+  .w-brk-l{grid-column:2;justify-self:end;margin-right:8px;border-left:0;border-radius:0 7px 7px 0}
+  .w-brk-r{grid-column:4;justify-self:start;margin-left:8px;border-right:0;border-radius:7px 0 0 7px}
+  .w-brk::before{content:"";position:absolute;top:50%;width:33px;border-top:1.5px solid #9fb6a8}
+  .w-brk-l::before{left:100%}
+  .w-brk-r::before{right:100%}
+  /* 中樞：深色面板，只有名稱、說明、一排指示燈 */
+  .w-core{grid-column:3;grid-row:2/10;align-self:center;justify-self:center;width:150px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px 14px;
+    border-radius:8px;background:#0f1913;color:#e8f2eb;text-align:center;box-shadow:0 8px 24px rgba(15,25,19,.18)}
+  .w-core b{font:700 17px/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .w-core small{font-size:11px;line-height:1.55;color:#a9bdb0}
+  .w-leds{display:flex;gap:5px}
+  .w-leds i{width:6px;height:6px;border-radius:50%;background:#2a3a31}
+  .w-leds i.on{background:#3ddc84;box-shadow:0 0 6px rgba(61,220,132,.8)}
+  @media(max-width:980px){
+    .wire{display:block}
+    .w-in,.w-out{display:block}
+    .w-in > .w-head,.w-out > .w-head{margin:0}
+    .w-row{display:grid;grid-template-columns:8.5em minmax(0,1fr);border-bottom:1px solid #edf1ee}
+    .wire .w-row > *{grid-column:auto;grid-row:auto}
+    .w-k,.w-v{border-bottom:0}
+    .w-in .w-v,.w-out .w-k{margin:0}
+    .w-sub{display:block}
+    .w-s{margin:0;padding-top:16px}
+    .w-brk{display:none}
+    .w-core{width:auto;flex-direction:row;flex-wrap:wrap;gap:8px 14px;padding:12px 22px;margin:16px 0}
+  }
+  @media(max-width:560px){.w-row{grid-template-columns:minmax(0,1fr)}.w-k{padding-bottom:0}}
   .hub-cap{text-align:center;font-size:13px;opacity:.7;margin:6px 0 0}
-  /* Graylog 說明卡（現代扁平風：無框、柔和底、膠囊標題）*/
-  .gl-note{max-width:780px;margin:28px auto 0;background:#f7f9fb;border:none;border-radius:16px;
-    padding:22px 26px;text-align:left}
-  .gl-note h4{margin:0 0 10px;font-size:14px;font-weight:700;display:inline-flex;align-items:center;gap:7px;
-    color:#0e7490;background:rgba(8,145,178,.1);padding:5px 12px;border-radius:999px}
-  .gl-note h4::before{content:"";width:7px;height:7px;border-radius:50%;background:#0891b2}
+  /* Graylog 說明（2026-10-06 跟配線圖同一套：上下兩條線、等寬字標籤，不用膠囊與圓點） */
+  .gl-note{max-width:780px;margin:30px auto 0;padding:14px 0 16px;border-top:1.5px solid var(--ink);border-bottom:1px solid var(--line)}
+  .gl-note h4{margin:0 0 8px;font-size:14px;font-weight:700;color:var(--ink);display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px}
+  .gl-note h4::before{content:"OUT · A";font:600 10.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    letter-spacing:.08em;color:#0f1913;background:#3ddc84;padding:4px 6px;border-radius:3px}
   .gl-note p{margin:0;font-size:13.5px;color:var(--muted);line-height:1.75}
   .gl-note ul{margin:10px 0 0;padding-left:18px}
   .gl-note li{font-size:13px;color:var(--muted);line-height:1.75;margin:2px 0}
@@ -216,25 +338,42 @@
   .integrations .chip:nth-child(5n+3) i{background:#f59e0b}
   .integrations .chip:nth-child(5n+4) i{background:#0ea5e9}
   .integrations .chip:nth-child(5n+5) i{background:#ec4899}
+
+/* 資料來源行為表：欄位多，窄螢幕讓它自己橫向捲，不要硬擠成一團 */
+.tbl-wrap{overflow-x:auto;margin:18px 0 12px;border:1px solid var(--line,#e4e8f0);border-radius:10px}
+.src-tbl{width:100%;border-collapse:collapse;font-size:14.5px;min-width:640px;background:var(--card,#fff)}
+.src-tbl th,.src-tbl td{padding:10px 14px;text-align:left;vertical-align:top;
+  border-bottom:1px solid var(--line,#e4e8f0)}
+.src-tbl thead th{background:rgba(24,160,88,.07);font-weight:600;white-space:nowrap}
+.src-tbl tbody tr:last-child td{border-bottom:0}
+.src-tbl code{font-size:13px;padding:1px 5px;border-radius:4px;background:rgba(128,128,128,.14)}
+.dflt{display:inline-flex;align-items:center;gap:5px;font-weight:600;white-space:nowrap}
+.dflt.on{color:#18a058}
+.dflt.off{color:#8a8f98}
+.src-note{font-size:14px;opacity:.85;line-height:1.7}
+.src-warn{font-size:14px;line-height:1.7;padding:12px 14px;border-radius:8px;
+  background:rgba(240,160,32,.10);border:1px solid rgba(240,160,32,.35)}
 </style>
+<noscript><style>.en{display:initial}</style></noscript>
 </head>
 <body>
 <script>
-  /* 在內容繪製前先決定語言，避免先閃一下中文再切英文。
-     語言來源優先序：網址 ?lang= > localStorage 偏好 > 預設英文（無參數、無偏好時）。 */
+  /* 在內容繪製前先決定語言（避免閃爍）。優先序：網址 ?lang= > localStorage 偏好 > 預設英文。 */
   (function(){
     try{
       function norm(v){ v = (v || '').toLowerCase();
         if (v === 'en' || v === 'en-us') return 'en';
+        if (v === 'ja' || v === 'ja-jp') return 'ja';
         if (v === 'zh' || v === 'zh-tw' || v === 'zh-hant') return 'zh';
         return null; }
       var u = null; try { u = norm(new URLSearchParams(location.search).get('lang')); } catch (e) {}
       var lang = u || norm(localStorage.getItem('jtipam-doc-lang')) || 'en';
-      if (lang === 'en') document.body.classList.add('lang-en');
-      document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : 'zh-Hant');
+      document.body.classList.add('lang-' + lang);
+      document.documentElement.setAttribute('lang', lang === 'en' ? 'en' : lang === 'ja' ? 'ja' : 'zh-Hant');
       if (u){ try {
         localStorage.setItem('jtipam-doc-lang', u);
-        var url = new URL(location.href); url.searchParams.set('lang', u === 'en' ? 'en' : 'zh-TW');
+        var url = new URL(location.href);
+        url.searchParams.set('lang', u === 'en' ? 'en' : u === 'ja' ? 'ja' : 'zh-TW');
         history.replaceState(null, '', url);
       } catch (e) {} }
     } catch (e) {}
@@ -256,16 +395,26 @@
       jt-ipam
     </span>
     <div class="nav-links">
-      <a href="#features"><span class="zh">特色</span><span class="en">Features</span></a>
-      <a href="#integrations"><span class="zh">整合</span><span class="en">Integrations</span></a>
-      <a href="#screens"><span class="zh">畫面</span><span class="en">Screenshots</span></a>
-      <a href="#enterprise"><span class="zh">企業管理</span><span class="en">Enterprise</span></a>
+      <a href="#features"><span class="zh">特色</span><span class="en">Features</span><span class="ja">機能</span></a>
+      <a href="#integrations"><span class="zh">整合</span><span class="en">Integrations</span><span class="ja">連携</span></a>
+      <a href="#screens"><span class="zh">畫面</span><span class="en">Screenshots</span><span class="ja">画面</span></a>
+      <a href="#enterprise"><span class="zh">企業管理</span><span class="en">Enterprise</span><span class="ja">エンタープライズ</span></a>
       <a href="#ai">AI</a>
-      <a href="#install"><span class="zh">安裝</span><span class="en">Install</span></a>
-      <a href="features.html"><span class="zh">功能地圖</span><span class="en">Feature map</span></a>
+      <a href="#install"><span class="zh">安裝</span><span class="en">Install</span><span class="ja">インストール</span></a>
+      <a href="adoption.html"><span class="zh">導入流程</span><span class="en">Adoption roadmap</span><span class="ja">導入ガイド</span></a>
+      <a href="features.html"><span class="zh">功能地圖</span><span class="en">Feature map</span><span class="ja">機能マップ</span></a>
       <a href="api.html">API</a>
       <a class="btn btn-ghost btn-sm" href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener">GitHub</a>
-      <button class="btn btn-ghost btn-sm" id="langBtn" type="button">EN / 中</button>
+      <span class="langsw">
+        <button type="button" id="langBtn" aria-haspopup="listbox" aria-expanded="false" aria-label="Language">
+          <span id="langCur">繁體中文</span><span class="chev" aria-hidden="true"></span>
+        </button>
+        <ul id="langMenu" role="listbox" hidden>
+          <li role="option" data-lang="zh"><span class="tick">✓</span>繁體中文</li>
+          <li role="option" data-lang="en"><span class="tick">✓</span>English</li>
+          <li role="option" data-lang="ja"><span class="tick">✓</span>日本語</li>
+        </ul>
+      </span>
     </div>
   </div>
 </nav>
@@ -274,49 +423,49 @@
   <div class="wrap">
     <h1>
       <span class="zh">別再用試算表管 IP 了</span>
-      <span class="en">Stop tracking your IPs in spreadsheets</span>
+      <span class="en">Stop tracking your IPs in spreadsheets</span><span class="ja">IP 管理を表計算で続けるのはもうやめませんか</span>
     </h1>
     <p class="lead">
       <span class="zh">團隊共用一份 Excel 登錄公司 IP，最後總是拿錯版本、蓋掉別人剛改的內容、用到衝突 IP 服務掛掉…… 這種痛苦，您肯定經歷過。</span>
-      <span class="en">A shared Excel file for company IPs always ends in wrong versions, overwritten edits, and outages from duplicate IPs — you've surely been there.</span>
+      <span class="en">A shared Excel file for company IPs always ends in wrong versions, overwritten edits, and outages from duplicate IPs; you've surely been there.</span><span class="ja">会社の IP を 1 つの Excel でチームが共用すると、最後はいつも版を取り違え、他人の編集を上書きし、IP の重複でサービスが止まります。きっと経験があるはずです。</span>
     </p>
     <ul class="hero-points">
       <li><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-        <span><span class="zh"><b>權限控管、稽核軌跡、自動同步</b>：用一套系統取代試算表</span><span class="en"><b>Permissions, an audit trail and auto-sync</b> — one system replaces the spreadsheet</span></span></li>
+        <span><span class="zh"><b>權限控管、稽核軌跡、自動同步</b>：用一套系統取代試算表</span><span class="en"><b>Permissions, an audit trail and auto-sync</b>: one system replaces the spreadsheet</span><span class="ja"><b>権限管理・監査証跡・自動同期</b>。表計算をひとつのシステムで置き換えます</span></span></li>
       <li><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-        <span><span class="zh">整合 <b>DNS、LibreNMS、OPNsense、pfSense、FortiGate、Proxmox VE、VMware ESXi / vCenter</b> 等既有系統</span><span class="en">Integrates your existing <b>DNS, LibreNMS, OPNsense, pfSense, FortiGate, Proxmox VE, VMware ESXi / vCenter</b></span></span></li>
+        <span><span class="zh">整合 <b>DNS、防火牆、監控、虛擬化</b>等既有系統</span><span class="en">Integrates your existing <b>DNS, firewalls, monitoring and virtualization</b></span><span class="ja">既存の <b>DNS・ファイアウォール・監視・仮想化</b>と連携します</span></span></li>
       <li><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-        <span><span class="zh">IP 與網路狀態<b>集中在同一處</b></span><span class="en">IP and network state, <b>all in one place</b></span></span></li>
+        <span><span class="zh">IP 與網路狀態<b>集中在同一處</b></span><span class="en">IP and network state, <b>all in one place</b></span><span class="ja">IP とネットワークの状態を<b>ひとつの場所に</b>まとめます</span></span></li>
     </ul>
     <div class="cta">
-      <a class="btn btn-primary" href="#install"><span class="zh">一行指令立刻安裝</span><span class="en">Install now in one line</span></a>
-      <a class="btn btn-ghost" href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener"><span class="zh">前往 GitHub 專案</span><span class="en">Go to GitHub project</span></a>
+      <a class="btn btn-primary" href="#install"><span class="zh">一行指令立刻安裝</span><span class="en">Install now in one line</span><span class="ja">一行でいますぐインストール</span></a>
+      <a class="btn btn-ghost" href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener"><span class="zh">前往 GitHub 專案</span><span class="en">Go to GitHub project</span><span class="ja">GitHub プロジェクトへ</span></a>
     </div>
     <!-- hero 大圖(建議放「儀表板」整頁截圖)-->
     <div class="hero-shot">
-      <img class="shot shot-hero" src="shots/dashboard.png" loading="lazy"
+      <img class="shot shot-hero" data-shot="dashboard" src="shots/zh/dashboard.png" loading="lazy"
            alt="jt-ipam 儀表板 / Dashboard" />
     </div>
     <div class="pills">
-      <span class="pill"><span class="zh">整合多套開源軟體</span><span class="en">Integrates many OSS tools</span></span>
-      <span class="pill"><span class="zh">phpIPAM 資料匯入</span><span class="en">phpIPAM data import</span></span>
-      <span class="pill"><span class="zh">標準套件建置</span><span class="en">Standard package install</span></span>
-      <span class="pill"><span class="zh">遵循資安規範</span><span class="en">Follows security standards</span></span>
-      <span class="pill"><span class="zh">雙因素認證</span><span class="en">Two-factor auth</span></span>
+      <span class="pill"><span class="zh">整合多套開源軟體</span><span class="en">Integrates many OSS tools</span><span class="ja">多数の OSS と連携</span></span>
+      <span class="pill"><span class="zh">phpIPAM 資料匯入</span><span class="en">phpIPAM data import</span><span class="ja">phpIPAM データの取り込み</span></span>
+      <span class="pill"><span class="zh">標準套件建置</span><span class="en">Standard package install</span><span class="ja">標準的なパッケージ導入</span></span>
+      <span class="pill"><span class="zh">遵循資安規範</span><span class="en">Follows security standards</span><span class="ja">セキュリティ標準に準拠</span></span>
+      <span class="pill"><span class="zh">雙因素認證</span><span class="en">Two-factor auth</span><span class="ja">二要素認証</span></span>
       <span class="pill">SSO</span>
-      <span class="pill"><span class="zh">整合 AD / LDAP</span><span class="en">AD / LDAP integration</span></span>
-      <span class="pill"><span class="zh">深色 / 淺色雙主題</span><span class="en">Dark / light themes</span></span>
-      <span class="pill"><span class="zh">多語言介面</span><span class="en">Multilingual UI</span></span>
+      <span class="pill"><span class="zh">整合 AD / LDAP</span><span class="en">AD / LDAP integration</span><span class="ja">AD / LDAP 連携</span></span>
+      <span class="pill"><span class="zh">深色 / 淺色雙主題</span><span class="en">Dark / light themes</span><span class="ja">ダーク/ライトの二テーマ</span></span>
+      <span class="pill"><span class="zh">多語言介面</span><span class="en">Multilingual UI</span><span class="ja">多言語インタフェース</span></span>
     </div>
   </div>
 </header>
 
-<section class="callout-sec">
+<section id="multi-tenant" class="callout-sec">
   <div class="wrap callout">
     <span class="ci"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V6l7-3v18"/><path d="M19 21V10l-7-4"/><path d="M8 9h.01M8 13h.01M8 17h.01M15 13h.01M15 17h.01"/></svg></span>
     <div>
-      <h3><span class="zh">管多家公司 / 客戶？一套平台全管完</span><span class="en">Managing many companies or clients? Run them all from one back office</span></h3>
-      <p><span class="zh">不論是集團、分公司、管理單位、客戶還是不同站點，都能把各自的 IP、子網路、裝置與機房收進同一套系統，依歸屬隔離並做物件層級授權。MSP、系統整合商、集團 IT 一個畫面就管完所有單位，不必每家各開一份試算表、各裝一套工具。</span><span class="en">Whether it's groups, subsidiaries, business units, clients or separate sites, keep each one's IPs, subnets, devices and rooms in a single system — isolated by ownership with object-level access control. MSPs, integrators and group IT manage every tenant from one screen, instead of a spreadsheet (and a tool) per client.</span></p>
+      <h3><span class="zh">管多家公司 / 客戶？一套平台全管完</span><span class="en">Managing many companies or clients? Run them all from one back office</span><span class="ja">複数の会社や顧客を管理していますか。ひとつの基盤ですべて管理できます</span></h3>
+      <p><span class="zh">不論是集團、分公司、管理單位、客戶還是不同站點，都能把各自的 IP、子網路、裝置與機房收進同一套系統，依歸屬隔離並做物件層級授權。MSP、系統整合商、集團 IT 一個畫面就管完所有單位，不必每家各開一份試算表、各裝一套工具。</span><span class="en">Whether it's groups, subsidiaries, business units, clients or separate sites, keep each one's IPs, subnets, devices and rooms in a single system, isolated by ownership with object-level access control. MSPs, integrators and group IT manage every tenant from one screen, instead of a spreadsheet (and a tool) per client.</span><span class="ja">グループ会社、子会社、管理部門、顧客、拠点のいずれであっても、それぞれの IP・サブネット・機器・サーバルームをひとつのシステムに収め、所属ごとに分離してオブジェクト単位で権限を与えられます。MSP・システムインテグレータ・グループ IT は、顧客ごとに表計算とツールを用意する代わりに、ひとつの画面ですべての組織を管理できます。</span></p>
     </div>
   </div>
 </section>
@@ -324,21 +473,21 @@
 <section id="features">
   <div class="wrap">
     <div class="sec-head">
-      <h2><span class="zh">核心功能</span><span class="en">Core features</span></h2>
-      <p><span class="zh">方便的搜尋、清楚的物件關係、現代的操作體驗。</span><span class="en">Convenient search, clear object relationships, a modern UX.</span></p>
+      <h2><span class="zh">核心功能</span><span class="en">Core features</span><span class="ja">主な機能</span></h2>
+      <p><span class="zh">方便的搜尋、清楚的物件關係、現代的操作體驗。</span><span class="en">Convenient search, clear object relationships, a modern UX.</span><span class="ja">使いやすい検索、明快なオブジェクト関係、現代的な操作感。</span></p>
     </div>
     <div class="grid g3">
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span><span class="zh">區段 / 子網路 / IP</span><span class="en">Sections / Subnets / IPs</span></h3><p><span class="zh">階層式管理、使用率視覺化、重疊網段偵測、CSV 匯入與通用表格匯出。</span><span class="en">Hierarchical management, usage visualization, overlap detection, CSV import & universal table export.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="7" r="2"/><circle cx="18" cy="7" r="2"/><circle cx="12" cy="18" r="2"/><path d="M7.6 8.4 11 16M16.4 8.4 13 16M8 7h8"/></svg></span><span class="zh">IP 拓樸圖</span><span class="en">IP topology</span></h3><p><span class="zh">整合多種系統資料自動推測 裝置↔子網路 鄰接，畫出實體 / 無線 / VPN / L3 連線。</span><span class="en">Multi-signal device↔subnet adjacency, drawing physical / wireless / VPN / L3 links.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01"/></svg></span><span class="zh">裝置 / 機櫃 / 機房</span><span class="en">Devices / Racks / Rooms</span></h3><p><span class="zh">機櫃 U 位示意圖 (含半 U、前後雙面)、機房平面圖拖拉定位、世界地圖標記、SVG/PNG/draw.io 匯出；裝置明細直接標出本機在機櫃的位置。</span><span class="en">Rack U-diagrams (half-U &amp; front/rear), floor-plan drag placement, world map, SVG/PNG/draw.io export; device page highlights its own rack position.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span><span class="zh">全域搜尋</span><span class="en">Global search</span></h3><p><span class="zh">主機名稱 / IP / CIDR / MAC 一處搜尋，OUI 廠商比對每月自動更新。</span><span class="en">Search hostname / IP / CIDR / MAC in one place; monthly OUI vendor refresh.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 8v8M8 6h6a2 2 0 0 1 2 2v2M8 18h6a2 2 0 0 0 2-2v-2"/></svg></span><span class="zh">NAT / VLAN / VRF</span><span class="en">NAT / VLAN / VRF</span></h3><p><span class="zh">對齊 OPNsense / pfSense / FortiGate 的 NAT 規則、電路頻寬、VLAN/VRF 與客戶/單位歸屬。</span><span class="en">OPNsense/pfSense/FortiGate-aligned NAT, circuit bandwidth, VLAN/VRF and customer/tenant ownership.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="zh">IP 異動記錄</span><span class="en">IP change log</span></h3><p><span class="zh">主機名稱多來源優先序、逐欄人為編輯記錄、上線/離線判定、失聯 IP 篩選與批次回收。</span><span class="en">Multi-source hostname precedence, per-field edit log, liveness classification, stale-IP filtering &amp; bulk reclaim.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2"/><path d="M4 12h16"/></svg></span><span class="zh">內建掃描代理</span><span class="en">Built-in scan agent</span></h3><p><span class="zh">內建主機上線與作業系統偵測（ICMP / ARP / 反查 / NetBIOS / mDNS / OS，可逐代理 / 子網路 / IP 設定要跑哪些探測），可直接在主機上跑；也能把掃描代理部署到其他網段或站點，透過金鑰安全回報、支援立即執行與自動更新，集中探索新上線與失聯 IP，不必每段網路各裝一套工具。</span><span class="en">Built-in host liveness and OS detection (ICMP / ARP / rDNS / NetBIOS / mDNS / OS, with per-agent/subnet/IP control over which probes run) runs on the server itself — or deploy remote agents to other segments and sites that report back securely over a key, with run-now &amp; self-update, so new and stale IPs are discovered centrally without a separate tool per network.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.4 7.5 8 9 4.6-1.5 8-4 8-9V6z"/><path d="M9 12h6M12 9v6"/></svg></span><span class="zh">憑證保管與派送</span><span class="en">Certificate vault &amp; distribution</span></h3><p><span class="zh">商業或自簽憑證一次上傳集中保管（私鑰加密），純 bash 代理依排程把最新版自動派送到各站台的 nginx/apache/caddy/haproxy/Proxmox VE·PMG·PBS/Zimbra 等服務並重載，支援到期告警、手動續簽與自動更新；不必再逐台 scp 換憑證、重啟服務。</span><span class="en">Upload a commercial or self-signed certificate once into central, encrypted storage; a pure-bash agent pulls the latest version on a schedule and deploys it to each site's nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and reloads the service, with expiry alerts, manual renew and self-update — no more scp-and-restart on every host.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></span><span class="zh">瀏覽器連線管理</span><span class="en">In-browser remote console</span></h3><p><span class="zh">直接從 IP 或裝置在瀏覽器開 SSH 終端機、SFTP 檔案瀏覽器（上下傳檔案）、RDP / VNC 桌面、Proxmox VE 主控台（VM noVNC / CT xterm）與 BMC 序列主控台（IPMI SOL，不經作業系統的獨立連線）（RDP / VNC / PVE / BMC 為 Beta），免裝 PuTTY / 遠端桌面用戶端 / 各廠 KVM；連線帳密預設不儲存，也可選擇存進個人加密金庫（by-user、AES-GCM）；依逐物件權限控管誰能連，每次連線都留稽核，並可送出 Ctrl + Alt + Del 等被系統攔截的特殊組合鍵。BMC 主控台內建序列主控台設定教學（找 ttyS、加 console=、serial-getty）。</span><span class="en">Open SSH terminals, an SFTP file browser (upload/download), RDP / VNC desktops, a Proxmox VE console (noVNC / xterm) and a BMC out-of-band serial console (IPMI SOL) (RDP / VNC / PVE / BMC Beta) right from an IP or device in the browser — no PuTTY / remote-desktop client / vendor KVM; credentials are not stored by default (optional per-user AES-GCM vault), per-object permissions on who may connect, every session audited, and special combos like Ctrl + Alt + Del you can send. The BMC console ships a built-in serial-console setup guide (find ttyS, add console=, serial-getty).</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg></span><span class="zh">本地 AI 助理</span><span class="en">Local AI assistant</span></h3><p><span class="zh">結合 LLM Server 在自家機房跑自然語言查詢與語意搜尋，預設資料不外送；並提供 MCP server，讓外部 LLM 客戶端直接操作 IPAM。</span><span class="en">Natural-language queries and semantic search via LLM Server, on-prem by default (data never leaves); plus an MCP server so external LLM clients can drive the IPAM directly.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.4 7.5 8 9 4.6-1.5 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/></svg></span><span class="zh">權限與多單位</span><span class="en">Access control &amp; multi-tenant</span></h3><p><span class="zh">物件級 RBAC（7 種物件、階層繼承、5 個內建角色），子網路 / 裝置 / IP 皆可歸屬單位或客戶：一套系統就能分隔管理多家公司、集團與站點。</span><span class="en">Object-level RBAC (7 object types, cascading inheritance, 5 built-in roles); subnets / devices / IPs all belong to a tenant or client — one system manages many companies, groups and sites with isolation.</span></p></div>
+      <div class="card"><h3 id="features-sections-subnets-ips"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span><span class="zh">區段 / 子網路 / IP</span><span class="en">Sections / Subnets / IPs</span><span class="ja">セクション/サブネット/IP</span></h3><p><span class="zh">階層式管理、使用率視覺化、重疊網段偵測、CSV 匯入與通用表格匯出。</span><span class="en">Hierarchical management, usage visualization, overlap detection, CSV import & universal table export.</span><span class="ja">階層的な管理、使用率の可視化、サブネット重複の検出、CSV の取り込みと汎用的な表のエクスポート。</span></p></div>
+      <div class="card"><h3 id="features-ip-topology"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="7" r="2"/><circle cx="18" cy="7" r="2"/><circle cx="12" cy="18" r="2"/><path d="M7.6 8.4 11 16M16.4 8.4 13 16M8 7h8"/></svg></span><span class="zh">IP 拓樸圖</span><span class="en">IP topology</span><span class="ja">IP トポロジー</span></h3><p><span class="zh">整合多種系統資料自動推測 裝置↔子網路 鄰接，畫出實體 / 無線 / VPN / L3 連線。</span><span class="en">Multi-signal device↔subnet adjacency, drawing physical / wireless / VPN / L3 links.</span><span class="ja">複数システムのデータから機器とサブネットの隣接関係を推定し、物理/無線/VPN/L3 の接続を描きます。</span></p></div>
+      <div class="card"><h3 id="features-devices-racks-rooms"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01"/></svg></span><span class="zh">裝置 / 機櫃 / 機房</span><span class="en">Devices / Racks / Rooms</span><span class="ja">機器/ラック/サーバルーム</span></h3><p><span class="zh">機櫃 U 位示意圖 (含半 U、前後雙面)，也支援鍍鉻層架、角鋼層架、IKEA IVAR、KALLAX 與 LackRack、機房平面圖拖拉定位、世界地圖標記、SVG/PNG/draw.io 匯出；裝置明細直接標出本機在機櫃的位置。</span><span class="en">Rack U-diagrams (half-U &amp; front/rear), plus chrome wire, slotted angle steel, IKEA IVAR and KALLAX shelving and LackRack, floor-plan drag placement, world map, SVG/PNG/draw.io export; device page highlights its own rack position.</span><span class="ja">ラックの U 位置図（ハーフ U と前面/背面に対応）、スチールラック・アングル棚・IKEA IVAR・KALLAX などのシェルフと LackRack、フロアプランでのドラッグ配置、世界地図へのピン留め、SVG / PNG / draw.io へのエクスポート。機器の詳細ページには、その機器自身のラック内位置が示されます。</span></p></div>
+      <div class="card"><h3 id="features-global-search"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></span><span class="zh">全域搜尋</span><span class="en">Global search</span><span class="ja">横断検索</span></h3><p><span class="zh">主機名稱 / IP / CIDR / MAC 一處搜尋，OUI 廠商比對每月自動更新。</span><span class="en">Search hostname / IP / CIDR / MAC in one place; monthly OUI vendor refresh.</span><span class="ja">ホスト名/IP/CIDR/MAC をひとつの場所で検索できます。OUI ベンダー情報は毎月自動更新されます。</span></p></div>
+      <div class="card"><h3 id="features-nat-vlan-vrf"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 8v8M8 6h6a2 2 0 0 1 2 2v2M8 18h6a2 2 0 0 0 2-2v-2"/></svg></span><span class="zh">NAT / VLAN / VRF</span><span class="en">NAT / VLAN / VRF</span><span class="ja">NAT / VLAN / VRF</span></h3><p><span class="zh">對齊 OPNsense / pfSense / FortiGate / Palo Alto / MikroTik 的 NAT 規則、電路頻寬、VLAN/VRF 與客戶/單位歸屬。</span><span class="en">OPNsense/pfSense/FortiGate/Palo Alto/MikroTik-aligned NAT, circuit bandwidth, VLAN/VRF and customer/tenant ownership.</span><span class="ja">OPNsense / pfSense / FortiGate / Palo Alto / MikroTik に対応した NAT ルール、回線帯域、VLAN / VRF、顧客・組織の所属。</span></p></div>
+      <div class="card"><h3 id="features-ip-change-log"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="zh">IP 異動記錄</span><span class="en">IP change log</span><span class="ja">IP の変更履歴</span></h3><p><span class="zh">主機名稱多來源優先序、逐欄人為編輯記錄、上線/離線判定、失聯 IP 篩選與批次回收。</span><span class="en">Multi-source hostname precedence, per-field edit log, liveness classification, stale-IP filtering &amp; bulk reclaim.</span><span class="ja">ホスト名の複数ソース優先順位、項目単位の手動編集の記録、オンライン/オフラインの判定、未使用 IP の絞り込みと一括回収。</span></p></div>
+      <div class="card"><h3 id="features-scan-agent"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2"/><path d="M4 12h16"/></svg></span><span class="zh">內建掃描代理</span><span class="en">Built-in scan agent</span><span class="ja">内蔵スキャンエージェント</span></h3><p><span class="zh">內建主機上線與作業系統偵測（ICMP/ARP/反解/NetBIOS/mDNS），可部署到其他網段或站點，以金鑰安全回報，一套工具涵蓋所有網段。</span><span class="en">Built-in host liveness and OS detection (ICMP / ARP / rDNS / NetBIOS / mDNS). Deploy agents to other subnets or sites; they report back securely with keys, so one tool covers every network.</span><span class="ja">ホストの死活と OS の検出（ICMP / ARP / 逆引き / NetBIOS / mDNS）を内蔵。他のセグメントや拠点にも配置でき、鍵で安全に報告するので、ひとつのツールで全ネットワークを網羅できます。</span></p></div>
+      <div class="card"><h3 id="features-cert-vault"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.4 7.5 8 9 4.6-1.5 8-4 8-9V6z"/><path d="M9 12h6M12 9v6"/></svg></span><span class="zh">憑證保管與派送</span><span class="en">Certificate vault &amp; distribution</span><span class="ja">証明書の保管と配布</span></h3><p><span class="zh">憑證連同私鑰加密集中保管，代理依排程自動派送到 nginx、Apache、Proxmox VE、IIS 等服務並重載，到期前提醒，不必再逐台更換。</span><span class="en">Keep certificates and encrypted keys in one place; agents deploy them on schedule to nginx, Apache, Proxmox VE, IIS and more, reload the service, and warn before expiry, so there is no more renewing server by server.</span><span class="ja">証明書を秘密鍵ごと暗号化して一元保管し、エージェントがスケジュールで nginx・Apache・Proxmox VE・IIS などへ配布して再読み込みします。期限前に通知するので、1 台ずつ更新する必要はありません。</span></p></div>
+      <div class="card"><h3 id="features-browser-remote-console"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></span><span class="zh">瀏覽器連線管理</span><span class="en">In-browser remote console</span><span class="ja">ブラウザ内リモートコンソール</span></h3><p><span class="zh">從 IP 或裝置直接在瀏覽器開 SSH、SFTP、RDP、VNC、Proxmox VE 主控台、BMC 序列主控台與 RustDesk（遠端桌面與檔案傳輸），免裝用戶端；帳密預設不儲存，每次連線都留稽核並記下連了多久。</span><span class="en">Open SSH, SFTP, RDP, VNC, Proxmox VE and BMC serial consoles and RustDesk (remote desktop and file transfer) from any IP or device, right in the browser, with no client to install. Credentials aren't stored by default, and every session is audited with its length.</span><span class="ja">IP や機器から SSH・SFTP・RDP・VNC・Proxmox VE・BMC シリアルコンソール・RustDesk（リモートデスクトップとファイル転送）をブラウザで直接開けます。クライアント不要、資格情報は既定で保存せず、接続はすべて接続時間とともに監査されます。</span></p></div>
+      <div class="card"><h3 id="features-local-ai-assistant"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/></svg></span><span class="zh">本地 AI 助理</span><span class="en">Local AI assistant</span><span class="ja">ローカル AI アシスタント</span></h3><p><span class="zh">結合 LLM Server 在自家機房跑自然語言查詢與語意搜尋，預設資料不外送；並提供 MCP server，讓外部 LLM 客戶端直接操作 IPAM。</span><span class="en">Natural-language queries and semantic search via LLM Server, on-prem by default (data never leaves); plus an MCP server so external LLM clients can drive the IPAM directly.</span><span class="ja">LLM サーバーと組み合わせて、自然言語での問い合わせとセマンティック検索を自社のサーバルーム内で実行します。既定でデータは外部に出ません。さらに MCP サーバーを提供し、外部の LLM クライアントから IPAM を直接操作できます。</span></p></div>
+      <div class="card"><h3 id="features-access-control"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 5 3.4 7.5 8 9 4.6-1.5 8-4 8-9V6z"/><path d="m9 12 2 2 4-4"/></svg></span><span class="zh">權限與多單位</span><span class="en">Access control &amp; multi-tenant</span><span class="ja">権限とマルチテナント</span></h3><p><span class="zh">物件級 RBAC（7 種物件、階層繼承、5 個內建角色），子網路 / 裝置 / IP 皆可歸屬單位或客戶：一套系統就能分隔管理多家公司、集團與站點。</span><span class="en">Object-level RBAC (7 object types, cascading inheritance, 5 built-in roles); subnets / devices / IPs all belong to a tenant or client; one system manages many companies, groups and sites with isolation.</span><span class="ja">オブジェクト単位の RBAC（7 種類のオブジェクト、階層継承、5 つの組み込みロール）。サブネット・機器・IP はいずれも組織や顧客に所属させられるため、ひとつのシステムで複数の会社・グループ・拠点を分離して管理できます。</span></p></div>
     </div>
   </div>
 </section>
@@ -346,8 +495,8 @@
 <section id="model" class="alt">
   <div class="wrap">
     <div class="sec-head">
-      <h2><span class="zh">物件關係</span><span class="en">Object model</span></h2>
-      <p><span class="zh">不是一堆各自獨立的清單：每個物件都有明確的上下層與關聯。</span><span class="en">Not a pile of disconnected lists — every object has a clear hierarchy and links.</span></p>
+      <h2><span class="zh">物件關係</span><span class="en">Object model</span><span class="ja">オブジェクトの関係</span></h2>
+      <p><span class="zh">不是一堆各自獨立的清單：每個物件都有明確的上下層與關聯。</span><span class="en">Not a pile of disconnected lists: every object has a clear hierarchy and links.</span><span class="ja">ばらばらの一覧の寄せ集めではありません。どのオブジェクトにも明確な階層と関連があります。</span></p>
     </div>
     <div class="model-wrap">
       <svg class="model-svg" viewBox="0 0 1196 120" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif" role="img" aria-label="jt-ipam object model">
@@ -366,31 +515,68 @@
           <path d="M1012 59 L1024 66 L1012 73 Z"/>
         </g>
         <g font-size="18.5" font-weight="700" text-anchor="middle">
-          <g transform="translate(20,24)"><rect width="146" height="84" rx="16" fill="#eef6fc" stroke="#0369a1" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#0369a1" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 16s5-4.5 5-9a5 5 0 10-10 0c0 4.5 5 9 5 9z"/><circle cx="9" cy="7" r="1.8"/></g><text x="73" y="63" fill="#0369a1" class="zh">機房 / 地點</text><text x="73" y="63" fill="#0369a1" class="en">Room / Site</text></g>
-          <g transform="translate(188,24)"><rect width="146" height="84" rx="16" fill="#f2eefd" stroke="#6d28d9" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#6d28d9" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2.5" width="12" height="13" rx="1.2"/><path d="M3 6.5h12M3 10.5h12"/></g><text x="73" y="63" fill="#6d28d9" class="zh">機櫃</text><text x="73" y="63" fill="#6d28d9" class="en">Rack</text></g>
-          <g transform="translate(356,24)"><rect width="146" height="84" rx="16" fill="#eef0fe" stroke="#4338ca" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#4338ca" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="13" height="8" rx="1.2"/><path d="M5 9h5"/></g><text x="73" y="63" fill="#4338ca" class="zh">裝置</text><text x="73" y="63" fill="#4338ca" class="en">Device</text></g>
-          <g transform="translate(524,24)"><rect width="146" height="84" rx="16" fill="#fdeef5" stroke="#be185d" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#be185d" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5l6.5 3.5L9 9.5 2.5 6 9 2.5z"/><path d="M2.5 9.5L9 13l6.5-3.5"/></g><text x="73" y="63" fill="#be185d" class="zh">虛擬化 (VM)</text><text x="73" y="63" fill="#be185d" class="en">Virtualization</text></g>
-          <g transform="translate(692,24)"><rect width="146" height="84" rx="16" fill="#eaf7f0" stroke="#0c7a43" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#0c7a43" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="6.5"/><path d="M2.5 9h13M9 2.5c2.2 2 2.2 11 0 13M9 2.5c-2.2 2-2.2 11 0 13"/></g><text x="73" y="63" fill="#0c7a43" class="zh">IP 位址</text><text x="73" y="63" fill="#0c7a43" class="en">IP address</text></g>
-          <g transform="translate(860,24)"><rect width="146" height="84" rx="16" fill="#fef6e9" stroke="#b45309" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#b45309" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="2" width="5" height="4" rx="0.8"/><rect x="2" y="12" width="5" height="4" rx="0.8"/><rect x="11" y="12" width="5" height="4" rx="0.8"/><path d="M9 6v3M4.5 12V9.5h9V12"/></g><text x="73" y="63" fill="#b45309" class="zh">子網路</text><text x="73" y="63" fill="#b45309" class="en">Subnet</text></g>
-          <g transform="translate(1028,24)"><rect width="146" height="84" rx="16" fill="#fdeeee" stroke="#c0392b" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#c0392b" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5a1 1 0 011-1h3.5l1.5 1.8h6a1 1 0 011 1v6.2a1 1 0 01-1 1H3.5a1 1 0 01-1-1z"/></g><text x="73" y="63" fill="#c0392b" class="zh">區段</text><text x="73" y="63" fill="#c0392b" class="en">Section</text></g>
+          <g transform="translate(20,24)"><rect width="146" height="84" rx="16" fill="#eef6fc" stroke="#0369a1" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#0369a1" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 16s5-4.5 5-9a5 5 0 10-10 0c0 4.5 5 9 5 9z"/><circle cx="9" cy="7" r="1.8"/></g><text x="73" y="63" fill="#0369a1" class="zh">機房 / 地點</text><text x="73" y="63" fill="#0369a1" class="en">Room / Site</text><text x="73" y="63" fill="#0369a1" class="ja">部屋/拠点</text></g>
+          <g transform="translate(188,24)"><rect width="146" height="84" rx="16" fill="#f2eefd" stroke="#6d28d9" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#6d28d9" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2.5" width="12" height="13" rx="1.2"/><path d="M3 6.5h12M3 10.5h12"/></g><text x="73" y="63" fill="#6d28d9" class="zh">機櫃</text><text x="73" y="63" fill="#6d28d9" class="en">Rack</text><text x="73" y="63" fill="#6d28d9" class="ja">ラック</text></g>
+          <g transform="translate(356,24)"><rect width="146" height="84" rx="16" fill="#eef0fe" stroke="#4338ca" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#4338ca" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="13" height="8" rx="1.2"/><path d="M5 9h5"/></g><text x="73" y="63" fill="#4338ca" class="zh">裝置</text><text x="73" y="63" fill="#4338ca" class="en">Device</text><text x="73" y="63" fill="#4338ca" class="ja">機器</text></g>
+          <g transform="translate(524,24)"><rect width="146" height="84" rx="16" fill="#fdeef5" stroke="#be185d" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#be185d" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5l6.5 3.5L9 9.5 2.5 6 9 2.5z"/><path d="M2.5 9.5L9 13l6.5-3.5"/></g><text x="73" y="63" fill="#be185d" class="zh">虛擬化 (VM)</text><text x="73" y="63" fill="#be185d" class="en">Virtualization</text><text x="73" y="63" fill="#be185d" class="ja">仮想化</text></g>
+          <g transform="translate(692,24)"><rect width="146" height="84" rx="16" fill="#eaf7f0" stroke="#0c7a43" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#0c7a43" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="6.5"/><path d="M2.5 9h13M9 2.5c2.2 2 2.2 11 0 13M9 2.5c-2.2 2-2.2 11 0 13"/></g><text x="73" y="63" fill="#0c7a43" class="zh">IP 位址</text><text x="73" y="63" fill="#0c7a43" class="en">IP address</text><text x="73" y="63" fill="#0c7a43" class="ja">IP アドレス</text></g>
+          <g transform="translate(860,24)"><rect width="146" height="84" rx="16" fill="#fef6e9" stroke="#b45309" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#b45309" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="2" width="5" height="4" rx="0.8"/><rect x="2" y="12" width="5" height="4" rx="0.8"/><rect x="11" y="12" width="5" height="4" rx="0.8"/><path d="M9 6v3M4.5 12V9.5h9V12"/></g><text x="73" y="63" fill="#b45309" class="zh">子網路</text><text x="73" y="63" fill="#b45309" class="en">Subnet</text><text x="73" y="63" fill="#b45309" class="ja">サブネット</text></g>
+          <g transform="translate(1028,24)"><rect width="146" height="84" rx="16" fill="#fdeeee" stroke="#c0392b" stroke-opacity="0.35" filter="url(#nsh)"/><g transform="translate(61,14) scale(1.35)" stroke="#c0392b" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5a1 1 0 011-1h3.5l1.5 1.8h6a1 1 0 011 1v6.2a1 1 0 01-1 1H3.5a1 1 0 01-1-1z"/></g><text x="73" y="63" fill="#c0392b" class="zh">區段</text><text x="73" y="63" fill="#c0392b" class="en">Section</text><text x="73" y="63" fill="#c0392b" class="ja">セクション</text></g>
         </g>
       </svg>
-      <p class="model-cap"><span class="zh">這條鏈不是裝飾：每一層都能往下鑽、彼此互相關聯，而且全部可再歸屬到單位 / 客戶。</span><span class="en">This chain isn't decorative: every level drills down, links to the others, and can be owned by a tenant / client.</span></p>
+      <p class="model-cap"><span class="zh">這條鏈不是裝飾：每一層都能往下鑽、彼此互相關聯，而且全部可再歸屬到單位 / 客戶。</span><span class="en">This chain isn't decorative: every level drills down, links to the others, and can be owned by a tenant / client.</span><span class="ja">この連なりは飾りではありません。どの階層からも掘り下げられ、互いに関連し、そのすべてを組織や顧客に所属させられます。</span></p>
       <div class="grid g3" style="margin-top:30px">
-        <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span><span class="zh">邏輯定址</span><span class="en">Logical addressing</span></h3><p><span class="zh">區段 → 子網路 → IP 位址。一層層收斂，每個位址都知道屬於哪個網段、哪個區段，使用率與閒置一目了然。</span><span class="en">Section → Subnet → IP address. Each IP knows which subnet and section it belongs to, with utilization and free space at a glance.</span></p></div>
-        <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01"/></svg></span><span class="zh">實體資產</span><span class="en">Physical assets</span></h3><p><span class="zh">機房 / 地點 → 機櫃 → 裝置。對應真實機房平面與機櫃 U 位，一台裝置在哪個機房、哪座機櫃、第幾 U 都查得到。</span><span class="en">Room / Site → Rack → Device. Mirrors the real floor plan and U positions — find which room, rack and U slot any device occupies.</span></p></div>
-        <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 8v8M8 6h6a2 2 0 0 1 2 2v2M8 18h6a2 2 0 0 0 2-2v-2"/></svg></span><span class="zh">關聯與歸屬</span><span class="en">Links &amp; ownership</span></h3><p><span class="zh">一個 IP 指派給一台裝置、虛擬化的 VM 對應裝置並佔用 IP；點任一節點即可深入，全部還能再歸屬到單位 / 客戶做隔離與授權。</span><span class="en">An IP maps to a device, VMs map to devices and consume IPs; click any node to drill in, and everything can be owned by a tenant / client for isolation and access control.</span></p></div>
+        <div class="card"><h3 id="model-logical-addressing"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></span><span class="zh">邏輯定址</span><span class="en">Logical addressing</span><span class="ja">論理的なアドレス管理</span></h3><p><span class="zh">區段 → 子網路 → IP 位址。一層層收斂，每個位址都知道屬於哪個網段、哪個區段，使用率與閒置一目了然。</span><span class="en">Section → Subnet → IP address. Each IP knows which subnet and section it belongs to, with utilization and free space at a glance.</span><span class="ja">セクション → サブネット → IP アドレス。各 IP はどのサブネット・どのセクションに属するかを持ち、使用率と空き範囲がひと目で分かります。</span></p></div>
+        <div class="card"><h3 id="model-physical-assets"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h.01M7 17h.01"/></svg></span><span class="zh">實體資產</span><span class="en">Physical assets</span><span class="ja">物理資産</span></h3><p><span class="zh">機房 / 地點 → 機櫃 → 裝置。對應真實機房平面與機櫃 U 位，一台裝置在哪個機房、哪座機櫃、第幾 U 都查得到。</span><span class="en">Room / Site → Rack → Device. Mirrors the real floor plan and U positions: find which room, rack and U slot any device occupies.</span><span class="ja">サーバルーム/拠点 → ラック → 機器。実際のフロア配置と U 位置をそのまま写し取り、どの機器がどの部屋のどのラックの何 U にあるかを追えます。</span></p></div>
+        <div class="card"><h3 id="model-links-ownership"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M6 8v8M8 6h6a2 2 0 0 1 2 2v2M8 18h6a2 2 0 0 0 2-2v-2"/></svg></span><span class="zh">關聯與歸屬</span><span class="en">Links &amp; ownership</span><span class="ja">関連と所属</span></h3><p><span class="zh">一個 IP 指派給一台裝置、虛擬化的 VM 對應裝置並佔用 IP；點任一節點即可深入，全部還能再歸屬到單位 / 客戶做隔離與授權。</span><span class="en">An IP maps to a device, VMs map to devices and consume IPs; click any node to drill in, and everything can be owned by a tenant / client for isolation and access control.</span><span class="ja">IP は機器に割り当てられ、仮想化の VM は機器に対応して IP を消費します。どのノードからも掘り下げられ、そのすべてを組織や顧客に所属させて分離と権限付与が行えます。</span></p></div>
       </div>
     </div>
   </div>
 </section>
 
-<section class="callout-sec">
+<section id="shelves">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow"><span class="zh">台灣機房實況</span><span class="en">Real-world server rooms</span><span class="ja">現場のサーバルーム</span></span>
+      <h2><span class="zh">不是每間機房都有 42U 機櫃</span><span class="en">Not every server room has a 42U rack</span><span class="ja">すべてのサーバルームに 42U ラックがあるわけではありません</span></h2>
+      <p><span class="zh">中小企業、實驗室、工作室與分公司的設備，很多其實放在鍍鉻層架或 IKEA IVAR 上。jt-ipam 把層架當成正式的機架型態：畫得出來、算得清楚，每台設備在第幾層、哪個位置都查得到，不必硬把層架假裝成 42U 機櫃。</span><span class="en">In small businesses, labs, studios and branch offices, a lot of gear actually lives on chrome wire shelving or an IKEA IVAR. jt-ipam treats shelving as a first-class rack type: drawn the way it really looks, measured properly, and every device findable by level and position, no pretending your shelf is a 42U rack.</span><span class="ja">中小企業・研究室・スタジオ・支社では、機器の多くが実はスチールラックや IKEA IVAR の上に置かれています。jt-ipam はシェルフを正式なラックの種類として扱います。実物どおりに描かれ、寸法も正しく計算され、どの機器が何段目のどこにあるかも調べられます。シェルフを 42U ラックに見立てる必要はありません。</span></p>
+    </div>
+
+    <ul class="shelf-list">
+      <li><span class="zh"><b>每種都照實物畫：</b>標準機櫃（以 U 計）、鍍鉻層架（圓管立柱）、角鋼層架（L 型立柱）、木質層架（松木側架）、IKEA KALLAX 格子櫃，還有 LackRack。示意圖依型態畫出層板、電鍍立柱、帶葫蘆孔的角鋼、帶調整孔的松木側架或一格一格的格子。</span><span class="en"><b>Each type drawn like the real thing:</b> standard racks (in U), chrome wire shelving (round posts), slotted angle steel shelving (L-shaped posts), wooden shelving (pine side frames), IKEA KALLAX cube units and LackRack, each with its own boards, chrome posts, keyholed angle steel, drilled pine sides or cubes.</span><span class="ja"><b>どの種類も実物どおりに：</b>標準ラック（U 単位）、スチールラック（丸パイプ支柱）、アングル棚（L 字型支柱）、木製シェルフ（パイン材サイドフレーム）、IKEA KALLAX、そして LackRack。種類に応じて棚板・メッキ支柱・鍵穴付きのアングル・調整穴付きのサイドフレーム・マス目を描き分けます。</span></li>
+      <li><span class="zh"><b>台灣最常見的角鋼層架：</b>40mm L 型立柱連整排葫蘆孔、每層一條鋼橫桿加夾板，都照市售免螺絲角鋼的實際規格畫；90×45×180 公分四層這類最常見的尺寸一鍵套用，黑、白、鍍鋅三色。</span><span class="en"><b>Slotted angle steel, the most common shelving in Taiwan:</b> 40 mm L-shaped posts with their row of keyholes and a steel beam with a plywood board on each level, drawn to the specs of boltless angle shelving sold here; the most common sizes such as 90 × 45 × 180 cm with four levels are one click away, in black, white or galvanized.</span><span class="ja"><b>台湾で最も一般的なアングル棚：</b>鍵穴が並ぶ 40 mm の L 字型支柱と、段ごとの鋼製ビーム＋合板を、市販のボルトレスアングル棚の実寸どおりに描きます。90 × 45 × 180 cm・4 段といった定番サイズはワンクリックで、色はブラック・ホワイト・亜鉛めっきから選べます。</span></li>
+      <li><span class="zh"><b>IKEA KALLAX 與 LackRack：</b>KALLAX 一格一格畫，外框比隔板厚，選格數（2×4、4×4…）就好；拿 LACK 邊桌當 19 吋機櫃的 LackRack，一張 8U、疊幾張都畫得出來。</span><span class="en"><b>IKEA KALLAX and LackRack:</b> KALLAX is drawn cube by cube with its thicker outer frame: just pick the grid (2×4, 4×4 …); LackRack, the IKEA LACK side table used as a 19" rack, holds 8U per table and stacks as high as you like.</span><span class="ja"><b>IKEA KALLAX と LackRack：</b>KALLAX はマスごとに、外枠を仕切りより厚く描きます。マス数（2×4、4×4…）を選ぶだけです。IKEA LACK サイドテーブルを 19 インチラックとして使う LackRack は 1 台 8U、何台重ねても描けます。</span></li>
+      <li><span class="zh"><b>以「層」計，每層高度各自設定：</b>層板本來就能一層一層調，最下面留高一點放 UPS 也畫得出來；層板厚度與最下層板離地高度都會算進去。</span><span class="en"><b>Counted in levels, each with its own height:</b> shelf boards are adjustable one by one, so a tall bottom level for the UPS draws correctly; board thickness and floor clearance are part of the geometry.</span><span class="ja"><b>「段」単位で、段ごとに高さを設定：</b>棚板はもともと 1 段ずつ調整できるので、UPS 用に最下段を高くした構成もそのまま描けます。棚板の厚さと最下段の床からの高さも計算に含まれます。</span></li>
+      <li><span class="zh"><b>一層放好幾台：</b>左右並排、上下疊放、不必放滿，空著的位置一眼就看得到；層架沒有天花板，頂板上面也能放設備。</span><span class="en"><b>Several devices per level:</b> side by side, stacked, or leaving space free; empty spots are obvious at a glance. Shelving has no ceiling, so the top board holds gear too.</span><span class="ja"><b>1 段に複数台：</b>左右に並べても、上下に重ねても、空きを残してもかまいません。空いている場所はひと目で分かります。シェルフには天井がないので、天板の上にも機器を置けます。</span></li>
+      <li><span class="zh"><b>IKEA IVAR 一鍵套用：</b>179 公分側架、18mm 層板，連 32mm 孔距的調整孔都照實物規格畫。</span><span class="en"><b>One-click IKEA IVAR preset:</b> 179 cm side frames and 18 mm boards, down to the 32 mm-pitch adjustment holes.</span><span class="ja"><b>IKEA IVAR をワンクリックで：</b>179 cm のサイドフレームと 18 mm の棚板を、32 mm ピッチの調整穴まで実物の寸法どおりに描きます。</span></li>
+      <li><span class="zh"><b>層數建錯不用一台台搬：</b>插入或刪除一層，上面的裝置整批跟著移；做之前先完整預覽，做完可以復原。</span><span class="en"><b>Got the level count wrong? No moving devices one by one:</b> insert or remove a level and everything above shifts with it, previewed first and undoable after.</span><span class="ja"><b>段数を間違えても 1 台ずつ移す必要はありません：</b>段を挿入・削除すると、その上の機器がまとめて移動します。実行前に内容をすべてプレビューでき、実行後は元に戻せます。</span></li>
+      <li><span class="zh"><b>匯出與 AI 也看得懂層架：</b>SVG/PNG/draw.io 匯出同樣是層架外觀；問 AI 助理「哪一層還有空位」，它會照實際的層與位置回答。</span><span class="en"><b>Exports and the AI understand shelving too:</b> SVG / PNG / draw.io exports keep the shelf look, and asking the assistant “which level still has room” gets an answer based on real levels and positions.</span><span class="ja"><b>エクスポートと AI もシェルフを理解：</b>SVG / PNG / draw.io へのエクスポートもシェルフの見た目のまま。AI アシスタントに「どの段に空きがあるか」と聞けば、実際の段と位置に基づいて答えます。</span></li>
+    </ul>
+
+    <div class="shelf-shots">
+      <figure>
+        <img class="shot" data-shot="rack-shelves" src="shots/zh/rack-shelves.png" loading="lazy" alt="IKEA IVAR 木質層架與鍍鉻層架的示意圖" />
+        <figcaption><span class="zh">左：IKEA IVAR 木質層架（9 層、每層高度不同，頂板上方也放了設備）；右：90 × 60 × 150 公分五層鍍鉻層架，一層並排三台 NAS。兩張都是我們自己機房正在使用的層架，直接截自正式系統。</span><span class="en">Left: an IKEA IVAR wooden shelf (9 levels of different heights, with gear sitting on the top board). Right: a 90 × 60 × 150 cm five-level chrome wire shelf with three NAS units side by side. Both are real shelves in our own server room, captured from our production system.</span><span class="ja">左：IKEA IVAR の木製シェルフ（9 段、段ごとに高さが異なり、天板の上にも機器を置いています）。右：90 × 60 × 150 cm の 5 段スチールラックで、1 段に NAS を 3 台並べています。どちらも私たちのサーバルームで実際に使っているシェルフで、本番システムからそのまま撮影しました。</span></figcaption>
+      </figure>
+      <figure>
+        <img class="shot" data-shot="rack-shelf-form" src="shots/zh/rack-shelf-form.png" loading="lazy" alt="層架設定：型態、IKEA IVAR 預設、層板厚度與逐層高度" />
+        <figcaption><span class="zh">層架設定：型態、IKEA IVAR 預設、層板厚度與逐層高度。</span><span class="en">Shelf settings: type, the IKEA IVAR preset, board thickness and per-level heights.</span><span class="ja">シェルフの設定：種類、IKEA IVAR プリセット、棚板の厚さと段ごとの高さ。</span></figcaption>
+      </figure>
+      <figure class="shelf-wide">
+        <img class="shot" data-shot="rack-more-kinds" src="shots/zh/rack-more-kinds.png" loading="lazy" alt="角鋼層架、IKEA KALLAX 與 LackRack 的示意圖" />
+        <figcaption><span class="zh">左：90 × 45 × 180 公分四層的黑色角鋼層架（頂板上面也放了一台）；中：KALLAX 2×4，一格放一台；右：兩張 LACK 邊桌疊起來的 LackRack（16U），桌面上也放了一台。示範資料。</span><span class="en">Left: a black 90 × 45 × 180 cm four-level angle steel shelf (with a box on the top board); middle: a KALLAX 2×4 with one device per cube; right: a LackRack of two stacked LACK side tables (16U), with one more box on the tabletop. Demo data.</span><span class="ja">左：90 × 45 × 180 cm・4 段の黒いアングル棚（天板の上にも 1 台）、中：KALLAX 2×4（1 マスに 1 台）、右：LACK サイドテーブルを 2 台重ねた LackRack（16U）で、天板の上にも 1 台置いています。デモデータです。</span></figcaption>
+      </figure>
+    </div>
+    <p class="tm-note"><span class="zh">IKEA、IVAR、KALLAX 與 LACK 是 Inter IKEA Systems B.V. 的商標；jt-ipam 與其沒有任何關係，這裡只是說明相容的層架規格。LackRack 是 eth0 社群取的名字。</span><span class="en">IKEA, IVAR, KALLAX and LACK are trademarks of Inter IKEA Systems B.V. jt-ipam is not affiliated with them; the names are used only to describe compatible shelf dimensions. LackRack is a name coined by the eth0 community.</span><span class="ja">IKEA、IVAR、KALLAX および LACK は Inter IKEA Systems B.V. の商標です。jt-ipam はこれらと一切関係がなく、対応するシェルフの寸法を説明するためにのみ名称を使用しています。LackRack は eth0 コミュニティが付けた名前です。</span></p>
+  </div>
+</section>
+
+<section id="positioning" class="callout-sec">
   <div class="wrap callout">
     <span class="ci"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg></span>
     <div>
-      <h3><span class="zh">定位：集中記錄與管理，不是網路管控 / 執法工具</span><span class="en">What it is: documentation and central management — not a network-control or enforcement tool</span></h3>
-      <p><span class="zh">jt-ipam 的核心是把 IP、子網路、裝置與整合進來的網路狀態集中記錄、管理，作為你的「事實來源」與稽核依據。它<b>不會</b>主動發放或回收實體位址、不會攔截流量、也不會推送 DHCP 拒絕或防火牆封鎖規則去阻止未登錄的裝置上線。像「IP 申請審核」這類功能屬於<b>管理簽核紀錄</b>：核准或駁回只影響系統內的登錄與授權，不會在網路層面強制阻擋——實際的位址發放與封鎖，仍由你的 DHCP、防火牆、NAC 等系統負責。</span><span class="en">jt-ipam's job is to centrally record and manage IPs, subnets, devices and the network state it integrates — your source of truth and audit trail. It does <b>not</b> hand out or revoke real addresses, intercept traffic, or push DHCP-deny / firewall-block rules to stop unregistered devices from getting online. Workflows like "IP request approval" are <b>administrative sign-off records</b>: approving or rejecting only affects records and authorization inside the system, never enforcement on the wire — actual address assignment and blocking remain the job of your DHCP, firewall and NAC.</span></p>
+      <h3><span class="zh">定位：集中記錄與管理，不是網路管控 / 執法工具</span><span class="en">What it is: documentation and central management, not a network-control or enforcement tool</span><span class="ja">位置づけ：記録と集中管理のための道具であり、ネットワークを制御・強制するものではありません</span></h3>
+      <p><span class="zh">jt-ipam 的核心是把 IP、子網路、裝置與整合進來的網路狀態集中記錄、管理，作為你的「事實來源」與稽核依據。它<b>不會</b>主動發放或回收實體位址、不會攔截流量、也不會推送 DHCP 拒絕或防火牆封鎖規則去阻止未登錄的裝置上線。像「IP 申請審核」這類功能屬於<b>管理簽核紀錄</b>：核准或駁回只影響系統內的登錄與授權，不會在網路層面強制阻擋；實際的位址發放與封鎖，仍由你的 DHCP、防火牆、NAC 等系統負責。</span><span class="en">jt-ipam's job is to centrally record and manage IPs, subnets, devices and the network state it integrates, as your source of truth and audit trail. It does <b>not</b> hand out or revoke real addresses, intercept traffic, or push DHCP-deny / firewall-block rules to stop unregistered devices from getting online. Workflows like "IP request approval" are <b>administrative sign-off records</b>: approving or rejecting only affects records and authorization inside the system, never enforcement on the wire; actual address assignment and blocking remain the job of your DHCP, firewall and NAC.</span><span class="ja">jt-ipam の役割は、IP・サブネット・機器と連携先から取り込んだネットワークの状態を集中的に記録・管理し、「事実の出どころ」と監査の根拠にすることです。実際のアドレスを配ったり取り上げたり、通信を遮ったり、未登録の機器を止めるために DHCP の拒否やファイアウォールの遮断ルールを投入することは<b>ありません</b>。「IP 申請の承認」のような機能は<b>管理上の承認記録</b>です。承認や却下はシステム内の登録と権限にのみ影響し、ネットワーク上で強制することはありません。実際のアドレス払い出しと遮断は、引き続き DHCP・ファイアウォール・NAC の仕事です。</span></p>
     </div>
   </div>
 </section>
@@ -398,143 +584,173 @@
 <section id="integrations" class="alt">
   <div class="wrap">
     <div class="sec-head">
-      <h2><span class="zh">原生整合多套開源軟體</span><span class="en">Integrates many open-source tools</span></h2>
-      <p><span class="zh">核心價值就是「整合」：把你既有的多套開源網路與安全軟體串成一個檢視中樞：集中檢視、單向拉取、不改動來源。並支援從 phpIPAM 匯入既有資料、無痛遷移。</span><span class="en">Integration is the core value: tie your existing open-source network & security tools into one hub — centralized, pull-only, non-invasive. Plus data import & smooth migration from phpIPAM.</span></p>
+      <h2><span class="zh">原生整合多套開源軟體</span><span class="en">Integrates many open-source tools</span><span class="ja">多数のオープンソースとネイティブに連携</span></h2>
+      <p><span class="zh">核心價值就是「整合」：把你既有的多套開源網路與安全軟體串成一個檢視中樞：集中檢視、單向拉取、不改動來源。並支援從 phpIPAM 匯入既有資料、無痛遷移。</span><span class="en">Integration is the core value: tie your existing open-source network & security tools into one hub: centralized, pull-only, non-invasive. Plus data import & smooth migration from phpIPAM.</span><span class="ja">中心的な価値は「連携」です。既存のオープンソースのネットワーク/セキュリティ製品をひとつの閲覧ハブにまとめます。集中閲覧、取得のみ、元のシステムは変更しません。さらに phpIPAM からのデータ取り込みに対応し、移行もスムーズです。</span></p>
     </div>
-    <div class="hub-wrap">
-      <svg class="hub-svg" viewBox="0 0 900 520" role="img"
-           aria-label="jt-ipam integration hub diagram" preserveAspectRatio="xMidYMid meet">
-        <defs>
-          <radialGradient id="hubg" cx="50%" cy="50%" r="60%">
-            <stop offset="0%" stop-color="#18a058"/><stop offset="100%" stop-color="#0d7a40"/>
-          </radialGradient>
-        </defs>
-        <!-- spokes -->
-        <g stroke-width="2" fill="none" opacity="0.5">
-          <line x1="450" y1="260" x2="450" y2="75"  stroke="#0ea5e9"/>
-          <line x1="450" y1="260" x2="662" y2="129" stroke="#f59e0b"/>
-          <line x1="450" y1="260" x2="750" y2="260" stroke="#8b5cf6"/>
-          <line x1="450" y1="260" x2="662" y2="391" stroke="#ef4444"/>
-          <line x1="450" y1="260" x2="450" y2="445" stroke="#0891b2"/>
-          <line x1="450" y1="260" x2="238" y2="391" stroke="#14b8a6"/>
-          <line x1="450" y1="260" x2="150" y2="260" stroke="#f43f5e"/>
-          <line x1="450" y1="260" x2="238" y2="129" stroke="#6366f1"/>
-        </g>
-        <!-- spoke nodes(單行標籤，避免在窄螢幕被截斷；完整清單見下方 chips)-->
-        <g class="hub-node" font-size="15" font-weight="600" text-anchor="middle">
-          <g transform="translate(450,75)"><rect x="-72" y="-19" width="144" height="38" rx="10" fill="#0ea5e9"/><text y="5" fill="#fff">LibreNMS</text></g>
-          <g transform="translate(662,129)"><rect x="-72" y="-19" width="144" height="38" rx="10" fill="#f59e0b"/><text y="5" fill="#fff">OPNsense</text></g>
-          <g transform="translate(750,260)"><rect x="-72" y="-19" width="144" height="38" rx="10" fill="#8b5cf6"/><text y="5" fill="#fff">Proxmox VE</text></g>
-          <g transform="translate(662,391)"><rect x="-72" y="-19" width="144" height="38" rx="10" fill="#ef4444"/><text y="5" fill="#fff">LLM Server</text></g>
-          <g transform="translate(450,445)"><rect x="-72" y="-19" width="144" height="38" rx="10" fill="#0891b2"/><text y="5" fill="#fff">Graylog</text></g>
-          <g transform="translate(238,391)"><rect x="-72" y="-19" width="144" height="38" rx="10" fill="#14b8a6"/><text y="5" fill="#fff">Wazuh</text></g>
-          <g transform="translate(150,260)"><rect x="-72" y="-19" width="144" height="38" rx="10" fill="#f43f5e"/><text y="5" fill="#fff">phpIPAM</text></g>
-          <g transform="translate(238,129)"><rect x="-72" y="-19" width="144" height="38" rx="10" fill="#6366f1"/><text y="5" fill="#fff">DNS</text></g>
-        </g>
-        <!-- hub -->
-        <circle cx="450" cy="260" r="62" fill="url(#hubg)"/>
-        <text x="450" y="254" text-anchor="middle" fill="#fff" font-size="20" font-weight="800">jt-ipam</text>
-        <text x="450" y="276" text-anchor="middle" fill="#cfeede" font-size="11">IPAM hub</text>
-        <text x="450" y="291" text-anchor="middle" fill="#cfeede" font-size="10">pull-only · on-prem</text>
-      </svg>
-      <p class="hub-cap"><span class="zh">所有整合皆為單向拉取、不改動來源；資料集中在自家機房。</span><span class="en">All integrations are pull-only and non-invasive; data stays centralized on-prem.</span></p>
+    <!-- 整合配線圖（2026-10-06 改版，原本是卡片＋膠囊＋圓球）：左邊是唯讀拉取的來源，右邊是提供給其他系統的出口，
+         中間是 jt-ipam 機箱面板。三語文字、手機自動改上下排。 -->
+    <div class="wire" role="figure" aria-label="jt-ipam integration map">
+      <div class="w-in">
+        <div class="w-head"><span><span class="zh">資料來源</span><span class="en">Sources</span><span class="ja">データソース</span></span><em><span class="zh">唯讀拉取，不改動來源</span><span class="en">read-only pull, never modified</span><span class="ja">読み取りのみ、変更しない</span></em></div>
+        <div class="w-row"><span class="w-k"><span class="zh">防火牆與路由</span><span class="en">Firewalls &amp; routers</span><span class="ja">ファイアウォールとルーター</span></span><span class="w-v"><i>OPNsense</i><i>pfSense</i><i>FortiGate</i><i>Palo Alto</i><i>MikroTik RouterOS</i></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">DNS</span><span class="en">DNS</span><span class="ja">DNS</span></span><span class="w-v"><i>PowerDNS</i><i>BIND9</i><i>Unbound</i><i>Windows DNS</i><i>Univention UCS</i><i>AdGuard Home</i></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">DHCP</span><span class="en">DHCP</span><span class="ja">DHCP</span></span><span class="w-v"><i>Windows DHCP</i><i>Kea DHCP</i><i>ISC DHCP</i></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">監控</span><span class="en">Monitoring</span><span class="ja">監視</span></span><span class="w-v"><i>LibreNMS</i><i>Zabbix</i></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">虛擬化</span><span class="en">Virtualization</span><span class="ja">仮想化</span></span><span class="w-v"><i>Proxmox VE</i><i>VMware ESXi / vCenter</i></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">資安與資產</span><span class="en">Security &amp; inventory</span><span class="ja">セキュリティと資産</span></span><span class="w-v"><i>Wazuh</i><i>OCS Inventory NG</i><i>RustDesk Server</i></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">參考資料</span><span class="en">Reference data</span><span class="ja">参照データ</span></span><span class="w-v"><i>RIPE</i><i>TWNIC</i><i>MaxMind GeoIP</i><i>IEEE OUI</i><i>Recog</i></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">匯入與遷移</span><span class="en">Import &amp; migration</span><span class="ja">取り込みと移行</span></span><span class="w-v"><i>phpIPAM</i><i>CSV</i></span></div>
+      </div>
+      <div class="w-core"><span class="w-leds" aria-hidden="true"><i class="on"></i><i class="on"></i><i></i><i class="on"></i><i></i><i class="on"></i></span><b>jt-ipam</b><small><span class="zh">IPAM 中樞<br>在自家機房</span><span class="en">IPAM hub<br>on-prem</span><span class="ja">IPAM ハブ<br>自社設備内</span></small></div>
+      <div class="w-out">
+        <div class="w-head"><span><span class="zh">提供給其他系統</span><span class="en">Serves other systems</span><span class="ja">ほかのシステムへ</span></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">記錄補上主機名稱</span><span class="en">Log enrichment</span><span class="ja">ログへのホスト名付与</span></span><span class="w-v"><i>Graylog (Lookup Table)</i></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">AI</span><span class="en">AI</span><span class="ja">AI</span></span><span class="w-v"><i>LLM Server</i><i>MCP server</i></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">API</span><span class="en">API</span><span class="ja">API</span></span><span class="w-v"><i>REST API</i></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">通知</span><span class="en">Notifications</span><span class="ja">通知</span></span><span class="w-v"><i>Email</i><i>Webhook</i></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">即時通訊</span><span class="en">Chat</span><span class="ja">チャット</span></span><span class="w-v"><i>Telegram</i><i>Slack</i><i>Teams</i><i>Nextcloud Talk</i><i>Zulip</i></span></div>
+        <div class="w-row w-sub"><span class="w-s"><span class="zh">你開啟時才寫回</span><span class="en">Writes back only when you enable it</span><span class="ja">有効にしたときだけ書き戻す</span></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">防火牆別名</span><span class="en">Firewall aliases</span><span class="ja">ファイアウォールのエイリアス</span></span><span class="w-v"><i>OPNsense</i></span></div>
+        <div class="w-row"><span class="w-k"><span class="zh">憑證派送</span><span class="en">Certificate delivery</span><span class="ja">証明書の配布</span></span><span class="w-v"><i>nginx</i><i>Apache</i><i>Proxmox VE</i><i>IIS</i></span></div>
+      </div>
+      <span class="w-brk w-brk-l" aria-hidden="true"></span><span class="w-brk w-brk-r" aria-hidden="true"></span>
     </div>
-    <div class="integrations">
-      <span class="chip"><i></i>phpIPAM<span class="zh">(資料匯入 / 遷移)</span><span class="en"> (data import / migration)</span></span>
-      <span class="chip"><i></i>PowerDNS</span>
-      <span class="chip"><i></i>BIND9</span>
-      <span class="chip"><i></i>Unbound</span>
-      <span class="chip"><i></i>Windows DNS</span>
-      <span class="chip"><i></i>Univention UCS</span>
-      <span class="chip"><i></i>LibreNMS</span>
-      <span class="chip"><i></i>OPNsense</span>
-      <span class="chip"><i></i>pfSense</span>
-      <span class="chip"><i></i>FortiGate</span>
-      <span class="chip"><i></i>Windows DHCP</span>
-      <span class="chip"><i></i>Wazuh</span>
-      <span class="chip"><i></i>Proxmox VE</span>
-      <span class="chip"><i></i>VMware ESXi / vCenter</span>
-      <span class="chip"><i></i>LLM Server</span>
-      <span class="chip"><i></i>RIPE</span>
-      <span class="chip"><i></i>TWNIC</span>
-      <span class="chip"><i></i>MaxMind GeoIP</span>
-      <span class="chip"><i></i>Graylog (Lookup Table)</span>
-    </div>
+    <p class="hub-cap"><span class="zh">資料來源一律唯讀拉取、不改動來源，資料集中在自家機房；只有你明確開啟的 OPNsense 別名推送與憑證派送會寫回。</span><span class="en">Sources are always read-only and never modified, and the data stays on-prem; only OPNsense alias push and certificate delivery write back, and only when you enable them.</span><span class="ja">データソースは常に読み取りのみで変更せず、データは自社設備内に集約されます。書き戻すのは、明示的に有効にした OPNsense エイリアスへの反映と証明書の配布だけです。</span></p>
     <div class="gl-note">
-      <h4><span class="zh">Graylog 記錄補上主機名稱</span><span class="en">Graylog log enrichment</span><span class="zh" style="font-weight:500;color:var(--muted);margin-left:8px">— 讓 Graylog 記錄中的 IP 更具可視性</span><span class="en" style="font-weight:500;color:var(--muted);margin-left:8px">— make IPs in Graylog logs human-readable</span></h4>
-      <p><span class="zh">jt-ipam 即時產生 IP → 主機名稱 / FQDN 對照表，供 Graylog「DSV File from HTTP」配接器抓取，把記錄中只有 IP 的事件自動補上可讀名稱。在管理區開關、設定路徑與 token 即可，詳細欄位與格式說明見設定頁與 README。</span><span class="en">jt-ipam serves a live IP → hostname / FQDN lookup table for Graylog's "DSV File from HTTP" adapter, so log events carrying only an IP get a readable name automatically. Toggle it and set the path and token in the admin area; field and format details are on the settings page and in the README.</span></p>
+      <h4><span class="zh">Graylog 記錄補上主機名稱</span><span class="en">Graylog log enrichment</span><span class="ja">Graylog のログにホスト名を補う</span><span class="zh" style="font-weight:500;color:var(--muted);margin-left:8px">讓 Graylog 記錄中的 IP 更具可視性</span><span class="en" style="font-weight:500;color:var(--muted);margin-left:8px">make IPs in Graylog logs human-readable</span><span class="ja" style="font-weight:500;color:var(--muted);margin-left:8px">Graylog のログに出る IP を読める名前にする</span></h4>
+      <p><span class="zh">jt-ipam 即時產生 IP → 主機名稱 / FQDN 對照表，供 Graylog「DSV File from HTTP」配接器抓取，把記錄中只有 IP 的事件自動補上可讀名稱。在管理區開關、設定路徑與 token 即可，詳細欄位與格式說明見設定頁與 README。</span><span class="en">jt-ipam serves a live IP → hostname / FQDN lookup table for Graylog's "DSV File from HTTP" adapter, so log events carrying only an IP get a readable name automatically. Toggle it and set the path and token in the admin area; field and format details are on the settings page and in the README.</span><span class="ja">jt-ipam は IP → ホスト名 / FQDN の対照表をリアルタイムに生成し、Graylog の「DSV File from HTTP」アダプタから取得できるようにします。IP しか含まないログイベントに、読める名前が自動で付きます。管理画面で有効化し、パスとトークンを設定するだけです。項目や形式の詳細は設定ページと README を参照してください。</span></p>
     </div>
   </div>
 </section>
 
+<section id="autocreate">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow"><span class="zh">資料來源行為</span><span class="en">Source behaviour</span><span class="ja">データソースの挙動</span></span>
+      <h2><span class="zh">哪些來源會自己新增 IP 紀錄？</span><span class="en">Which sources create IP records on their own?</span><span class="ja">自分で IP レコードを作るソースはどれか</span></h2>
+      <p><span class="zh">整合看到一個 IPAM 裡還沒有的位址時，行為不是每個來源都一樣，而且會直接影響「未授權 IP」異常偵測（它的判定是「ARP 看得到、IPAM 沒有」）。</span><span class="en">When an integration sees an address IPAM does not have, the behaviour differs by source, and it directly affects the &quot;unauthorised IPs&quot; anomaly check, whose test is &quot;seen in ARP, absent from IPAM&quot;.</span><span class="ja">連携先が IPAM にまだ無いアドレスを見つけたとき、その扱いはソースごとに異なります。これは「未許可 IP」の異常検知（判定基準は「ARP では見えるが IPAM には無い」）に直接影響します。</span></p>
+    </div>
+
+    <!-- 2026-10-01 改版：以前一張四欄表，第一欄塞了十一個產品、其他欄被擠成兩三行（使用者回報排得不好看）。
+         會自動建立的來源用三欄表（開關與預設合成一欄、欄寬固定）；只比對的來源改成標籤、每套產品分開列。 -->
+    <h3 class="src-sub"><span class="zh">會自動建立的來源（都有開關）</span><span class="en">Sources that may create records (each has a switch)</span><span class="ja">レコードを作ることがあるソース（それぞれ切り替え可能）</span></h3>
+    <div class="tbl-wrap">
+      <table class="src-tbl">
+        <colgroup><col style="width:24%"><col style="width:40%"><col style="width:36%"></colgroup>
+        <thead>
+          <tr>
+            <th><span class="zh">來源</span><span class="en">Source</span><span class="ja">ソース</span></th>
+            <th><span class="zh">IPAM 沒有該位址時</span><span class="en">When IPAM has no such address</span><span class="ja">IPAM にそのアドレスが無いとき</span></th>
+            <th><span class="zh">開關與預設</span><span class="en">Switch and default</span><span class="ja">切り替えと既定値</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="src-name"><span class="zh">掃描代理</span><span class="en">Scan agent</span><span class="ja">スキャンエージェント</span></td>
+              <td><span class="zh">可自動建立（限已指派且有開掃描的子網路）</span><span class="en">May create (only in assigned subnets with scanning on)</span><span class="ja">作成することがあります（割り当て済みかつスキャン有効なサブネットに限る）</span></td>
+              <td><div class="src-toggle"><span class="zh">「自動收錄未登錄的 IP」</span><span class="en">&quot;Record unregistered IPs automatically&quot;</span><span class="ja">「未登録の IP を自動的に記録する」</span></div><span class="dflt off">✕ <span class="zh">預設關閉</span><span class="en">off by default</span><span class="ja">既定で無効</span></span></td></tr>
+          <tr><td class="src-name">LibreNMS</td>
+              <td><span class="zh">可自動建立（只建裝置主 IP）</span><span class="en">May create (device primary IP only)</span><span class="ja">作成することがあります（機器の主 IP のみ）</span></td>
+              <td><div class="src-toggle"><span class="zh">「自動建立裝置主 IP」</span><span class="en">&quot;Auto-create device primary IPs&quot;</span><span class="ja">「機器の主 IP を自動作成する」</span></div><span class="dflt on">✓ <span class="zh">預設開啟</span><span class="en">on by default</span><span class="ja">既定で有効</span></span></td></tr>
+          <tr><td class="src-name"><span class="zh">LibreNMS（ARP 表）</span><span class="en">LibreNMS (ARP table)</span><span class="ja">LibreNMS（ARP テーブル）</span></td>
+              <td><span class="zh">可自動建立（ARP 學到的位址；預設要交換器 MAC 表 24 小時內也看過，避免 ARP 快取很久才清而把早已離開的設備建進來）</span><span class="en">May create (addresses learned from ARP; by default a switch MAC table must also have seen the MAC within 24 hours, so long-lived ARP caches do not bring back devices that left long ago)</span><span class="ja">作成することがあります（ARP で学習したアドレス。既定ではスイッチの MAC テーブルでも 24 時間以内に見えていることが条件。ARP キャッシュが長く残っても、とっくにいなくなった機器は作成しません）</span></td>
+              <td><div class="src-toggle"><span class="zh">「依 ARP 表自動建立 IP」</span><span class="en">&quot;Create IPs from the ARP table&quot;</span><span class="ja">「ARP テーブルから IP を作成する」</span></div><span class="dflt off">✕ <span class="zh">預設關閉</span><span class="en">off by default</span><span class="ja">既定で無効</span></span></td></tr>
+          <tr><td class="src-name">Proxmox VE</td>
+              <td><span class="zh">可自動建立</span><span class="en">May create</span><span class="ja">作成することがあります</span></td>
+              <td><div class="src-toggle"><span class="zh">「信任虛擬化取得的 IP」</span><span class="en">&quot;Trust addresses from virtualization&quot;</span><span class="ja">「仮想化から得た IP を信頼する」</span></div><span class="dflt off">✕ <span class="zh">預設關閉</span><span class="en">off by default</span><span class="ja">既定で無効</span></span></td></tr>
+          <tr><td class="src-name">VMware ESXi / vCenter</td>
+              <td><span class="zh">可自動建立</span><span class="en">May create</span><span class="ja">作成することがあります</span></td>
+              <td><div class="src-toggle"><span class="zh">「信任虛擬化取得的 IP」</span><span class="en">&quot;Trust addresses from virtualization&quot;</span><span class="ja">「仮想化から得た IP を信頼する」</span></div><span class="dflt off">✕ <span class="zh">預設關閉</span><span class="en">off by default</span><span class="ja">既定で無効</span></span></td></tr>
+          <tr><td class="src-name">OPNsense / pfSense</td>
+              <td><span class="zh">可自動建立（DHCP 租約）</span><span class="en">May create (DHCP leases)</span><span class="ja">作成することがあります（DHCP リース）</span></td>
+              <td><div class="src-toggle"><span class="zh">「自動建立 IPAM 沒有的位址」</span><span class="en">&quot;Create addresses IPAM does not have&quot;</span><span class="ja">「IPAM に無いアドレスを作成する」</span></div><span class="dflt off">✕ <span class="zh">預設關閉</span><span class="en">off by default</span><span class="ja">既定で無効</span></span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="src-blocks">
+      <div class="src-block">
+        <h3 class="src-sub"><span class="zh">只比對既有，不建</span><span class="en">Match only, never create</span><span class="ja">既存との照合のみ。作成しません</span></h3>
+        <div class="src-chips"><span>PowerDNS</span><span>BIND9</span><span>Unbound</span><span>Windows DNS</span><span>Univention UCS</span><span>AdGuard Home</span><span>Wazuh</span><span>Zabbix</span><span>OCS Inventory NG</span><span>RustDesk Server</span><span>Windows DHCP</span><span>Kea DHCP</span><span>ISC DHCP</span><span>FortiGate</span><span>Palo Alto</span><span>MikroTik RouterOS</span></div>
+      </div>
+      <div class="src-block">
+        <h3 class="src-sub"><span class="zh">使用者匯入</span><span class="en">User imports</span><span class="ja">利用者による取り込み</span></h3>
+        <p><span class="zh">CSV 匯入、phpIPAM 遷移：依匯入內容建立（使用者明示的動作）。</span><span class="en">CSV import, phpIPAM migration: created from the imported data (an explicit user action).</span><span class="ja">CSV の取り込み、phpIPAM からの移行：取り込んだ内容に従って作成します（利用者の明示的な操作）。</span></p>
+      </div>
+    </div>
+
+    <p class="src-note"><span class="zh"><b>共通規則：</b>自動建立一律走同一套判斷：<b>把位址放進「包含它的最小網段」；如果分不出來該放哪個，就不建</b>。例：10.1.1.5 同時落在 10.0.0.0/8 與 10.1.1.0/24，會放進比較小的 10.1.1.0/24；但如果甲、乙兩個單位各自都有一個 192.168.1.0/24，系統無從得知這台機器算誰的，就不建立（把紀錄掛到錯的單位，比沒有這筆紀錄更糟）。只要在該整合設定裡指定「限定子網路範圍」（只勾自己那組網段），就分得出來了。</span><span class="en"><b>Shared rule:</b> every auto-creation path uses one decision: <b>put the address in the smallest subnet that contains it; if which one is unclear, create nothing</b>. For example 10.1.1.5 sits inside both 10.0.0.0/8 and 10.1.1.0/24, so it goes into the smaller 10.1.1.0/24; but if tenants A and B each have their own 192.168.1.0/24, there is no way to tell whose machine it is, so nothing is created; filing under the wrong tenant is worse than having no record. Setting that integration's subnet scope to your own subnets makes the choice clear again.</span><span class="ja"><b>共通ルール：</b>自動作成はすべて同じ判断を通ります。<b>そのアドレスを含む最小のサブネットに入れる。どれに入れるべきか判別できなければ、何も作らない</b>。たとえば 10.1.1.5 は 10.0.0.0/8 と 10.1.1.0/24 の両方に含まれるので、小さい方の 10.1.1.0/24 に入ります。しかし組織 A と組織 B がそれぞれ 192.168.1.0/24 を持っている場合、その機器がどちらのものか知る術がないため何も作成しません。間違った組織に記録するくらいなら、記録が無い方がましだからです。その連携の設定で「対象サブネットの範囲」を自分たちのサブネットだけに絞れば、再び判別できるようになります。</span></p>
+    <p class="src-warn"><span class="zh">⚠️ <b>開啟自動建立＝放棄一部分偵測能力。</b>拿得到位址的機器不等於該被收錄的機器：私接的設備一旦被自動建進 IPAM，就不會再出現在「未授權 IP」異常偵測裡。自動建立的紀錄在 IP 清單上會標示為「自動收錄（未登記）」，請定期檢視。</span><span class="en">⚠️ <b>Enabling auto-creation trades away part of your detection.</b> A machine that obtained an address is not necessarily one that belongs in IPAM: once an unauthorised device is recorded, it no longer appears under &quot;unauthorised IPs&quot;. Auto-created records are flagged &quot;Auto-recorded (unregistered)&quot; in the IP list; review them regularly.</span><span class="ja">⚠️ <b>自動作成を有効にすると、検知能力の一部を手放すことになります。</b>アドレスを取得できた機器が、記録されるべき機器とは限りません。無断で接続された機器がいったん IPAM に自動登録されると、「未許可 IP」の異常検知には二度と現れません。自動作成されたレコードは IP 一覧で「自動記録（未登録）」と表示されるので、定期的に見直してください。</span></p>
+  </div>
+</section>
+
+
 <section id="screens">
   <div class="wrap">
     <div class="sec-head">
-      <span class="eyebrow"><span class="zh">實際畫面</span><span class="en">Screenshots</span></span>
-      <h2><span class="zh">畫面導覽</span><span class="en">See it in action</span></h2>
-      <p><span class="zh">實際操作畫面 + 說明。</span><span class="en">Real screens with explanations.</span></p>
+      <span class="eyebrow"><span class="zh">實際畫面</span><span class="en">Screenshots</span><span class="ja">画面</span></span>
+      <h2><span class="zh">畫面導覽</span><span class="en">See it in action</span><span class="ja">画面で見る</span></h2>
+      <p><span class="zh">實際操作畫面 + 說明。</span><span class="en">Real screens with explanations.</span><span class="ja">実際の操作画面と解説。</span></p>
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/subnet.png" loading="lazy" alt="子網路 / IP 管理" />
+      <img class="shot" data-shot="subnet" src="shots/zh/subnet.png" loading="lazy" alt="子網路 / IP 管理" />
       <div class="screen-txt">
         <span class="num">01</span>
-        <h3><span class="zh">子網路 / IP 管理</span><span class="en">Subnets / IP management</span></h3>
-        <p><span class="zh">從區段、子網路到單一 IP 的階層式管理，一眼掌握每個網段的使用率與閒置區間。最上方的「IP 指示計」用紅 / 綠 / 灰方格即時呈現整個網段每個位址的上線、離線、未知狀態，哪裡離線、哪裡還空著一目了然。另支援 DHCP 範圍標示、重疊網段偵測、失聯 IP 篩選與批次回收；可從 CSV 匯入，任何表格也能匯出成 CSV / Excel / ODS / Markdown，再也不用在試算表裡手動對位。</span><span class="en">Hierarchical management from sections to subnets down to each IP, with utilization and free-range gaps at a glance. The “IP indicator” grid at the top shows every address's online / offline / unknown state in red / green / grey in real time — gaps and free slots are obvious. Plus DHCP-range marking, overlap detection, stale-IP filtering and bulk reclaim; import from CSV and export any table to CSV / Excel / ODS / Markdown — no more manual bookkeeping in a spreadsheet.</span></p>
+        <h3 id="screens-subnets-ip-management"><span class="zh">子網路 / IP 管理</span><span class="en">Subnets / IP management</span><span class="ja">サブネット/IP 管理</span></h3>
+        <p><span class="zh">從區段、子網路到單一 IP 的階層式管理，一眼掌握每個網段的使用率與閒置區間。最上方的「IP 指示計」用紅 / 綠 / 灰方格即時呈現整個網段每個位址的上線、離線、未知狀態，哪裡離線、哪裡還空著一目了然。另支援 DHCP 範圍標示、重疊網段偵測、失聯 IP 篩選與批次回收；可從 CSV 匯入，任何表格也能匯出成 CSV / Excel / ODS / Markdown，再也不用在試算表裡手動對位。</span><span class="en">Hierarchical management from sections to subnets down to each IP, with utilization and free-range gaps at a glance. The “IP indicator” grid at the top shows every address's online / offline / unknown state in red / green / grey in real time, so gaps and free slots are obvious. Plus DHCP-range marking, overlap detection, stale-IP filtering and bulk reclaim; import from CSV and export any table to CSV / Excel / ODS / Markdown, no more manual bookkeeping in a spreadsheet.</span><span class="ja">セクションからサブネット、個々の IP まで階層的に管理し、各ネットワークの使用率と空き範囲をひと目で把握できます。上部の「IP インジケータ」は、そのネットワーク内の全アドレスのオンライン/オフライン/不明を赤・緑・灰のマス目でリアルタイムに表示するので、どこが落ちていてどこが空いているかがすぐ分かります。さらに DHCP 範囲の表示、サブネット重複の検出、未使用 IP の絞り込みと一括回収に対応。CSV から取り込め、どの表も CSV / Excel / ODS / Markdown へ書き出せるので、表計算で手作業の突き合わせをする必要はもうありません。</span></p>
       </div>
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/ip-detail.png" loading="lazy" alt="IP 明細" />
+      <img class="shot" data-shot="ip-detail" src="shots/zh/ip-detail.png" loading="lazy" alt="IP 明細" />
       <div class="screen-txt">
         <span class="num">02</span>
-        <h3><span class="zh">IP 明細</span><span class="en">IP detail</span></h3>
-        <p><span class="zh">每個 IP 都有一份完整檔案：主機名稱依多來源優先序自動決定（掃描代理 / LibreNMS / DNS / 手動），並帶出 MAC 廠商、交換器埠位、所屬裝置與相關 NAT。下方還有「區段→子網路→IP→裝置」上下層關係圖，以及逐欄的人為異動記錄：誰在何時改了哪個欄位一清二楚，責任歸屬不再靠記憶。系統還會自動辨識 IP 與裝置的關聯（例如主機名稱對得上某一台裝置），管理者按一下「確認」即可把兩者串起來，不必手動翻找。</span><span class="en">Every IP gets a full record: the hostname is resolved by multi-source precedence (scan agent / LibreNMS / DNS / manual), alongside MAC vendor, switch port, owning device and related NAT. Below it sits a section→subnet→IP→device hierarchy graph and a per-field change log — exactly who changed which field and when, no guesswork. jt-ipam also auto-detects likely IP↔device matches (e.g. a hostname that matches a device) and links them with one click once the admin confirms — no manual hunting.</span></p>
+        <h3 id="screens-ip-detail"><span class="zh">IP 明細</span><span class="en">IP detail</span><span class="ja">IP の詳細</span></h3>
+        <p><span class="zh">每個 IP 都有一份完整檔案：主機名稱依多來源優先序自動決定（掃描代理 / LibreNMS / DNS / 手動），並帶出 MAC 廠商、交換器埠位、所屬裝置與相關 NAT。下方還有「區段→子網路→IP→裝置」上下層關係圖，以及逐欄的人為異動記錄：誰在何時改了哪個欄位一清二楚，責任歸屬不再靠記憶。系統還會自動辨識 IP 與裝置的關聯（例如主機名稱對得上某一台裝置），管理者按一下「確認」即可把兩者串起來，不必手動翻找。</span><span class="en">Every IP gets a full record: the hostname is resolved by multi-source precedence (scan agent / LibreNMS / DNS / manual), alongside MAC vendor, switch port, owning device and related NAT. Below it sits a section→subnet→IP→device hierarchy graph and a per-field change log (exactly who changed which field and when, no guesswork). jt-ipam also auto-detects likely IP↔device matches (e.g. a hostname that matches a device) and links them with one click once the admin confirms, with no manual hunting.</span><span class="ja">どの IP にも完全な記録があります。ホスト名は複数ソースの優先順位（スキャンエージェント / LibreNMS / DNS / 手動）に従って自動的に決まり、MAC のベンダー、スイッチのポート、所属する機器、関連する NAT も併せて表示されます。その下には「セクション→サブネット→IP→機器」の階層関係図と、項目単位の変更履歴が並びます。誰がいつどの項目を変えたのかが明確で、記憶に頼る必要はありません。IP と機器の対応（たとえばホスト名が特定の機器と一致するなど）も自動的に検出され、管理者が「確認」を押すだけで結び付けられます。手作業で探し回る必要はありません。</span></p>
       </div>
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/topology.png" loading="lazy" alt="IP 拓樸圖" />
+      <img class="shot" data-shot="topology" src="shots/zh/topology.png" loading="lazy" alt="IP 拓樸圖" />
       <div class="screen-txt">
         <span class="num">03</span>
-        <h3><span class="zh">IP 拓樸圖</span><span class="en">IP topology</span></h3>
-        <p><span class="zh">整合掃描代理、LibreNMS、OPNsense、pfSense、Proxmox VE、VMware ESXi / vCenter 等多種系統的資料，自動推測 裝置↔子網路 的鄰接關係，並把實體佈線、無線、站對站 VPN 與 L3 連線分別以不同線型畫出。可依子網路篩選、自由縮放，底部圖例的節點類別可點選，開關各類裝置 / 子網路要不要顯示；整張圖再匯出成 PNG / SVG / draw.io 放進維運文件。</span><span class="en">It combines data from the scan agent, LibreNMS, OPNsense, pfSense, Proxmox VE and VMware ESXi / vCenter to infer device↔subnet adjacency, drawing physical, wireless, site-to-site VPN and L3 links each with its own line style. Filter by subnet, zoom freely, click the node categories in the legend to toggle whether each device / subnet type is shown, and export the whole graph to PNG / SVG / draw.io for your runbooks.</span></p>
+        <h3 id="screens-ip-topology"><span class="zh">IP 拓樸圖</span><span class="en">IP topology</span><span class="ja">IP トポロジー</span></h3>
+        <p><span class="zh">整合掃描代理、LibreNMS、OPNsense、pfSense、Proxmox VE、VMware ESXi / vCenter 等多種系統的資料，自動推測 裝置↔子網路 的鄰接關係，並把實體佈線、無線、站對站 VPN 與 L3 連線分別以不同線型畫出。可依子網路篩選、自由縮放，底部圖例的節點類別可點選，開關各類裝置 / 子網路要不要顯示；整張圖再匯出成 PNG / SVG / draw.io 放進維運文件。</span><span class="en">It combines data from the scan agent, LibreNMS, OPNsense, pfSense, Proxmox VE and VMware ESXi / vCenter to infer device↔subnet adjacency, drawing physical, wireless, site-to-site VPN and L3 links each with its own line style. Filter by subnet, zoom freely, click the node categories in the legend to toggle whether each device / subnet type is shown, and export the whole graph to PNG / SVG / draw.io for your runbooks.</span><span class="ja">スキャンエージェント・LibreNMS・OPNsense・pfSense・Proxmox VE・VMware ESXi / vCenter など複数システムのデータを組み合わせて機器とサブネットの隣接関係を推定し、物理配線・無線・拠点間 VPN・L3 の接続をそれぞれ異なる線種で描きます。サブネットで絞り込み、自由に拡大縮小でき、下部の凡例にあるノード分類をクリックすれば、機器やサブネットの種類ごとに表示の有無を切り替えられます。図全体を PNG / SVG / draw.io に書き出して運用ドキュメントに載せることもできます。</span></p>
       </div>
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/rack.png" loading="lazy" alt="機櫃 U 位圖" />
+      <img class="shot" data-shot="rack" src="shots/zh/rack.png" loading="lazy" alt="機櫃 U 位圖" />
       <div class="screen-txt">
         <span class="num">04</span>
-        <h3><span class="zh">機房平面圖 / 機櫃</span><span class="en">Floor plan & racks</span></h3>
-        <p><span class="zh">上傳機房平面底圖後，直接拖拉定位每一座機櫃（可旋轉、依實際 U 數標示、自動貼齊），對應真實機房配置；下方則是每座機櫃的 U 位示意圖，支援半 U、前後雙面，裝置依類型自動上色，一眼看出哪幾格還空著。機櫃圖可匯出 draw.io / PNG / SVG，裝置清單另可匯出 CSV / Excel / ODS。</span><span class="en">Upload a floor-plan background and drag-place each rack (rotatable, U-aware, snap-to-grid) to mirror the real room; below it, each rack's U-diagram with half-U, front/rear and type-based colors makes empty slots obvious. Export diagrams as draw.io / PNG / SVG and the device list as CSV / Excel / ODS.</span></p>
+        <h3 id="screens-floor-plan-racks"><span class="zh">機房平面圖 / 機櫃</span><span class="en">Floor plan & racks</span><span class="ja">フロアプランとラック</span></h3>
+        <p><span class="zh">上傳機房平面底圖後，直接拖拉定位每一座機櫃（可旋轉、依實際 U 數標示、自動貼齊），對應真實機房配置；下方則是每座機櫃的 U 位示意圖，支援半 U、前後雙面，裝置依類型自動上色，一眼看出哪幾格還空著；鍍鉻層架與 IKEA IVAR 這類層架也畫得出來（見上方「不是每間機房都有 42U 機櫃」）。機櫃圖可匯出 draw.io / PNG / SVG，裝置清單另可匯出 CSV / Excel / ODS。</span><span class="en">Upload a floor-plan background and drag-place each rack (rotatable, U-aware, snap-to-grid) to mirror the real room; below it, each rack's U-diagram with half-U, front/rear and type-based colors makes empty slots obvious; chrome wire and IKEA IVAR-style shelving draws too (see “Not every server room has a 42U rack” above). Export diagrams as draw.io / PNG / SVG and the device list as CSV / Excel / ODS.</span><span class="ja">サーバルームの下図をアップロードすれば、各ラックをドラッグで配置できます（回転、実際の U 数の反映、自動スナップに対応）。実際の部屋の配置をそのまま再現できます。その下には各ラックの U 位置図があり、ハーフ U と前面/背面に対応し、機器は種類ごとに自動で色分けされるので、どこが空いているかがひと目で分かります。スチールラックや IKEA IVAR のようなシェルフも描けます（上の「すべてのサーバルームに 42U ラックがあるわけではありません」を参照）。ラック図は draw.io / PNG / SVG へ、機器一覧は CSV / Excel / ODS へ書き出せます。</span></p>
       </div>
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/floorplan.png" loading="lazy" alt="機房 / 地點 與世界地圖" />
+      <img class="shot" data-shot="floorplan" src="shots/zh/floorplan.png" loading="lazy" alt="機房 / 地點 與世界地圖" />
       <div class="screen-txt">
         <span class="num">05</span>
-        <h3><span class="zh">機房 / 地點 與地圖</span><span class="en">Sites &amp; map</span></h3>
-        <p><span class="zh">集中管理所有機房 / 地點：記錄地址與經緯度，並在世界地圖上標出各站點位置；清單同時顯示每個地點的機櫃數與裝置數，多站點的盤點與導覽一目了然。</span><span class="en">Manage all rooms / sites in one place: record addresses and coordinates and pin every site on a world map; the list also shows rack and device counts per location, so multi-site inventory is clear at a glance.</span></p>
+        <h3 id="screens-sites-map"><span class="zh">機房 / 地點 與地圖</span><span class="en">Sites &amp; map</span><span class="ja">サーバルーム/拠点と地図</span></h3>
+        <p><span class="zh">集中管理所有機房 / 地點：記錄地址與經緯度，並在世界地圖上標出各站點位置；清單同時顯示每個地點的機櫃數與裝置數，多站點的盤點與導覽一目了然。</span><span class="en">Manage all rooms / sites in one place: record addresses and coordinates and pin every site on a world map; the list also shows rack and device counts per location, so multi-site inventory is clear at a glance.</span><span class="ja">すべてのサーバルームと拠点を一元管理します。住所と緯度経度を記録し、世界地図上に各拠点を示します。一覧には拠点ごとのラック数と機器数も表示されるため、複数拠点の棚卸しと把握が容易になります。</span></p>
       </div>
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/device-ports.png" loading="lazy" alt="裝置明細 / 連接埠" />
+      <img class="shot" data-shot="device-ports" src="shots/zh/device-ports.png" loading="lazy" alt="裝置明細 / 連接埠" />
       <div class="screen-txt">
         <span class="num">06</span>
-        <h3><span class="zh">裝置 / 連接埠</span><span class="en">Devices / Ports</span></h3>
-        <p><span class="zh">裝置明細把所在機櫃位置、規格與連接埠清單整合在同一頁；每個連接埠顯示自身實體 MAC、連線對端與跳接穿透對應，欄位皆可排序。連接埠會在 LibreNMS / OPNsense / Proxmox VE 同步時自動帶入，不必手動一筆筆建立，新裝置上線即有完整介面清單。</span><span class="en">Device detail brings rack position, specs and a sortable port list onto one page — each port shows its own MAC, connected peer and pass-through mapping. Ports are auto-populated on LibreNMS / OPNsense / Proxmox VE sync, so you never build them by hand; a new device arrives with its full interface list.</span></p>
+        <h3 id="screens-devices-ports"><span class="zh">裝置 / 連接埠</span><span class="en">Devices / Ports</span><span class="ja">機器/ポート</span></h3>
+        <p><span class="zh">裝置明細把所在機櫃位置、規格與連接埠清單整合在同一頁；每個連接埠顯示自身實體 MAC、連線對端與跳接穿透對應，欄位皆可排序。連接埠會在 LibreNMS / OPNsense / Proxmox VE 同步時自動帶入，不必手動一筆筆建立，新裝置上線即有完整介面清單。</span><span class="en">Device detail brings rack position, specs and a sortable port list onto one page; each port shows its own MAC, connected peer and pass-through mapping. Ports are auto-populated on LibreNMS / OPNsense / Proxmox VE sync, so you never build them by hand; a new device arrives with its full interface list.</span><span class="ja">機器の詳細ページは、設置されているラック内の位置、仕様、ポート一覧をひとつにまとめます。各ポートには自身の物理 MAC、接続先、パッチを貫通した対応関係が表示され、どの列でも並べ替えられます。ポートは LibreNMS / OPNsense / Proxmox VE の同期時に自動で取り込まれるため、一件ずつ手作業で作る必要はありません。新しい機器が入れば、そのインタフェース一覧がそろった状態で現れます。</span></p>
       </div>
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/cable-trace.png" loading="lazy" alt="纜線多跳追蹤" />
+      <img class="shot" data-shot="cable-trace" src="shots/zh/cable-trace.png" loading="lazy" alt="纜線多跳追蹤" />
       <div class="screen-txt">
         <span class="num">07</span>
-        <h3><span class="zh">連線路徑追蹤</span><span class="en">Connection path trace</span></h3>
-        <p><span class="zh">替連接埠建立纜線連線後，系統自動畫出端對端的連線路徑圖，一段段標出沿途經過哪台裝置、哪個埠，並能穿透跳接面板與橋接 NIC 繼續追下去。整條路徑可下載成 SVG / PNG / draw.io，無論是交接維運、畫網路文件或排查斷線都省事。</span><span class="en">Once ports are cabled, jt-ipam draws the end-to-end connection path hop by hop — through patch panels and bridge NICs — showing each device and port along the way. Export the whole path to SVG / PNG / draw.io, handy for handover, documentation or tracing a broken link.</span></p>
+        <h3 id="screens-connection-path-trace"><span class="zh">連線路徑追蹤</span><span class="en">Connection path trace</span><span class="ja">接続経路の追跡</span></h3>
+        <p><span class="zh">替連接埠建立纜線連線後，系統自動畫出端對端的連線路徑圖，一段段標出沿途經過哪台裝置、哪個埠，並能穿透跳接面板與橋接 NIC 繼續追下去。整條路徑可下載成 SVG / PNG / draw.io，無論是交接維運、畫網路文件或排查斷線都省事。</span><span class="en">Once ports are cabled, jt-ipam draws the end-to-end connection path hop by hop (through patch panels and bridge NICs), showing each device and port along the way. Export the whole path to SVG / PNG / draw.io, handy for handover, documentation or tracing a broken link.</span><span class="ja">ポートにケーブル接続を登録すると、端から端までの経路図が自動で描かれます。途中でどの機器のどのポートを通るかを一段ずつ示し、パッチパネルやブリッジ NIC を貫通してさらに追跡します。経路全体は SVG / PNG / draw.io としてダウンロードでき、引き継ぎや構成図の作成、断線の切り分けが楽になります。</span></p>
       </div>
     </div>
 
@@ -542,8 +758,8 @@
       <img class="shot" src="shots/ai-findip.png" loading="lazy" alt="本地 AI 智慧助理" />
       <div class="screen-txt">
         <span class="num">08</span>
-        <h3><span class="zh">本地 AI 智慧助理</span><span class="en">Local AI assistant</span></h3>
-        <p><span class="zh">用自然語言就能查 IP、子網路、裝置：「列出 192.168.1.0/24 的使用率」「找一段三個連續 IP」之類的問題直接問。它透過 jt-ipam 內建的 MCP 直接讀你的即時資料，搭配語意搜尋（embedding + pgvector）與異常偵測，預設全程在自家機房的 LLM Server 上推論，資料不外流（要接 ChatGPT 這類 OpenAI 相容端點也可以，但那是要自己明確選的，設定頁會直說資料將送往外部）。</span><span class="en">Query IPs, subnets and devices in plain language — “show utilization for 192.168.1.0/24”, “find three consecutive free IPs”, and so on. It reads your live data through jt-ipam's built-in MCP, with semantic search (embeddings + pgvector) and anomaly detection, inferred on a local LLM Server by default, so your data never leaves the network (an OpenAI-compatible endpoint can be chosen explicitly, and the settings page says plainly that data then leaves).</span></p>
+        <h3 id="screens-local-ai-assistant"><span class="zh">本地 AI 智慧助理</span><span class="en">Local AI assistant</span><span class="ja">ローカル AI アシスタント</span></h3>
+        <p><span class="zh">用自然語言就能查 IP、子網路、裝置：「列出 192.168.1.0/24 的使用率」「找一段三個連續 IP」之類的問題直接問。它透過 jt-ipam 內建的 MCP 直接讀你的即時資料，搭配語意搜尋（embedding + pgvector）與異常偵測，預設全程在自家機房的 LLM Server 上推論，資料不外流（要接 ChatGPT 這類 OpenAI 相容端點也可以，但那是要自己明確選的，設定頁會直說資料將送往外部）。</span><span class="en">Query IPs, subnets and devices in plain language: “show utilization for 192.168.1.0/24”, “find three consecutive free IPs”, and so on. It reads your live data through jt-ipam's built-in MCP, with semantic search (embeddings + pgvector) and anomaly detection, inferred on a local LLM Server by default, so your data never leaves the network (an OpenAI-compatible endpoint can be chosen explicitly, and the settings page says plainly that data then leaves).</span><span class="ja">自然言語で IP・サブネット・機器を調べられます。「198.51.100.0/24 の使用率を出して」「空いている連続 3 個の IP を探して」といった質問をそのまま投げられます。jt-ipam 内蔵の MCP を通じてリアルタイムのデータを読み、セマンティック検索（embedding + pgvector）と異常検知を組み合わせます。既定では推論もすべて自社内の LLM サーバーで行われ、データは外部に出ません（ChatGPT のような OpenAI 互換エンドポイントにも接続できますが、それは明示的に選ぶ必要があり、設定ページでデータが外部へ送られることをはっきり表示します）。</span></p>
       </div>
     </div>
 
@@ -551,8 +767,8 @@
       <img class="shot" src="shots/aichat-ip-rack.png" loading="lazy" alt="AI 對話：機櫃 U 與 IP 問答" />
       <div class="screen-txt">
         <span class="num">09</span>
-        <h3><span class="zh">AI 也懂你的機房</span><span class="en">AI that knows your infra</span></h3>
-        <p><span class="zh">讓 AI 助你快速掌握機房狀況：AI 真的看得懂你的基礎設施，問「R1 機櫃還剩幾 U」「這段子網路幫我找三個連續 IP」「192.168.1.87 被誰占用」，它會直接讀實際資料回答，省去自己翻表對照。全部跑在本地 LLM Server，實測搭配 gemma4:26b 效果良好，回應快又準。</span><span class="en">The assistant genuinely understands your infrastructure: ask “how many U are left in rack R1”, “find three consecutive free IPs here” or “who's using 192.168.1.87”, and it answers from real data instead of making you dig through tables. It all runs on local LLM Server — gemma4:26b works well in our testing, fast and accurate.</span></p>
+        <h3 id="screens-ai-that-knows-infra"><span class="zh">AI 也懂你的機房</span><span class="en">AI that knows your infra</span><span class="ja">自社設備を理解している AI</span></h3>
+        <p><span class="zh">讓 AI 助你快速掌握機房狀況：AI 真的看得懂你的基礎設施，問「R1 機櫃還剩幾 U」「這段子網路幫我找三個連續 IP」「192.168.1.87 被誰占用」，它會直接讀實際資料回答，省去自己翻表對照。全部跑在本地 LLM Server，實測搭配 gemma4:26b 效果良好，回應快又準。</span><span class="en">The assistant genuinely understands your infrastructure: ask “how many U are left in rack R1”, “find three consecutive free IPs here” or “who's using 192.168.1.87”, and it answers from real data instead of making you dig through tables. It all runs on local LLM Server; gemma4:26b works well in our testing, fast and accurate.</span><span class="ja">このアシスタントは基盤を本当に理解しています。「ラック R1 はあと何 U 空いているか」「このサブネットで連続した空き IP を 3 つ探して」「198.51.100.87 は誰が使っているか」と尋ねれば、表を掘り返させる代わりに実データから答えます。すべてローカルの LLM サーバーで動作し、検証では gemma4:26b が速く正確でした。</span></p>
       </div>
     </div>
 
@@ -560,44 +776,44 @@
       <img class="shot" src="shots/aichat-multiget.png" loading="lazy" alt="AI 對話：在子網路頁一次查多筆 IP" />
       <div class="screen-txt">
         <span class="num">10</span>
-        <h3><span class="zh">在頁面上直接問，多筆一次到位</span><span class="en">Ask in context, get many answers at once</span></h3>
-        <p><span class="zh">AI 對話會帶入你目前所在的頁面：在某個子網路頁打開助手，直接問「這幾個 IP 各是誰、接在哪台交換器」，它一次把多筆查清楚並逐筆引用實際資料，不必一個一個點開。需要改資料時還會先列出待確認動作，按下確認才執行。</span><span class="en">The assistant picks up the page you're on: open it on a subnet and ask “who owns these IPs and which switch are they on” — it answers several at once, citing real data per entry, instead of opening each one. For changes it lists a confirm-first action and only runs it after you approve.</span></p>
+        <h3 id="screens-ask-in-page"><span class="zh">在頁面上直接問，多筆一次到位</span><span class="en">Ask in context, get many answers at once</span><span class="ja">その画面のまま尋ねられ、まとめて答えが返ります</span></h3>
+        <p><span class="zh">AI 對話會帶入你目前所在的頁面：在某個子網路頁打開助手，直接問「這幾個 IP 各是誰、接在哪台交換器」，它一次把多筆查清楚並逐筆引用實際資料，不必一個一個點開。需要改資料時還會先列出待確認動作，按下確認才執行。</span><span class="en">The assistant picks up the page you're on: open it on a subnet and ask “who owns these IPs and which switch are they on”, and it answers several at once, citing real data per entry, instead of opening each one. For changes it lists a confirm-first action and only runs it after you approve.</span><span class="ja">AI との対話は、いま開いているページの文脈を引き継ぎます。あるサブネットのページでアシスタントを開き、「これらの IP はそれぞれ誰のもので、どのスイッチに繋がっているか」と尋ねれば、一件ずつ開かなくても複数まとめて調べ、各件について実データを引用して答えます。データを変更する場合は、まず実行予定の操作を提示し、承認を押してから実行します。</span></p>
       </div>
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/tools-cidr.png" loading="lazy" alt="工具 — 子網路 / CIDR 規劃" />
+      <img class="shot" data-shot="tools-cidr" src="shots/zh/tools-cidr.png" loading="lazy" alt="工具：子網路 / CIDR 規劃" />
       <div class="screen-txt">
         <span class="num">11</span>
-        <h3><span class="zh">實用工具</span><span class="en">Tools</span></h3>
-        <p><span class="zh">內建一站式網路規劃工具，分 IP/CIDR、MAC、DNS/郵件、機房/電力四類：CIDR 計算與切割、IP 範圍 ↔ CIDR、多網段聚合、遮罩換算；MAC 格式轉換、EUI-64、OUI 廠商查詢；DNS 解析、郵件網域檢查（SPF / DKIM / DMARC）、GeoIP；以及 PDU 電力 / 散熱 / UPS 續航試算。不必再開一堆線上計算器，且全程在自家機房完成、查詢不外送。</span><span class="en">A one-stop set of network-planning utilities in four groups — IP/CIDR (calc, split, range↔CIDR, aggregate, netmask), MAC (reformat, EUI-64, OUI lookup), DNS/mail (resolution, SPF/DKIM/DMARC, GeoIP) and facility/power (PDU power, heat, UPS runtime). No more juggling online calculators — and it all runs on-prem, nothing leaves your network.</span></p>
+        <h3 id="screens-tools"><span class="zh">實用工具</span><span class="en">Tools</span><span class="ja">ツール</span></h3>
+        <p><span class="zh">內建一站式網路規劃工具，分 IP/CIDR、MAC、DNS/郵件、機房/電力四類：CIDR 計算與切割、IP 範圍 ↔ CIDR、多網段聚合、遮罩換算；MAC 格式轉換、EUI-64、OUI 廠商查詢；DNS 解析、郵件網域檢查（SPF / DKIM / DMARC）、GeoIP；以及 PDU 電力 / 散熱 / UPS 續航試算。不必再開一堆線上計算器，且全程在自家機房完成、查詢不外送。</span><span class="en">A one-stop set of network-planning utilities in four groups: IP/CIDR (calc, split, range↔CIDR, aggregate, netmask), MAC (reformat, EUI-64, OUI lookup), DNS/mail (resolution, SPF/DKIM/DMARC, GeoIP) and facility/power (PDU power, heat, UPS runtime). No more juggling online calculators; it all runs on-prem, so nothing leaves your network.</span><span class="ja">ネットワーク設計のための実用ツールを内蔵しています。IP/CIDR、MAC、DNS/メール、設備/電力の四分類です。CIDR の計算と分割、IP 範囲 ↔ CIDR、複数ネットワークの集約、サブネットマスクの換算。MAC の形式変換、EUI-64、OUI ベンダー検索。DNS 解決、メールドメインの確認（SPF / DKIM / DMARC）、GeoIP。そして PDU の電力・発熱・UPS 稼働時間の試算。オンライン計算機をいくつも開く必要はなく、すべて自社設備内で完結し、問い合わせ内容が外部に出ることもありません。</span></p>
       </div>
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/hostname-arp-sort.png" loading="lazy" alt="主機名稱 / ARP 來源優先順序" />
+      <img class="shot" data-shot="hostname-arp-sort" src="shots/zh/hostname-arp-sort.png" loading="lazy" alt="主機名稱 / ARP 來源優先順序" />
       <div class="screen-txt">
         <span class="num">12</span>
-        <h3><span class="zh">主機名稱 / ARP 來源優先順序</span><span class="en">Source precedence</span></h3>
-        <p><span class="zh">同一個 IP 或裝置，可能同時被掃描代理、DNS、LibreNMS、OPNsense、Proxmox VE、Wazuh、AdGuard 回報不同的值，到底以誰為準？<b>主機名稱、ARP / MAC、裝置名稱、裝置型號與作業系統</b>各自都有一份來源優先順序，用拖拉排序自訂、可個別停用；系統據此自動解析出最可信的結果，不再每次同步互相蓋來蓋去。</span><span class="en">The same IP or device may be reported with different values by the scan agent, DNS, LibreNMS, OPNsense, Proxmox VE, Wazuh and AdGuard — which one wins? <b>Hostname, ARP / MAC, device name, device model and OS</b> each have their own source-precedence list you reorder by drag (and can disable individually); jt-ipam resolves the most trustworthy value accordingly, so syncs stop overwriting one another.</span></p>
+        <h3 id="screens-source-precedence"><span class="zh">主機名稱 / ARP 來源優先順序</span><span class="en">Source precedence</span><span class="ja">ホスト名/ARP のソース優先順位</span></h3>
+        <p><span class="zh">同一個 IP 或裝置，可能同時被掃描代理、DNS、LibreNMS、OPNsense、Proxmox VE、Wazuh、Zabbix、AdGuard 回報不同的值，到底以誰為準？<b>主機名稱、ARP / MAC、裝置名稱、裝置型號與作業系統</b>各自都有一份來源優先順序，用拖拉排序自訂、可個別停用；系統據此自動解析出最可信的結果，不再每次同步互相蓋來蓋去。</span><span class="en">The same IP or device may be reported with different values by the scan agent, DNS, LibreNMS, OPNsense, Proxmox VE, Wazuh, Zabbix and AdGuard. Which one wins? <b>Hostname, ARP / MAC, device name, device model and OS</b> each have their own source-precedence list you reorder by drag (and can disable individually); jt-ipam resolves the most trustworthy value accordingly, so syncs stop overwriting one another.</span><span class="ja">同じ IP や機器について、スキャンエージェント・DNS・LibreNMS・OPNsense・Proxmox VE・Wazuh・Zabbix・AdGuard がそれぞれ異なる値を報告することがあります。どれを採るべきでしょうか。<b>ホスト名、ARP / MAC、機器名、機器の型番、OS</b> のそれぞれにソース優先順位のリストがあり、ドラッグで並べ替え、個別に無効化できます。jt-ipam はそれに従って最も信頼できる値を解決するので、同期のたびに互いを上書きし合うことがなくなります。</span></p>
       </div>
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/cert-list.png" loading="lazy" alt="憑證集中保管與自動派送" />
+      <img class="shot" data-shot="cert-list" src="shots/zh/cert-list.png" loading="lazy" alt="憑證集中保管與自動派送" />
       <div class="screen-txt">
         <span class="num">13</span>
-        <h3><span class="zh">憑證集中保管與自動派送</span><span class="en">Centralized cert vault &amp; auto-distribution</span></h3>
-        <p><span class="zh">把商業憑證或 Let's Encrypt 憑證集中保管在一處（私鑰 AES-GCM 加密），再由各站台的輕量代理（純 bash，只相依 curl）自動拉取部署到 nginx / Apache / Caddy / HAProxy / Postfix / Dovecot / Proxmox VE / PMG / PBS / Zimbra 等服務，套用前先做設定測試、失敗自動還原、部署後重載服務。憑證檔案可以手動上傳或設定 URL / SFTP 來源定期自動同步，同步時若偵測到缺中繼或根憑證會用系統信任庫自動補齊完整鏈，憑證快到期或內容飄移會主動告警──再也不用每次續簽就手動登入每一台貼憑證。Windows / IIS 另有 PowerShell 代理（Server 2019 以上內建，不裝額外模組）：匯入 Windows 憑證存放區、換上 HTTPS 繫結，再實際連線確認送出的是新憑證，不對就自動還原。</span><span class="en">Keep commercial or Let's Encrypt certificates in one vault (private keys AES-GCM encrypted); a lightweight per-site agent (pure bash, curl-only) pulls and deploys them to nginx / Apache / Caddy / HAProxy / Postfix / Dovecot / Proxmox VE / PMG / PBS / Zimbra and more — config-testing before apply, auto-rollback on failure, and reloading the service afterwards. Certificate files can be uploaded manually or pulled from a URL / SFTP source on a periodic sync; missing intermediate or root certs are auto-completed from the system trust store, and expiry or drift raises an alert — no more logging into every host to paste certs at each renewal. Windows / IIS has its own PowerShell agent (built into Server 2019+, no extra modules): it imports into the Windows certificate store, repoints the HTTPS binding, then opens a real TLS connection to confirm the new certificate is being served — and rolls back if it is not.</span></p>
+        <h3 id="screens-cert-vault"><span class="zh">憑證集中保管與自動派送</span><span class="en">Centralized cert vault &amp; auto-distribution</span><span class="ja">証明書の集中保管と自動配布</span></h3>
+        <p><span class="zh">商業憑證與 Let's Encrypt 憑證集中保管（私鑰加密），各站台的輕量代理自動部署到 nginx、Apache、Proxmox VE、Postfix 等服務，失敗自動還原；Windows / IIS 另有 PowerShell 代理。快到期或內容不一致會告警，續簽不必再逐台登入。</span><span class="en">Commercial and Let's Encrypt certificates in one vault (private keys encrypted). A lightweight per-site agent deploys them to nginx, Apache, Proxmox VE, Postfix and more, rolling back on failure; Windows / IIS has its own PowerShell agent. Expiry and drift raise alerts, so a renewal no longer means logging into every host.</span><span class="ja">商用証明書と Let's Encrypt の証明書を一か所で保管します（秘密鍵は暗号化）。各拠点の軽量エージェントが nginx、Apache、Proxmox VE、Postfix などへ自動で配備し、失敗すれば元に戻します。Windows / IIS には専用の PowerShell エージェントがあります。期限切れ間近や内容の食い違いは警告するので、更新のたびに全台へログインする必要はありません。</span></p>
       </div>
     </div>
 
     <div class="screen-row">
-      <img class="shot" src="shots/ssh-rdp.png" loading="lazy" alt="瀏覽器連線管理（SSH / RDP / VNC / PVE / BMC）" />
+      <img class="shot" data-shot="ssh-rdp" src="shots/zh/ssh-rdp.png" loading="lazy" alt="瀏覽器連線管理（SSH / RDP / VNC / PVE / BMC / RustDesk）" />
       <div class="screen-txt">
         <span class="num">14</span>
-        <h3><span class="zh">瀏覽器連線管理（SSH / RDP / VNC / PVE / BMC）</span><span class="en">In-browser remote console (SSH / RDP / VNC / PVE / BMC)</span></h3>
-        <p><span class="zh">直接從 IP 或裝置開啟 SSH 終端機、SFTP 檔案瀏覽器（上下傳檔案，獨立開關、與 SSH 同等強度的權限與稽核）、RDP 與 VNC 桌面、Proxmox VE 主控台（VM 走 noVNC、容器 CT 走 xterm）與 BMC 序列主控台（IPMI SOL，不經作業系統的獨立連線）（RDP / VNC / PVE / BMC 為 Beta），全程在瀏覽器內，不必再裝 PuTTY / 遠端桌面 / 各廠 KVM 等用戶端。連線帳密預設不儲存（僅連線當下傳送），也可選擇存進個人加密金庫（by-user、AES-GCM 加密，私鑰 / 密碼逐欄加密）；依逐物件權限控管誰能連哪一台，每次開閉連線都留稽核；RDP / VNC 可送出被作業系統攔截的特殊組合鍵（Ctrl + Alt + Del、F1～F12、⊞ Win / ⌘…），並支援自動縮放符合視窗、以目前視窗大小重連取得原生清晰畫面。</span><span class="en">Open an SSH terminal, an SFTP file browser (upload/download, its own toggle with the same permission strength and audit as SSH), an RDP or VNC desktop, a Proxmox VE console (noVNC for VMs, xterm for CT containers) and a BMC out-of-band serial console (IPMI SOL) (RDP / VNC / PVE / BMC are Beta) straight from an IP or device — entirely in the browser, with no PuTTY / remote-desktop client / vendor KVM to install. Credentials are not stored by default (sent only at connect time) and can optionally be saved to a per-user AES-GCM-encrypted vault; per-object permissions control who may reach each target, and every session open/close is audited; RDP / VNC can send special key combos the OS would otherwise intercept (Ctrl + Alt + Del, F1–F12, ⊞ Win / ⌘…), and support auto-fit-to-window plus reconnecting at the current window size for a crisp native picture.</span></p>
+        <h3 id="screens-remote-console"><span class="zh">瀏覽器連線管理（SSH / RDP / VNC / PVE / BMC / RustDesk）</span><span class="en">In-browser remote console (SSH / RDP / VNC / PVE / BMC / RustDesk)</span><span class="ja">ブラウザ内リモートコンソール（SSH / RDP / VNC / PVE / BMC / RustDesk）</span></h3>
+        <p><span class="zh">從 IP 或裝置直接開 SSH、SFTP、RDP、VNC、Proxmox VE 主控台、BMC 序列主控台與 RustDesk 網頁連線，全在瀏覽器內，不必裝 PuTTY 或遠端桌面用戶端（BMC 為 Beta）。帳密預設不儲存，誰能連哪一台依物件權限控管，每次連線都留稽核與連線時間。</span><span class="en">Open SSH, SFTP, RDP, VNC, a Proxmox VE console, a BMC serial console or a RustDesk web connection straight from an IP or device, all in the browser with no PuTTY or remote-desktop client to install (BMC is Beta). Credentials are not stored by default, per-object permissions decide who can reach what, and every session is audited with its length.</span><span class="ja">IP や機器から直接、SSH、SFTP、RDP、VNC、Proxmox VE コンソール、BMC シリアルコンソール、RustDesk の Web 接続を開けます。すべてブラウザ内で完結し、PuTTY やリモートデスクトップのクライアントは不要です（BMC は Beta）。資格情報は既定で保存せず、誰がどこへ接続できるかはオブジェクト単位で制御し、接続はすべて接続時間とともに監査に残ります。</span></p>
       </div>
     </div>
   </div>
@@ -606,16 +822,16 @@
 <section id="enterprise">
   <div class="wrap">
     <div class="sec-head">
-      <h2><span class="zh">企業級管理</span><span class="en">Enterprise management</span></h2>
-      <p><span class="zh">安全是從套件開發起就列入核心要求。</span><span class="en">Security is a core requirement from the very start of development.</span></p>
+      <h2><span class="zh">企業級管理</span><span class="en">Enterprise management</span><span class="ja">エンタープライズ向けの管理</span></h2>
+      <p><span class="zh">安全是從套件開發起就列入核心要求。</span><span class="en">Security is a core requirement from the very start of development.</span><span class="ja">セキュリティは開発の最初から中核の要件です。</span></p>
     </div>
     <div class="grid g3">
-      <div class="card"><h3><span class="badge">A</span><span class="zh">身分驗證</span><span class="en">Authentication</span></h3><p><span class="zh">argon2id 雜湊密碼、TOTP 兩階段、JWT(access 15 分 / refresh 14 天)、帳號鎖定。</span><span class="en">argon2id hashing, TOTP MFA, JWT (15-min access / 14-day refresh), account lockout.</span></p></div>
-      <div class="card"><h3><span class="badge">B</span>R B A C</h3><p><span class="zh">幾個內建預設角色，加上物件層級授權 (單位 / 區段 / 子網路 / 裝置…) 與階層繼承。</span><span class="en">A few built-in preset roles plus object-level grants (tenant / section / subnet / device…) with hierarchy inheritance.</span></p></div>
-      <div class="card"><h3><span class="badge">C</span><span class="zh">稽核串鏈</span><span class="en">Audit chain</span></h3><p><span class="zh">所有變更逐筆雜湊串接，可驗證是否被竄改；明細含變更前後對照。</span><span class="en">Every change is hash-chained and verifiable against tampering; diffs show before/after.</span></p></div>
-      <div class="card"><h3><span class="badge">D</span><span class="zh">資安遵循</span><span class="en">Security by design</span></h3><p><span class="zh">對齊 OWASP Top 10:2025，每個模組與 PR 都過逐項自我檢核；嚴格 CSP、安全標頭、伺服器端授權。</span><span class="en">Aligned with OWASP Top 10:2025 — every module and PR passes the checklist; strict CSP, security headers, server-side authz.</span></p></div>
-      <div class="card"><h3><span class="badge">E</span><span class="zh">完全自架</span><span class="en">Fully self-hosted</span></h3><p><span class="zh">不用 Docker、不依賴雲端；systemd + apt 直接跑在虛擬機與容器。</span><span class="en">No Docker, no cloud; runs on VMs and containers via systemd + apt.</span></p></div>
-      <div class="card"><h3><span class="badge">F</span><span class="zh">排程拉取</span><span class="en">Scheduled pull</span></h3><p><span class="zh">phpIPAM 走 SSH tunnel 匯入；OPNsense / LibreNMS / Wazuh 定時排程拉取，單向、不改動來源。</span><span class="en">phpIPAM import over SSH tunnel; OPNsense / LibreNMS / Wazuh pulled on a schedule — one-way, non-invasive.</span></p></div>
+      <div class="card"><h3 id="enterprise-authentication"><span class="badge">A</span><span class="zh">身分驗證</span><span class="en">Authentication</span><span class="ja">認証</span></h3><p><span class="zh">argon2id 雜湊密碼、TOTP 兩階段、JWT(access 15 分 / refresh 14 天)、帳號鎖定。</span><span class="en">argon2id hashing, TOTP MFA, JWT (15-min access / 14-day refresh), account lockout.</span><span class="ja">argon2id によるパスワードのハッシュ化、TOTP による二段階認証、JWT（アクセス 15 分/リフレッシュ 14 日）、アカウントロック。</span></p></div>
+      <div class="card"><h3 id="enterprise-rbac"><span class="badge">B</span>R B A C</h3><p><span class="zh">幾個內建預設角色，加上物件層級授權 (單位 / 區段 / 子網路 / 裝置…) 與階層繼承。</span><span class="en">A few built-in preset roles plus object-level grants (tenant / section / subnet / device…) with hierarchy inheritance.</span><span class="ja">いくつかの組み込みロールに加え、オブジェクト単位の権限付与（組織/セクション/サブネット/機器など）と階層継承。</span></p></div>
+      <div class="card"><h3 id="enterprise-audit-chain"><span class="badge">C</span><span class="zh">稽核串鏈</span><span class="en">Audit chain</span><span class="ja">監査チェーン</span></h3><p><span class="zh">所有變更逐筆雜湊串接，可驗證是否被竄改；明細含變更前後對照。</span><span class="en">Every change is hash-chained and verifiable against tampering; diffs show before/after.</span><span class="ja">すべての変更をハッシュで連鎖させ、改ざんの有無を検証できます。明細には変更前後の対比が含まれます。</span></p></div>
+      <div class="card"><h3 id="enterprise-security-by-design"><span class="badge">D</span><span class="zh">資安遵循</span><span class="en">Security by design</span><span class="ja">設計段階からのセキュリティ</span></h3><p><span class="zh">對齊 OWASP Top 10:2025，每個模組與 PR 都過逐項自我檢核；嚴格 CSP、安全標頭、伺服器端授權。</span><span class="en">Aligned with OWASP Top 10:2025, with every module and PR passing the checklist; strict CSP, security headers, server-side authz.</span><span class="ja">OWASP Top 10:2025 に準拠し、すべてのモジュールと PR がチェックリストを通過します。厳格な CSP、セキュリティヘッダ、サーバー側での権限判定。</span></p></div>
+      <div class="card"><h3 id="enterprise-fully-self-hosted"><span class="badge">E</span><span class="zh">完全自架</span><span class="en">Fully self-hosted</span><span class="ja">完全な自社運用</span></h3><p><span class="zh">不用 Docker、不依賴雲端；systemd + apt 直接跑在虛擬機與容器。</span><span class="en">No Docker, no cloud; runs on VMs and containers via systemd + apt.</span><span class="ja">Docker もクラウドも不要。systemd + apt で仮想マシンやコンテナ上に直接動きます。</span></p></div>
+      <div class="card"><h3 id="enterprise-scheduled-pull"><span class="badge">F</span><span class="zh">排程拉取</span><span class="en">Scheduled pull</span><span class="ja">スケジュールによる取得</span></h3><p><span class="zh">phpIPAM 走 SSH tunnel 匯入；OPNsense / LibreNMS / Wazuh / Zabbix 定時排程拉取，單向、不改動來源。</span><span class="en">phpIPAM import over SSH tunnel; OPNsense / LibreNMS / Wazuh / Zabbix pulled on a schedule: one-way, non-invasive.</span><span class="ja">phpIPAM は SSH トンネル経由で取り込み、OPNsense / LibreNMS / Wazuh / Zabbix は定期スケジュールで取得します。一方向で、元のシステムは変更しません。</span></p></div>
     </div>
   </div>
 </section>
@@ -623,20 +839,20 @@
 <section id="ai" class="alt">
   <div class="wrap">
     <div class="sec-head">
-      <h2><span class="zh">本地 AI 加值</span><span class="en">Local AI value</span></h2>
-      <p><span class="zh">預設走自架 LLM Server，資料不外流。問答、摘要、AI 巡檢都在自家機房完成（也可明確改接 OpenAI 相容端點，選了會顯示資料外送提示）。（規則式的「異常偵測」是另一個功能：那講的是量到的事實，AI 巡檢講的是模型推測，刻意分開呈現。）</span><span class="en">Powered by a self-hosted LLM Server by default — data never leaves your network. Q&amp;A, summaries and AI review all run on-prem (an OpenAI-compatible endpoint can be chosen explicitly, with a notice that data then leaves). (Rule-based anomaly detection is a separate feature: it reports measured facts, while AI review reports inference — deliberately kept apart.)</span></p>
+      <h2><span class="zh">本地 AI 加值</span><span class="en">Local AI value</span><span class="ja">ローカル AI による付加価値</span></h2>
+      <p><span class="zh">預設走自架 LLM Server，資料不外流。問答、摘要、AI 巡檢都在自家機房完成（也可明確改接 OpenAI 相容端點，選了會顯示資料外送提示）。（規則式的「異常偵測」是另一個功能：那講的是量到的事實，AI 巡檢講的是模型推測，刻意分開呈現。）</span><span class="en">Powered by a self-hosted LLM Server by default, so data never leaves your network. Q&amp;A, summaries and AI review all run on-prem (an OpenAI-compatible endpoint can be chosen explicitly, with a notice that data then leaves). (Rule-based anomaly detection is a separate feature: it reports measured facts, while AI review reports inference; the two are deliberately kept apart.)</span><span class="ja">既定では自社運用の LLM サーバーを使うため、データは外部に出ません。質問応答、要約、AI 点検はすべて自社設備内で完結します（OpenAI 互換エンドポイントを明示的に選ぶこともでき、その場合はデータが外部へ出る旨を表示します）。（ルールベースの「異常検知」は別の機能です。あちらは計測された事実を、AI 点検はモデルの推測を扱うため、意図的に分けて示しています。）</span></p>
     </div>
     <div class="grid g3">
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 20l1-4.5A8 8 0 1 1 21 12z"/></svg></span><span class="zh">智慧助理</span><span class="en">Smart assistant</span></h3><p><span class="zh">用自然語言查 IP / 子網路 / 裝置，透過 jt-ipam 內建的 MCP 工具直接讀取你的 IPAM 資料。</span><span class="en">Ask about IPs / subnets / devices in natural language; jt-ipam's built-in MCP tools read your live IPAM data.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16M7 15l3-4 3 2 5-7"/></svg></span><span class="zh">異常偵測</span><span class="en">Anomaly detection</span></h3><p><span class="zh">標記異常使用模式與失聯 IP，協助提前發現問題。</span><span class="en">Flags unusual usage patterns and unreachable IPs to surface issues early.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M11 8v6M8 11h6"/></svg></span><span class="zh">語意搜尋</span><span class="en">Semantic search</span></h3><p><span class="zh">以 embedding 向量 (LLM Server 嵌入模型 + pgvector) 找相關物件，不只關鍵字比對；模型可自選，設定頁能當場檢查維度是否相符。</span><span class="en">Vector search over embeddings (your chosen LLM Server model + pgvector) finds related objects, beyond keyword matching; the settings page verifies the model's dimension on the spot.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span><span class="zh">MCP 伺服器</span><span class="en">MCP server</span></h3><p><span class="zh">內建 MCP 伺服器 (stdio 與 Streamable HTTP)，讓外部 LLM 客戶端也能直接操作 IPAM。</span><span class="en">Built-in MCP server (stdio &amp; Streamable HTTP) lets external LLM clients drive the IPAM too.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span><span class="zh">對話歷程</span><span class="en">Chat history</span></h3><p><span class="zh">助理對話自動持久化，可回溯、管理與稽核歷次問答。</span><span class="en">Assistant conversations are persisted — review, manage and audit past Q&amp;A.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.7-1L14.5 2h-5l-.3 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.5L3 11a7 7 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a7 7 0 0 0 1.7 1l.3 2.5h5l.3-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.5-2-1.5a7 7 0 0 0 .1-1z"/></svg></span><span class="zh">全域 LLM 設定</span><span class="en">Global LLM settings</span></h3><p><span class="zh">自由切換 chat / embedding 模型，直接列出 LLM Server 已安裝標籤，全域一處設定；也可改接 OpenAI 相容端點（會明白提示資料將送往外部）。</span><span class="en">Switch chat / embedding models freely, list installed LLM server tags, configured in one place; an OpenAI-compatible endpoint can be used instead, with an explicit notice that data then leaves your network.</span></p></div>
-      <div class="card"><h3><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a4 4 0 0 0-4 4 3 3 0 0 0-1 5.8V17a3 3 0 0 0 5 2.2A3 3 0 0 0 17 17v-4.2A3 3 0 0 0 16 7a4 4 0 0 0-4-4z"/><path d="M12 3v18"/></svg></span><span class="zh">AI 巡檢</span><span class="en">AI review</span></h3><p><span class="zh">排程讓模型檢視 IPAM 資料，找出可疑、不合理或有資安疑慮之處 —— 管理介面落在一般網段、久未出現卻仍登記在用、命名與實際用途不符。每筆發現都附上依據資料，可點進去查證；判定為誤報忽略後，往後的巡檢不會再跳出來。</span><span class="en">On a schedule, the model reviews your IPAM data for anything suspicious, inconsistent or a security concern — management interfaces in general-purpose subnets, addresses recorded as in use but never seen alive, names that disagree with the data. Every finding cites the records it came from, and dismissing one as a false positive keeps it dismissed on later runs.</span></p></div>
+      <div class="card"><h3 id="ai-smart-assistant"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 20l1-4.5A8 8 0 1 1 21 12z"/></svg></span><span class="zh">智慧助理</span><span class="en">Smart assistant</span><span class="ja">スマートアシスタント</span></h3><p><span class="zh">用自然語言查 IP / 子網路 / 裝置，透過 jt-ipam 內建的 MCP 工具直接讀取你的 IPAM 資料。</span><span class="en">Ask about IPs / subnets / devices in natural language; jt-ipam's built-in MCP tools read your live IPAM data.</span><span class="ja">IP/サブネット/機器を自然言語で尋ねられます。jt-ipam 内蔵の MCP ツールがリアルタイムの IPAM データを読み取ります。</span></p></div>
+      <div class="card"><h3 id="ai-anomaly-detection"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16M7 15l3-4 3 2 5-7"/></svg></span><span class="zh">異常偵測</span><span class="en">Anomaly detection</span><span class="ja">異常検知</span></h3><p><span class="zh">標記異常使用模式與失聯 IP，協助提前發現問題。</span><span class="en">Flags unusual usage patterns and unreachable IPs to surface issues early.</span><span class="ja">通常と異なる利用パターンや応答のない IP を示し、問題の早期発見を助けます。</span></p></div>
+      <div class="card"><h3 id="ai-semantic-search"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M11 8v6M8 11h6"/></svg></span><span class="zh">語意搜尋</span><span class="en">Semantic search</span><span class="ja">セマンティック検索</span></h3><p><span class="zh">以 embedding 向量 (LLM Server 嵌入模型 + pgvector) 找相關物件，不只關鍵字比對；模型可自選，設定頁能當場檢查維度是否相符。</span><span class="en">Vector search over embeddings (your chosen LLM Server model + pgvector) finds related objects, beyond keyword matching; the settings page verifies the model's dimension on the spot.</span><span class="ja">埋め込みベクトル（選択した LLM サーバーのモデル + pgvector）で関連オブジェクトを探します。キーワード一致にとどまりません。モデルは自由に選べ、設定ページで次元が一致しているかをその場で確認できます。</span></p></div>
+      <div class="card"><h3 id="ai-mcp-server"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span><span class="zh">MCP 伺服器</span><span class="en">MCP server</span><span class="ja">MCP サーバー</span></h3><p><span class="zh">內建 MCP 伺服器 (stdio 與 Streamable HTTP)，讓外部 LLM 客戶端也能直接操作 IPAM。</span><span class="en">Built-in MCP server (stdio &amp; Streamable HTTP) lets external LLM clients drive the IPAM too.</span><span class="ja">MCP サーバー（stdio と Streamable HTTP）を内蔵しており、外部の LLM クライアントからも IPAM を操作できます。</span></p></div>
+      <div class="card"><h3 id="ai-chat-history"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span><span class="zh">對話歷程</span><span class="en">Chat history</span><span class="ja">対話履歴</span></h3><p><span class="zh">助理對話自動持久化，可回溯、管理與稽核歷次問答。</span><span class="en">Assistant conversations are persisted, so you can review, manage and audit past Q&amp;A.</span><span class="ja">アシスタントとの対話は自動的に保存され、過去のやり取りを振り返り、管理し、監査できます。</span></p></div>
+      <div class="card"><h3 id="ai-global-llm-settings"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.7-1L14.5 2h-5l-.3 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.5L3 11a7 7 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a7 7 0 0 0 1.7 1l.3 2.5h5l.3-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.5-2-1.5a7 7 0 0 0 .1-1z"/></svg></span><span class="zh">全域 LLM 設定</span><span class="en">Global LLM settings</span><span class="ja">LLM の全体設定</span></h3><p><span class="zh">自由切換 chat / embedding 模型，直接列出 LLM Server 已安裝標籤，全域一處設定；也可改接 OpenAI 相容端點（會明白提示資料將送往外部）。</span><span class="en">Switch chat / embedding models freely, list installed LLM server tags, configured in one place; an OpenAI-compatible endpoint can be used instead, with an explicit notice that data then leaves your network.</span><span class="ja">チャット用と埋め込み用のモデルを自由に切り替えられ、LLM サーバーに導入済みのタグをそのまま一覧表示します。設定は一箇所にまとまっています。OpenAI 互換エンドポイントに切り替えることもできます（その場合はデータが外部へ送られる旨を明示します）。</span></p></div>
+      <div class="card"><h3 id="ai-review"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a4 4 0 0 0-4 4 3 3 0 0 0-1 5.8V17a3 3 0 0 0 5 2.2A3 3 0 0 0 17 17v-4.2A3 3 0 0 0 16 7a4 4 0 0 0-4-4z"/><path d="M12 3v18"/></svg></span><span class="zh">AI 巡檢</span><span class="en">AI review</span><span class="ja">AI 点検</span></h3><p><span class="zh">排程讓模型檢視 IPAM 資料，找出可疑、不合理或有資安疑慮之處：管理介面落在一般網段、久未出現卻仍登記在用、命名與實際用途不符。每筆發現都附上依據資料，可點進去查證；判定為誤報忽略後，往後的巡檢不會再跳出來。</span><span class="en">On a schedule, the model reviews your IPAM data for anything suspicious, inconsistent or a security concern, such as management interfaces in general-purpose subnets, addresses recorded as in use but never seen alive, names that disagree with the data. Every finding cites the records it came from, and dismissing one as a false positive keeps it dismissed on later runs.</span><span class="ja">スケジュールに従ってモデルが IPAM のデータを見直し、不審な点・辻褄の合わない点・セキュリティ上の懸念を洗い出します。たとえば一般用途のサブネットに置かれた管理インタフェース、使用中と記録されているのに一度も応答が確認されていないアドレス、データと食い違う命名などです。どの指摘にも根拠となったレコードが添えられ、誤検知として却下すれば以降の点検では出てきません。</span></p></div>
     </div>
     <p style="margin:16px 0 0;text-align:center;font-size:14px;color:#94a3b8">
-      <span class="zh">註：本套件無內建 LLM Server，請在有 GPU 算力的主機安裝好 LLM Server 後，再提供給 jt-ipam 接取使用。</span><span class="en">Note: this package does not bundle an LLM Server. Set up an LLM Server on a host with GPU compute, then point jt-ipam at it.</span>
+      <span class="zh">註：本套件無內建 LLM Server，請在有 GPU 算力的主機安裝好 LLM Server 後，再提供給 jt-ipam 接取使用。</span><span class="en">Note: this package does not bundle an LLM Server. Set up an LLM Server on a host with GPU compute, then point jt-ipam at it.</span><span class="ja">注：本パッケージに LLM サーバーは含まれていません。GPU を備えたホストに LLM サーバーを用意したうえで、jt-ipam から接続してください。</span>
     </p>
   </div>
 </section>
@@ -644,76 +860,81 @@
 <section id="install">
   <div class="wrap">
     <div class="sec-head">
-      <h2><span class="zh">部署</span><span class="en">Deployment</span></h2>
-      <p><span class="zh">兩種部署方式：<strong>主力</strong>是 systemd + apt（預設強制 HTTPS）；對外 / 正式環境的標準是跑在<strong>高安全性 nginx 反向代理</strong>之後（TLS 1.2/1.3、HSTS preload、嚴格 CSP、完整安全標頭、隱藏上游版本指紋，後端只綁 loopback），內網 / 開發可用 uvicorn 自簽。另有<strong>選用</strong>的 Docker Compose。</span><span class="en">Two ways to deploy: the <strong>primary</strong> one is systemd + apt (HTTPS enforced by default). For internet-facing / production the standard is to run behind a <strong>hardened nginx reverse proxy</strong> (TLS 1.2/1.3, HSTS preload, strict CSP, full security headers, hidden upstream banner, backend bound to loopback); internal / dev can use a self-signed uvicorn. Plus an <strong>optional</strong> Docker Compose path.</span></p>
-      <p class="note"><span class="zh">⚠️ 必要：若你在前面再擋一層自己的反向代理／LB，<strong>那台邊緣機也必須設同一套安全標頭</strong>（HSTS／CSP／X-Frame-Options／Permissions-Policy／COOP／CORP），安全標頭不會自動跨多一跳存活——內建外部代理範本已含。</span><span class="en">⚠️ Required: if you put your own reverse proxy / LB in front, <strong>that edge box must set the same security headers</strong> (HSTS / CSP / X-Frame-Options / Permissions-Policy / COOP / CORP) — they don't survive an extra hop; the bundled external-proxy templates already do.</span></p>
+      <h2><span class="zh">部署</span><span class="en">Deployment</span><span class="ja">デプロイ</span></h2>
+      <p><span class="zh">兩種部署方式：<strong>主力</strong>是 systemd + apt（預設強制 HTTPS）；對外 / 正式環境的標準是跑在<strong>高安全性 nginx 反向代理</strong>之後（TLS 1.2/1.3、HSTS preload、嚴格 CSP、完整安全標頭、隱藏上游版本指紋，後端只綁 loopback），內網 / 開發可用 uvicorn 自簽。另有<strong>選用</strong>的 Docker Compose。</span><span class="en">Two ways to deploy: the <strong>primary</strong> one is systemd + apt (HTTPS enforced by default). For internet-facing / production the standard is to run behind a <strong>hardened nginx reverse proxy</strong> (TLS 1.2/1.3, HSTS preload, strict CSP, full security headers, hidden upstream banner, backend bound to loopback); internal / dev can use a self-signed uvicorn. Plus an <strong>optional</strong> Docker Compose path.</span><span class="ja">導入方法は二つあります。<strong>主力</strong>は systemd + apt です（既定で HTTPS を強制）。インターネットに公開する本番環境では、<strong>堅牢化した nginx リバースプロキシ</strong>の背後で動かすのが標準です（TLS 1.2/1.3、HSTS preload、厳格な CSP、完全なセキュリティヘッダ、上流のバナー情報の秘匿、バックエンドはループバックのみにバインド）。社内や開発環境であれば uvicorn の自己署名で構いません。さらに<strong>選択肢として</strong> Docker Compose も用意しています。</span></p>
+      <p class="note"><span class="zh">⚠️ 必要：若你在前面再擋一層自己的反向代理/LB，<strong>那台邊緣機也必須設同一套安全標頭</strong>（HSTS/CSP/X-Frame-Options/Permissions-Policy/COOP/CORP），安全標頭不會自動跨多一跳存活；內建外部代理範本已含。</span><span class="en">⚠️ Required: if you put your own reverse proxy / LB in front, <strong>that edge box must set the same security headers</strong> (HSTS / CSP / X-Frame-Options / Permissions-Policy / COOP / CORP), since they don't survive an extra hop; the bundled external-proxy templates already do.</span><span class="ja">⚠️ 必須：自前のリバースプロキシやロードバランサをさらに前段に置く場合、<strong>その境界の機器にも同じセキュリティヘッダを設定してください</strong>（HSTS/CSP/X-Frame-Options/Permissions-Policy/COOP/CORP）。セキュリティヘッダは一段余分に経由しても自動では引き継がれません。同梱の外部プロキシ用テンプレートには既に含まれています。</span></p>
     </div>
     <p style="margin:0 0 14px" class="sysreq">
-      <span class="zh"><strong>系統需求：</strong>Debian 12+ 或 Ubuntu 22.04+（64 位元）。<br><strong>硬體：</strong>最低 2 核心 CPU / 4 GB 記憶體 / 20 GB 磁碟；建議 4 核心 / 8 GB / 40 GB 以上（保留給資料庫與備份成長）。選用的本地 LLM 請另跑於獨立主機、依模型自行配足記憶體 / 顯示記憶體，不含在此。<br><strong>自動安裝：</strong>安裝腳本會自動裝好並設定 PostgreSQL 16、Python 3.11+、Node 20+、nginx 等相依套件，並自動產生所有金鑰。<br><strong>更多：</strong>完整步驟與環境變數見 GitHub 上的 README 與 <code>scripts/</code>。</span>
-      <span class="en"><strong>Requirements:</strong> Debian 12+ or Ubuntu 22.04+ (64-bit).<br><strong>Hardware:</strong> minimum 2 vCPU / 4 GB RAM / 20 GB disk; recommended 4 vCPU / 8 GB / 40 GB+ (headroom for the database and backups). The optional local LLM runs on a separate host with its own RAM/VRAM and is not included here.<br><strong>Auto-setup:</strong> the install script installs and configures PostgreSQL 16, Python 3.11+, Node 20+ and nginx, and generates all keys for you.<br><strong>More:</strong> see the README and <code>scripts/</code> on GitHub for full steps and env vars.</span>
+      <span class="zh"><strong>系統需求：</strong>Debian 12/13、Ubuntu 22.04/24.04/26.04（x86_64），建議 Ubuntu 24.04 LTS 或 Debian 12/13。RDP/VNC 主控台引擎 guacd 是必要元件，jt-ipam 只替這些版本預編；其他版本、衍生發行版（如 Linux Mint）與 ARM 機器，安裝會停下來。Proxmox LXC、虛擬機、裸機皆可。<br><strong>硬體：</strong>最低 2 核心 CPU / 4 GB 記憶體 / 20 GB 磁碟；建議 4 核心 / 8 GB / 50 GB（保留給資料庫、稽核記錄與備份成長）。4 GB 的機器後端只開 2 個 worker，升級時記憶體不夠會在前端 build 期間暫停後端，加 2 GB swap 就不會。選用的本地 LLM 請另跑於獨立主機、依模型自行配足記憶體 / 顯示記憶體，不含在此。<br><strong>自動安裝：</strong>安裝腳本會自動裝好並設定 PostgreSQL 16、Python 3.11+、Node 22 LTS（建置前端用）、nginx 等相依套件，並自動產生所有金鑰。<br><strong>更多：</strong>完整步驟與環境變數見 GitHub 上的 README 與 <code>scripts/</code>。</span>
+      <span class="en"><strong>Requirements:</strong> Debian 12 / 13 or Ubuntu 22.04 / 24.04 / 26.04 (x86_64); Ubuntu 24.04 LTS or Debian 12 / 13 recommended. guacd, the RDP / VNC console engine, is required and prebuilt only for these versions; on other versions, derivatives (e.g. Linux Mint) or ARM the installer stops. Proxmox LXC, VMs and bare metal all work.<br><strong>Hardware:</strong> minimum 2 vCPU / 4 GB RAM / 20 GB disk; recommended 4 vCPU / 8 GB / 50 GB (headroom for the database, audit log and backups). On a 4 GB machine the backend runs 2 workers and an upgrade pauses it during the frontend build if memory is short; 2 GB of swap avoids that. The optional local LLM runs on a separate host with its own RAM/VRAM and is not included here.<br><strong>Auto-setup:</strong> the install script installs and configures PostgreSQL 16, Python 3.11+, Node 22 LTS (to build the frontend) and nginx, and generates all keys for you.<br><strong>More:</strong> see the README and <code>scripts/</code> on GitHub for full steps and env vars.</span><span class="ja"><strong>システム要件：</strong>Debian 12/13、Ubuntu 22.04/24.04/26.04（x86_64）。推奨は Ubuntu 24.04 LTS または Debian 12/13。RDP/VNC コンソールのエンジン guacd は必須で、これらのバージョン向けにのみ事前ビルドしています。その他のバージョン、派生ディストリビューション（Linux Mint など）、ARM ではインストールが止まります。Proxmox LXC、仮想マシン、ベアメタルのいずれでも動きます。<br><strong>ハードウェア：</strong>最低 2 vCPU / 4 GB メモリ / 20 GB ディスク。推奨は 4 vCPU / 8 GB / 50 GB（データベース、監査ログ、バックアップの増加に備えて）。4 GB のマシンではワーカーは 2 つになり、アップグレード時にメモリが足りなければフロントエンドのビルド中はバックエンドを一時停止します。2 GB のスワップがあれば停止しません。任意のローカル LLM は別ホストで動かし、モデルに応じたメモリ/VRAM を用意してください。ここには含まれません。<br><strong>自動セットアップ：</strong>インストールスクリプトが PostgreSQL 16、Python 3.11 以降、Node 22 LTS（フロントエンドのビルド用）、nginx などの依存関係を導入・設定し、必要な鍵もすべて生成します。<br><strong>詳細：</strong>手順と環境変数の全体は GitHub の README と <code>scripts/</code> を参照してください。</span>
     </p>
     <!-- ───────── Zone A: systemd + apt (primary) ───────── -->
     <div class="deploy-zone deploy-zone--primary">
-      <div class="dz-head"><span class="dz-badge dz-badge--primary"><span class="zh">主力</span><span class="en">Primary</span></span> systemd + apt</div>
+      <div class="dz-head"><span class="dz-badge dz-badge--primary"><span class="zh">主力</span><span class="en">Primary</span><span class="ja">主力</span></span> systemd + apt</div>
 
-      <h3 class="dz-h3"><span class="zh">安裝</span><span class="en">Install</span></h3>
-      <pre><span class="zh"># 前置：最小化系統可能沒有 curl（一行式安裝需要它）</span><span class="en"># prerequisite: a minimal system may not have curl (the one-liner needs it)</span>
+      <h3 class="dz-h3" id="install-apt"><span class="zh">安裝</span><span class="en">Install</span><span class="ja">インストール</span></h3>
+      <pre><span class="zh"># 前置：最小化系統可能沒有 curl（一行式安裝需要它）</span><span class="en"># prerequisite: a minimal system may not have curl (the one-liner needs it)</span><span class="ja"># 前提：最小構成のシステムには curl が無いことがあります（一行インストールに必要です）</span>
 sudo apt-get update &amp;&amp; sudo apt-get install -y curl
 
 curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-ipam/main/scripts/bootstrap.sh | sudo <span class="g">bash</span></pre>
       <p style="margin:10px 0 0" class="disclaimer">
         <span class="zh"><strong>首次登入密碼：</strong>安裝程式會自動建立管理員帳號 <code>admin</code> 並產生一組隨機密碼，於安裝結束時印出一次（同時存到 <code>/etc/jt-ipam/.admin-initial-password</code>，僅 root 可讀；該檔在 <code>/etc</code> 之下、不在 web root 內，無法透過 HTTP 連到）。請登入後立即更換，之後即可安全刪除此檔（<code>sudo rm /etc/jt-ipam/.admin-initial-password</code>）；日後可用 <code>create-admin --force-update</code> CLI 重置（詳見 README）。</span>
-        <span class="en"><strong>First-login password:</strong> the installer creates the <code>admin</code> account with a random password and prints it once at the end (also saved to <code>/etc/jt-ipam/.admin-initial-password</code>, root-only — under <code>/etc</code>, outside the web root, so never reachable over HTTP). Change it right after logging in, then you can safely delete the file (<code>sudo rm /etc/jt-ipam/.admin-initial-password</code>); reset later with the <code>create-admin --force-update</code> CLI (see the README).</span>
+        <span class="en"><strong>First-login password:</strong> the installer creates the <code>admin</code> account with a random password and prints it once at the end (also saved to <code>/etc/jt-ipam/.admin-initial-password</code>, root-only and under <code>/etc</code>, outside the web root, so never reachable over HTTP). Change it right after logging in, then you can safely delete the file (<code>sudo rm /etc/jt-ipam/.admin-initial-password</code>); reset later with the <code>create-admin --force-update</code> CLI (see the README).</span><span class="ja"><strong>初回ログインのパスワード：</strong>インストーラが管理者アカウント <code>admin</code> を作成し、ランダムなパスワードを生成して、インストール終了時に一度だけ表示します（同時に <code>/etc/jt-ipam/.admin-initial-password</code> に保存されます。root のみ読み取り可能で、<code>/etc</code> 配下かつ web ルートの外にあるため HTTP からは到達できません）。ログイン後すぐに変更し、その後はこのファイルを削除して構いません（<code>sudo rm /etc/jt-ipam/.admin-initial-password</code>）。後から <code>create-admin --force-update</code> の CLI で再設定できます（README を参照）。</span>
       </p>
 
-      <h3 class="dz-h3"><span class="zh">升級</span><span class="en">Upgrade</span></h3>
+      <h3 class="dz-h3" id="upgrade-apt"><span class="zh">升級</span><span class="en">Upgrade</span><span class="ja">アップグレード</span></h3>
       <pre>sudo <span class="g">bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade</span></pre>
 
-      <h3 class="dz-h3"><span class="zh">移除</span><span class="en">Uninstall</span></h3>
+      <h3 class="dz-h3" id="uninstall-apt"><span class="zh">移除</span><span class="en">Uninstall</span><span class="ja">アンインストール</span></h3>
       <pre>sudo <span class="g">bash /opt/jt-ipam/scripts/jt-ipam.sh uninstall</span></pre>
     </div>
 
+    <p class="sysreq" style="margin:0 0 14px">
+      <span class="zh"><strong>裝好之後：</strong>要依什麼順序開啟功能（先管 IP 與子網路，再接掃描代理與 LibreNMS 等整合，最後是裝置、機櫃與自動化），見<a href="adoption.html">導入流程</a>。</span>
+      <span class="en"><strong>After installing:</strong> for the order to turn features on (IPs and subnets first, then scan agents and integrations such as LibreNMS, then devices, racks and automation), see the <a href="adoption.html">adoption roadmap</a>.</span><span class="ja"><strong>インストールの後は：</strong>機能を有効にする順番（まず IP とサブネット、次にスキャンエージェントと LibreNMS などの連携、最後に機器・ラック・自動化）は<a href="adoption.html">導入ガイド</a>をご覧ください。</span>
+    </p>
+
     <!-- ───────── Zone B: Docker Compose (optional) ───────── -->
     <div class="deploy-zone deploy-zone--optional">
-      <div class="dz-head"><span class="dz-badge"><span class="zh">選用</span><span class="en">Optional</span></span> Docker Compose</div>
+      <div class="dz-head"><span class="dz-badge"><span class="zh">選用</span><span class="en">Optional</span><span class="ja">選択肢</span></span> Docker Compose</div>
       <p style="margin:0 0 12px" class="disclaimer">
-        <span class="zh"><strong>非優先模式。</strong>Docker Compose 屬<strong>選用 / 次要</strong>部署路徑，<strong>並非本專案優先或主力的部署模式</strong>——主力且建議的仍是上方的 systemd + apt。Compose 適合快速試用或容器優先的環境；相關檔案（含 <code>gen-env.sh</code>）都在 <strong>git clone 下來的 repo</strong> 的 <code>deploy/docker/</code> 內，所以要先 clone。</span>
-        <span class="en"><strong>Not the preferred mode.</strong> Docker Compose is an <strong>optional / secondary</strong> path and is <strong>not</strong> the project's preferred or primary deployment mode — systemd + apt above remains the recommended one. Use it for a quick trial or container-first setups; the files (including <code>gen-env.sh</code>) live in the <strong>cloned repo</strong> under <code>deploy/docker/</code>, so clone first.</span>
+        <span class="zh"><strong>非優先模式。</strong>Docker Compose 屬<strong>選用 / 次要</strong>部署路徑，<strong>並非本專案優先或主力的部署模式</strong>；主力且建議的仍是上方的 systemd + apt。Compose 適合快速試用或容器優先的環境；相關檔案（含 <code>gen-env.sh</code>）都在 <strong>git clone 下來的 repo</strong> 的 <code>deploy/docker/</code> 內，所以要先 clone。</span>
+        <span class="en"><strong>Not the preferred mode.</strong> Docker Compose is an <strong>optional / secondary</strong> path and is <strong>not</strong> the project's preferred or primary deployment mode; systemd + apt above remains the recommended one. Use it for a quick trial or container-first setups; the files (including <code>gen-env.sh</code>) live in the <strong>cloned repo</strong> under <code>deploy/docker/</code>, so clone first.</span><span class="ja"><strong>優先されるモードではありません。</strong>Docker Compose は<strong>任意かつ副次的な</strong>導入経路であり、本プロジェクトが優先する主力の方式では<strong>ありません</strong>。推奨は上記の systemd + apt です。Compose は手早く試したい場合やコンテナ中心の環境に向いています。関連ファイル（<code>gen-env.sh</code> を含む）は <strong>git clone したリポジトリ</strong>の <code>deploy/docker/</code> 内にあるため、先に clone してください。</span>
       </p>
 
-      <h3 class="dz-h3"><span class="zh">安裝</span><span class="en">Install</span></h3>
-      <pre><span class="zh"># 前置：先裝 curl/git，再裝 Docker Engine（含 compose 外掛）</span><span class="en"># prerequisites: curl/git first, then Docker Engine (incl. the compose plugin)</span>
+      <h3 class="dz-h3" id="install-docker"><span class="zh">安裝</span><span class="en">Install</span><span class="ja">インストール</span></h3>
+      <pre><span class="zh"># 前置：先裝 curl/git，再裝 Docker Engine（含 compose 外掛）</span><span class="en"># prerequisites: curl/git first, then Docker Engine (incl. the compose plugin)</span><span class="ja"># 前提：先に curl/git を入れ、次に Docker Engine（compose プラグインを含む）を入れます</span>
 sudo apt-get update &amp;&amp; sudo apt-get install -y curl git
 curl -fsSL https://get.docker.com | sudo sh
-docker compose version          <span class="zh"># 應印出 v2.x</span><span class="en"># should print v2.x</span>
+docker compose version          <span class="zh"># 應印出 v2.x</span><span class="en"># should print v2.x</span><span class="ja"># v2.x と表示されるはずです</span>
 
 git clone https://github.com/jasoncheng7115/jt-ipam.git
 cd jt-ipam/deploy/docker &amp;&amp; ./gen-env.sh &amp;&amp; <span class="g">docker compose up -d --build</span></pre>
       <p style="margin:10px 0 0" class="disclaimer">
         <span class="zh"><strong>前置需求：</strong>需要 <strong>git</strong> 與 <strong>Docker Engine（含 <code>docker compose</code> v2 外掛）</strong>。建議用官方腳本 <code>get.docker.com</code> 安裝（已含 compose 外掛）；<strong>不要用 <code>apt install docker.io</code></strong>，那個版本沒有 <code>docker compose</code> 子指令。其他發行版請用各自的套件管理員裝 git。</span>
-        <span class="en"><strong>Prerequisites:</strong> you need <strong>git</strong> and <strong>Docker Engine (with the <code>docker compose</code> v2 plugin)</strong>. The official <code>get.docker.com</code> script installs both the engine and the compose plugin; <strong>do not use <code>apt install docker.io</code></strong> — it lacks the <code>docker compose</code> subcommand. On non-Debian distros install git via your package manager.</span>
+        <span class="en"><strong>Prerequisites:</strong> you need <strong>git</strong> and <strong>Docker Engine (with the <code>docker compose</code> v2 plugin)</strong>. The official <code>get.docker.com</code> script installs both the engine and the compose plugin; <strong>do not use <code>apt install docker.io</code></strong>, since it lacks the <code>docker compose</code> subcommand. On non-Debian distros install git via your package manager.</span><span class="ja"><strong>前提条件：</strong><strong>git</strong> と <strong>Docker Engine（<code>docker compose</code> v2 プラグインを含む）</strong>が必要です。公式スクリプト <code>get.docker.com</code> ならエンジンと compose プラグインの両方が入ります。<strong><code>apt install docker.io</code> は使わないでください</strong>。あちらには <code>docker compose</code> サブコマンドがありません。Debian 系以外のディストリビューションでは、各自のパッケージマネージャで git を導入してください。</span>
       </p>
       <p style="margin:10px 0 0" class="disclaimer">
         <span class="zh"><strong>首次登入密碼：</strong><code>gen-env.sh</code> 會自動產生一組隨機 <code>admin</code> 密碼，印在它的輸出、並存進 <code>.env</code> 的 <code>JT_IPAM_ADMIN_PASSWORD</code>（檔案 0600）；首次啟動 backend 會用它建立 admin 帳號。登入後請立即更換。也可自己改 <code>.env</code> 指定，或留空、之後用 <code>docker compose exec backend python -m app.cli.bootstrap create-admin …</code> 手動建立。</span>
-        <span class="en"><strong>First-login password:</strong> <code>gen-env.sh</code> generates a random <code>admin</code> password, prints it in its output and stores it as <code>JT_IPAM_ADMIN_PASSWORD</code> in <code>.env</code> (mode 0600); the backend creates the admin on first boot using it. Change it right after logging in. You can also set your own in <code>.env</code>, or leave it empty and create the admin later with <code>docker compose exec backend python -m app.cli.bootstrap create-admin …</code>.</span>
+        <span class="en"><strong>First-login password:</strong> <code>gen-env.sh</code> generates a random <code>admin</code> password, prints it in its output and stores it as <code>JT_IPAM_ADMIN_PASSWORD</code> in <code>.env</code> (mode 0600); the backend creates the admin on first boot using it. Change it right after logging in. You can also set your own in <code>.env</code>, or leave it empty and create the admin later with <code>docker compose exec backend python -m app.cli.bootstrap create-admin …</code>.</span><span class="ja"><strong>初回ログインのパスワード：</strong><code>gen-env.sh</code> がランダムな <code>admin</code> パスワードを生成し、その出力に表示するとともに <code>.env</code> の <code>JT_IPAM_ADMIN_PASSWORD</code> に保存します（パーミッションは 0600）。バックエンドは初回起動時にそれを使って admin アカウントを作成します。ログイン後すぐに変更してください。<code>.env</code> に自分で指定することも、空のままにして後から <code>docker compose exec backend python -m app.cli.bootstrap create-admin …</code> で作成することもできます。</span>
       </p>
 
-      <h3 class="dz-h3"><span class="zh">升級</span><span class="en">Upgrade</span></h3>
+      <h3 class="dz-h3" id="upgrade-docker"><span class="zh">升級</span><span class="en">Upgrade</span><span class="ja">アップグレード</span></h3>
       <pre>cd jt-ipam/deploy/docker &amp;&amp; <span class="g">./update.sh</span></pre>
       <p style="margin:10px 0 0" class="disclaimer">
         <span class="zh"><code>./update.sh</code> = <code>git pull</code> → <code>docker compose build</code> → <code>docker compose up -d</code>；backend 啟動時自動跑資料庫遷移（<code>alembic upgrade head</code>），不需手動。<strong>別用 <code>jt-ipam.sh upgrade</code></strong>（那是 systemd 安裝專用）。</span>
-        <span class="en"><code>./update.sh</code> = <code>git pull</code> → <code>docker compose build</code> → <code>docker compose up -d</code>; the backend auto-runs DB migrations (<code>alembic upgrade head</code>) on start. <strong>Do not use <code>jt-ipam.sh upgrade</code></strong> — that is for the systemd install only.</span>
+        <span class="en"><code>./update.sh</code> = <code>git pull</code> → <code>docker compose build</code> → <code>docker compose up -d</code>; the backend auto-runs DB migrations (<code>alembic upgrade head</code>) on start. <strong>Do not use <code>jt-ipam.sh upgrade</code></strong>; that is for the systemd install only.</span><span class="ja"><code>./update.sh</code> は <code>git pull</code> → <code>docker compose build</code> → <code>docker compose up -d</code> です。バックエンドは起動時にデータベースのマイグレーション（<code>alembic upgrade head</code>）を自動で実行するため、手動操作は不要です。<strong><code>jt-ipam.sh upgrade</code> は使わないでください</strong>。あれは systemd での導入専用です。</span>
       </p>
 
-      <h3 class="dz-h3"><span class="zh">內網／離線主機（無外網）</span><span class="en">Air-gapped / offline host</span></h3>
-      <pre><span class="zh"># 有外網的主機：取得原始碼、build 並打包映像</span><span class="en"># internet-connected host: get the source, build & pack images</span>
+      <h3 class="dz-h3" id="install-offline"><span class="zh">內網/離線主機（無外網）</span><span class="en">Air-gapped / offline host</span><span class="ja">閉域/オフラインのホスト（外部接続なし）</span></h3>
+      <pre><span class="zh"># 有外網的主機：取得原始碼、build 並打包映像</span><span class="en"># internet-connected host: get the source, build & pack images</span><span class="ja"># インターネットに接続できるホスト：ソースを取得し、ビルドしてイメージをまとめます</span>
 git clone https://github.com/jasoncheng7115/jt-ipam.git
-cd jt-ipam/deploy/docker &amp;&amp; <span class="g">./offline-export.sh</span>   <span class="zh"># → jt-ipam-images-&lt;sha&gt;.tar.gz（升級時先 git pull 取新版再 export）</span><span class="en"># → jt-ipam-images-&lt;sha&gt;.tar.gz (to upgrade: git pull first, then re-export)</span>
-<span class="zh"># 把壓縮檔 + 整個 jt-ipam repo 複製到內網主機，在 deploy/docker/ 下執行：</span><span class="en"># copy that archive + the whole jt-ipam repo to the offline host, then in deploy/docker/:</span>
+cd jt-ipam/deploy/docker &amp;&amp; <span class="g">./offline-export.sh</span>   <span class="zh"># → jt-ipam-images-&lt;sha&gt;.tar.gz（升級時先 git pull 取新版再 export）</span><span class="en"># → jt-ipam-images-&lt;sha&gt;.tar.gz (to upgrade: git pull first, then re-export)</span><span class="ja"># → jt-ipam-images-&lt;sha&gt;.tar.gz（アップグレード時は先に git pull してから再度 export します）</span>
+<span class="zh"># 把壓縮檔 + 整個 jt-ipam repo 複製到內網主機，在 deploy/docker/ 下執行：</span><span class="en"># copy that archive + the whole jt-ipam repo to the offline host, then in deploy/docker/:</span><span class="ja"># その書庫と jt-ipam リポジトリ全体をオフラインのホストへコピーし、deploy/docker/ で実行します：</span>
 ./gen-env.sh &amp;&amp; <span class="g">./offline-import.sh jt-ipam-images-&lt;sha&gt;.tar.gz</span></pre>
       <p style="margin:10px 0 0" class="disclaimer">
         <span class="zh">沒有外網（連不到 Docker Hub）時：在有網路的主機 <code>offline-export.sh</code> 把四個映像（app + postgres/redis）打包成一個壓縮檔，帶到內網用 <code>offline-import.sh</code> 載入並啟動（<code>--no-build --pull never</code>，只用壓縮檔裡的映像）。<strong>升級</strong>就是再 export 新壓縮檔、複製過去、再 import 一次，<code>.env</code> 不動。</span>
-        <span class="en">When the target host has no internet (can't reach Docker Hub): on an online host <code>offline-export.sh</code> packs all four images (app + postgres/redis) into one archive; carry it to the offline host and <code>offline-import.sh</code> loads + starts the stack (<code>--no-build --pull never</code>, images come only from the archive). <strong>Upgrade</strong> = re-export, copy the newer archive over, import again; <code>.env</code> stays.</span>
+        <span class="en">When the target host has no internet (can't reach Docker Hub): on an online host <code>offline-export.sh</code> packs all four images (app + postgres/redis) into one archive; carry it to the offline host and <code>offline-import.sh</code> loads + starts the stack (<code>--no-build --pull never</code>, images come only from the archive). <strong>Upgrade</strong> = re-export, copy the newer archive over, import again; <code>.env</code> stays.</span><span class="ja">対象ホストがインターネットに接続できない（Docker Hub に到達できない）場合：接続できるホストで <code>offline-export.sh</code> を実行し、四つのイメージ（アプリ + postgres/redis）をひとつの書庫にまとめます。それをオフラインのホストへ持ち込み、<code>offline-import.sh</code> で読み込んで起動します（<code>--no-build --pull never</code> により、イメージは書庫からのみ取得されます）。<strong>アップグレード</strong>は、新しい書庫を再度 export してコピーし、もう一度 import するだけです。<code>.env</code> はそのままで構いません。</span>
       </p>
     </div>
   </div>
@@ -722,42 +943,125 @@ cd jt-ipam/deploy/docker &amp;&amp; <span class="g">./offline-export.sh</span>  
 <footer>
   <div class="wrap foot-in">
     <div>
-      <strong style="color:#e8f0fb">jt-ipam</strong> · <span class="zh">為整合而生的 IPAM</span><span class="en">self-hosted, integration-focused IPAM</span><br>
-      <span style="opacity:.7">Apache-2.0 · © Jason Cheng</span>
+      <strong style="color:#e8f0fb">jt-ipam</strong> · <span class="zh">為整合而生的 IPAM</span><span class="en">self-hosted, integration-focused IPAM</span><span class="ja">自社運用で連携に強い IPAM</span><br>
+      <span style="opacity:.7">AGPL-3.0 · © Jason Cheng</span>
     </div>
     <div>
       <a href="https://github.com/jasoncheng7115/jt-ipam" target="_blank" rel="noopener">GitHub</a> ·
-      <a href="https://github.com/jasoncheng7115/jt-ipam/issues" target="_blank" rel="noopener">Issues</a>
+      <a href="https://github.com/jasoncheng7115/jt-ipam/issues" target="_blank" rel="noopener">Issues</a><span
+        class="zh"> · <a href="adoption.html">導入流程</a> · <a href="https://slide.jason.tools/#q=jt-ipam" target="_blank" rel="noopener">演講</a> · <a href="troubleshooting.html">疑難排解</a></span><span
+        class="en"> · <a href="adoption.html">Adoption roadmap</a> · <a href="https://slide.jason.tools/#q=jt-ipam" target="_blank" rel="noopener">Talks</a> · <a href="troubleshooting.html">Troubleshooting</a></span><span
+        class="ja"> · <a href="adoption.html">導入ガイド</a> · <a href="https://slide.jason.tools/#q=jt-ipam" target="_blank" rel="noopener">発表資料</a> · <a href="troubleshooting.html">トラブルシューティング</a></span>
     </div>
   </div>
 </footer>
 
 <div id="lightbox"><img id="lightbox-img" alt="" /></div>
 <script>
-  // 初始語言已由 <body> 開頭的 inline script 決定（避免閃爍）；這裡只負責按鈕切換。
   (function(){
-    var btn = document.getElementById('langBtn');
+    // 初始語言已由 <body> 開頭的 inline script 決定（避免閃爍）；這裡只負責切換按鈕。
     var KEY = 'jtipam-doc-lang';
-    function isEn(){ return document.body.classList.contains('lang-en'); }
-    // 按鈕顯示「要切換過去」的語言：中文版顯示 English、英文版顯示 繁體中文
-    function setBtn(){ btn.textContent = isEn() ? '繁體中文' : 'English'; }
-    setBtn();
-    btn.addEventListener('click', function(){
-      var en = !isEn();
-      document.body.classList.toggle('lang-en', en);
-      document.documentElement.setAttribute('lang', en ? 'en' : 'zh-Hant');
-      localStorage.setItem(KEY, en ? 'en' : 'zh');
-      // 切換時把語言寫進網址（English→?lang=en、繁體中文→?lang=zh-TW），方便分享/書籤
-      try { var u = new URL(location.href); u.searchParams.set('lang', en ? 'en' : 'zh-TW'); history.replaceState(null, '', u); } catch (e) {}
-      setBtn();
-    });
+    var btn = document.getElementById('langBtn');
+    var menu = document.getElementById('langMenu');
+    var label = document.getElementById('langCur');
+    var items = menu ? Array.prototype.slice.call(menu.querySelectorAll('li')) : [];
+    function cur(){ return document.body.classList.contains('lang-ja') ? 'ja'
+                         : document.body.classList.contains('lang-en') ? 'en' : 'zh'; }
+    function mark(){
+      var c = cur();
+      items.forEach(function(li){ li.setAttribute('aria-selected', String(li.dataset.lang === c)); });
+      var on = items.filter(function(li){ return li.dataset.lang === c; })[0];
+      if (label && on) label.textContent = on.textContent.replace('✓', '').trim();
+    }
+    function open(v){
+      if (!menu || !btn) return;
+      menu.hidden = !v;
+      btn.setAttribute('aria-expanded', String(v));
+    }
+    function set(l){
+      document.body.classList.remove('lang-zh','lang-en','lang-ja');
+      document.body.classList.add('lang-' + l);
+      document.documentElement.setAttribute('lang', l === 'en' ? 'en' : l === 'ja' ? 'ja' : 'zh-Hant');
+      try {
+        localStorage.setItem(KEY, l);
+        var u = new URL(location.href);
+        u.searchParams.set('lang', l === 'en' ? 'en' : l === 'ja' ? 'ja' : 'zh-TW');
+        history.replaceState(null, '', u);
+      } catch (e) {}
+      mark(); open(false);
+      // 頁面上其他要跟著語言改字的東西（例如 api.html 的上一節/下一節標題）掛這個事件。
+      document.dispatchEvent(new CustomEvent('jtipam:langchange', { detail: { lang: l } }));
+    }
+    if (btn) btn.addEventListener('click', function(e){ e.stopPropagation(); open(menu.hidden); });
+    items.forEach(function(li){ li.addEventListener('click', function(){ set(li.dataset.lang); }); });
+    // 點面板外面、按 Esc 都要關：自己畫的面板不會自動有這些行為。
+    document.addEventListener('click', function(e){ if (menu && !menu.hidden && !menu.contains(e.target)) open(false); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape') open(false); });
+    mark();
   })();
+  // 物件層級那張 SVG：文字要縮到框裡
+  //
+  // SVG 的 <text> 沒有 overflow 也不會截斷，放不下就直接畫到框外。方框固定 146 寬，
+  // 中文「機房 / 地點」放得下，日文「サーバルーム/拠点」放不下（約 166），英文
+  // "Virtualization" 也擦邊。逐字調字級會在下次加語言或改字時再壞一次，所以改成量完
+  // 自己縮：只量「目前顯示中的那一個」（其他語言是 display:none，長度回 0）。
+  (function(){
+    var svg = document.querySelector('.model-svg');
+    if (!svg || !svg.getBBox) return;
+    var MAX = 128;          // 146 的方框，左右各留 9
+    var BASE = 18.5;        // 與 <g font-size> 一致
+    function fit(){
+      svg.querySelectorAll('text').forEach(function(t){
+        t.style.fontSize = '';
+        var w = 0;
+        try { w = t.getComputedTextLength(); } catch (e) { return; }
+        if (!w) return;                       // 這個語言目前沒顯示
+        if (w <= MAX) return;
+        // 一次算不準（字寬不隨字級線性變化），量到放得下為止；有下限，不會縮成看不見
+        var size = BASE;
+        for (var i = 0; i < 6 && w > MAX && size > 12; i++) {
+          size = Math.max(12, size * MAX / w * 0.99);
+          t.style.fontSize = size.toFixed(2) + 'px';
+          w = t.getComputedTextLength();
+        }
+      });
+    }
+    document.addEventListener('jtipam:langchange', function(){ setTimeout(fit, 0); });
+    // 字型載入完成前量到的是退路字型的寬度，會縮過頭或縮不夠
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(fit);
+    fit();
+  })();
+
+  // 畫面導覽：截圖也要跟著語言換
+  //
+  // 英文與日文頁面本來配的是中文截圖，切了語言、圖裡的字還是中文，那看起來
+  // 像「這套系統其實只有中文」。有三語版本的圖標了 data-shot，換語言時換路徑。
+  (function(){
+    function cur(){
+      var c = document.body.className;
+      return c.indexOf('lang-ja') >= 0 ? 'ja' : c.indexOf('lang-zh') >= 0 ? 'zh' : 'en';
+    }
+    // 語言與截圖名稱都先比對允許清單再組路徑（不讓頁面上的文字直接變成網址）
+    var LANGS = { en: 1, zh: 1, ja: 1 };
+    function apply(lang){
+      if (!Object.prototype.hasOwnProperty.call(LANGS, lang)) lang = 'en';
+      document.querySelectorAll('img[data-shot]').forEach(function(img){
+        var shot = img.getAttribute('data-shot') || '';
+        if (!/^[a-z0-9_-]+$/i.test(shot)) return;
+        var next = 'shots/' + lang + '/' + shot + '.png';
+        if (img.getAttribute('src') !== next) img.setAttribute('src', next);
+      });
+    }
+    document.addEventListener('jtipam:langchange', function(e){ apply(e.detail.lang); });
+    apply(cur());
+  })();
+
   // 畫面導覽：點擊擷圖放大
   (function(){
     var lb = document.getElementById('lightbox');
     var lbImg = document.getElementById('lightbox-img');
     if (!lb) return;
-    document.querySelectorAll('#screens .shot, .hero-shot .shot').forEach(function(img){
+    document.querySelectorAll('#screens .shot, #shelves .shot, .hero-shot .shot').forEach(function(img){
       img.addEventListener('click', function(){
         lbImg.src = img.getAttribute('src');
         lbImg.alt = img.getAttribute('alt') || '';
@@ -789,5 +1093,29 @@ cd jt-ipam/deploy/docker &amp;&amp; <span class="g">./offline-export.sh</span>  
     });
   })();
 </script>
+<script>
+  /* <title> / description / <html lang> 也要跟著語言走。
+     原本只有內文與截圖會切，文件本身的中繼資料留在原地，於是三種語言的
+     分頁標題、搜尋結果與分享預覽全都是中文。靜態值放預設語言（英文），
+     這樣沒有 JavaScript 的讀者與爬蟲拿到的也是對的那一份。 */
+  (function(){
+    var META = {"zh": ["jt-ipam：為整合而生的 IPAM", "jt-ipam：可自架、以整合為核心的 IP 位址管理系統，整合 DNS / LibreNMS / OPNsense / pfSense / FortiGate / Palo Alto / MikroTik / Windows DHCP Server / Kea / ISC DHCP / Wazuh / Zabbix / OCS Inventory NG / RustDesk Server / Proxmox VE / VMware ESXi / LLM Server，並可從 phpIPAM 匯入資料、無痛遷移。systemd 部署、強制 HTTPS、OWASP Top 10:2025。"], "en": ["jt-ipam: an IPAM built for integration", "jt-ipam: a self-hosted, integration-first IP address management system. Works with DNS / LibreNMS / OPNsense / pfSense / FortiGate / Palo Alto / MikroTik / Windows DHCP Server / Kea / ISC DHCP / Wazuh / Zabbix / OCS Inventory NG / RustDesk Server / Proxmox VE / VMware ESXi / LLM servers, and imports from phpIPAM for a painless migration. systemd deployment, HTTPS enforced, OWASP Top 10:2025."], "ja": ["jt-ipam：連携のために作られた IPAM", "jt-ipam：自分で運用できる、連携を中心に据えた IP アドレス管理システム。DNS / LibreNMS / OPNsense / pfSense / FortiGate / Palo Alto / MikroTik / Windows DHCP Server / Kea / ISC DHCP / Wazuh / Zabbix / OCS Inventory NG / RustDesk Server / Proxmox VE / VMware ESXi / LLM サーバーと連携し、phpIPAM からの取り込みで無理なく移行できます。systemd で導入、HTTPS 必須、OWASP Top 10:2025。"]};
+    function cur(){
+      var c = document.body.className;
+      return c.indexOf('lang-ja') >= 0 ? 'ja' : c.indexOf('lang-zh') >= 0 ? 'zh' : 'en';
+    }
+    function apply(l){
+      var m = META[l] || META.en;
+      if (!m) return;
+      document.title = m[0];
+      var d = document.querySelector('meta[name="description"]');
+      if (d) d.setAttribute('content', m[1]);
+      document.documentElement.setAttribute('lang', {"zh": "zh-Hant", "en": "en", "ja": "ja"}[l] || 'en');
+    }
+    document.addEventListener('jtipam:langchange', function(e){ apply(e.detail.lang); });
+    apply(cur());
+  })();
+</script>
+<script src="anchors.js" defer></script>
 </body>
 </html>

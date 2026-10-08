@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.ui_error import detail_of
 from app.models.subnet import Subnet
 from app.schemas.base import StrictModel
 from app.services.scanner import (
@@ -49,9 +50,9 @@ async def scan_subnet(
     try:
         result = await scan_subnet_icmp(session, subnet)
     except ScannerNotAvailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=detail_of(exc, "scanner_unavailable")) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=detail_of(exc, "scan_bad_input")) from exc
 
     await append_audit(
         session,

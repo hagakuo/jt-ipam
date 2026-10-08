@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from "vue";
+import { computed, h, onMounted, ref, watch } from "vue";
 import { fmtDateTime } from "@/utils/datetime";
 import { useI18n } from "vue-i18n";
 import {
   NCard, NDataTable, NSpace, NIcon, NButton, NModal, NForm, NFormItem,
   NInput, NSwitch, NPopconfirm, NTag, NInputGroup, NAlert, NSelect, NTooltip,
-  NCheckbox, NCheckboxGroup, NInputNumber, NPopover,
+  NCheckbox, NCheckboxGroup, NInputNumber, NPopover, NText, NTabs, NTabPane,
   useMessage, type DataTableColumns,
 } from "naive-ui";
 import {
@@ -19,9 +19,13 @@ import {
   type ScanAgentTool,
 } from "@/api/phase3";
 import { listSubnets } from "@/api/subnets";
+import { useRoute, useRouter } from "vue-router";
+import JumpHosts from "@/views/JumpHosts.vue";
+import ScanAgentLoadPanel from "@/components/ScanAgentLoadPanel.vue";
 import { useScanProbes, probeLabel } from "@/api/scanProbes";
 import { autoSort } from "@/composables/useTableSort";
 import { SUDO } from "@/utils/sudo";
+import { probeInstall } from "@/utils/probeInstall";
 import ColumnPicker from "@/components/ColumnPicker.vue";
 import ExportButton from "@/components/ExportButton.vue";
 import { useColumnPrefs } from "@/composables/useColumnPrefs";
@@ -30,9 +34,10 @@ const { catalog } = useScanProbes();
 
 // 所有欄位 = 預設可見（含新加的 tools「相依套件」）。tools 同時在 allKeys（才點得動/開得起來）
 // 與 defaultVisible（才預設打開；在此 → withNewDefaults 讓舊用戶升級後也自動帶出這欄）。
-const SA_COLS = ["name", "enabled", "has_key", "agent_version", "source_ip", "subnet_count",
+const SA_COLS = ["name", "enabled", "has_key", "agent_version", "source_ip", "subnet_count", "load",
   "tools", "last_seen_at", "last_error", "actions"];
-const { visibleKeys: saVis, setVisible: saSet, reset: saReset } = useColumnPrefs(
+const { visibleKeys: saVis, setVisible: saSet, reset: saReset,
+  order: saOrder, setOrder: saSetOrder, orderColumns: saOrderCols } = useColumnPrefs(
   "scan_agents", SA_COLS, SA_COLS,
 );
 const saPicker = computed(() => [
@@ -42,6 +47,7 @@ const saPicker = computed(() => [
   { key: "agent_version", label: t("cols.version") },
   { key: "source_ip", label: t("cols.source_ip") },
   { key: "subnet_count", label: t("cols.subnet") },
+  { key: "load", label: t("scan_load.col_load") },
   { key: "tools", label: t("scan_agent.deps") },
   { key: "last_seen_at", label: t("cols.last_report") },
   { key: "last_error", label: t("cols.last_error") },
@@ -49,7 +55,18 @@ const saPicker = computed(() => [
 ]);
 
 const msg = useMessage();
+const route = useRoute();
+const router = useRouter();
+// 頁籤跟著網址（?tab=jump）：舊的 /jump-hosts 書籤轉到這裡也落在跳板頁籤
+const tab = ref<string>(route.query.tab === "jump" ? "jump" : "agents");
+watch(tab, (v) => {
+  void router.replace({ query: { ...route.query, tab: v === "jump" ? "jump" : undefined } });
+});
 const rows = ref<ScanAgent[]>([]);
+// 負載面板（通知的連結帶 ?load=<代理 id>，進來就直接打開那一台）
+const loadShow = ref(false);
+const loadAgent = ref<ScanAgent | null>(null);
+function openLoad(r: ScanAgent) { loadAgent.value = r; loadShow.value = true; }
 import { useTableQuickFilter } from "@/composables/useTableQuickFilter";
 const { query: filterQ, filtered: filteredRows } = useTableQuickFilter(rows);
 import { useTablePagination } from "@/composables/useTablePagination";
@@ -59,7 +76,35 @@ const loading = ref(false);
 const show = ref(false);
 const showHelp = ref(false);
 const editing = ref<ScanAgent | null>(null);
-const form = ref({ name: "", description: "", enabled: true, subnet_ids: [] as string[] });
+const form = ref({ name: "", description: "", enabled: true, autoCreate: false,
+                   subnet_ids: [] as string[], relayAllowed: false, relayMax: 4,
+                   relayPorts: "22,3389,5900-5910" });
+// 主控台中繼（issue #24 階段二）：要不要中繼、哪些埠都在這裡設定，代理主機不必做任何事。
+// 標籤只講代理那一端的狀態：舊代理（沒回報）、代理主機的擁有者否決了（JT_IPAM_RELAY=0）、本機另有限縮
+const relayState = computed(() => {
+  const caps = editing.value?.relay_caps;
+  if (!caps) return { tag: "default" as const, text: t("relay.agent_state_old") };
+  if (!caps.enabled) return { tag: "warning" as const, text: t("relay.agent_state_off") };
+  const limits: string[] = [];
+  if (caps.ports?.length) limits.push(t("relay.agent_local_ports", { ports: fmtPorts(caps.ports) }));
+  if (caps.max) limits.push(t("relay.agent_local_max", { max: caps.max }));
+  if (caps.pinned) limits.push(t("relay.agent_local_cidrs"));
+  return { tag: "success" as const,
+           text: limits.length ? t("relay.agent_state_on_limited", { limits: limits.join("；") })
+                               : t("relay.agent_state_on") };
+});
+function fmtPorts(ports: number[]): string {
+  // 連續的埠縮成範圍：22, 3389, 5900–5910
+  const out: string[] = [];
+  let i = 0;
+  while (i < ports.length) {
+    let j = i;
+    while (j + 1 < ports.length && ports[j + 1] === ports[j] + 1) j++;
+    out.push(j > i ? `${ports[i]}–${ports[j]}` : String(ports[i]));
+    i = j + 1;
+  }
+  return out.join(", ");
+}
 // 每代理探測設定
 const enabledProbes = ref<string[]>([]);
 const probeIntervals = ref<Record<string, number>>({});
@@ -69,18 +114,6 @@ function probeAvailable(key: string): boolean {
   return availProbes.value === null || availProbes.value.includes(key);
 }
 // 探測所需的工具 / 安裝指令（代理主機上安裝後，下次回報即解鎖該探測）
-const PROBE_INSTALL: Record<string, string> = {
-  os: `${SUDO} apt install nmap`,
-  ports: `${SUDO} apt install nmap`,
-  netbios: `${SUDO} apt install samba-common-bin   # 提供 nmblookup`,
-  mdns: `${SUDO} apt install avahi-utils   # 提供 avahi-resolve（會一併啟動 avahi-daemon，監聽 UDP 5353）`,
-};
-function probeInstall(key: string): string {
-  return (
-    PROBE_INSTALL[key] ??
-    "請確認掃描代理主機具備該探測所需的系統工具與權限（例如 root / cap_net_raw、可連到 DNS 等）。"
-  );
-}
 // 已勾選的探測（每一種都可以設自己的間隔）。
 // 原本只讓重型探測設間隔，但後端本來就吃全部七種 —— 輕型只是沒有畫面可設，
 // 使用者只能用預設值，也看不出「多久掃一次」是怎麼決定的。
@@ -145,7 +178,8 @@ async function refresh() {
 }
 function openCreate() {
   editing.value = null;
-  form.value = { name: "", description: "", enabled: true, subnet_ids: [] };
+  form.value = { name: "", description: "", enabled: true, autoCreate: false, subnet_ids: [],
+                 relayAllowed: false, relayMax: 4, relayPorts: "22,3389,5900-5910" };
   enabledProbes.value = ["icmp"];
   probeIntervals.value = {};
   enabledProbes.value.forEach(ensureInterval);
@@ -154,7 +188,10 @@ function openCreate() {
 }
 function openEdit(r: ScanAgent) {
   editing.value = r;
-  form.value = { name: r.name, description: r.description ?? "", enabled: r.enabled, subnet_ids: [] };
+  form.value = { name: r.name, description: r.description ?? "", enabled: r.enabled,
+                 autoCreate: !!r.auto_create_ips, subnet_ids: [],
+                 relayAllowed: !!r.relay_allowed, relayMax: r.relay_max_sessions ?? 4,
+                 relayPorts: r.relay_ports ?? "22,3389,5900-5910" };
   enabledProbes.value = [...(r.enabled_probes ?? [])];
   probeIntervals.value = { ...(r.probe_intervals ?? {}) };
   enabledProbes.value.forEach(ensureInterval);
@@ -177,8 +214,12 @@ async function submit() {
       await updateScanAgent(editing.value.id, {
         description: form.value.description || undefined,
         enabled: form.value.enabled,
+        auto_create_ips: form.value.autoCreate,
         enabled_probes: enabledProbes.value,
         probe_intervals: buildProbeIntervals(),
+        relay_allowed: form.value.relayAllowed,
+        relay_max_sessions: form.value.relayMax,
+        relay_ports: form.value.relayPorts,
       });
       await setAgentSubnets(editing.value.id, form.value.subnet_ids);
       show.value = false;
@@ -187,6 +228,7 @@ async function submit() {
         name: form.value.name,
         description: form.value.description || undefined,
         enabled: form.value.enabled,
+        auto_create_ips: form.value.autoCreate,
         enabled_probes: enabledProbes.value,
         probe_intervals: buildProbeIntervals(),
       });
@@ -211,6 +253,14 @@ async function del(r: ScanAgent) {
   try { await deleteScanAgent(r.id); await refresh(); }
   catch (e: any) { msg.error(e?.response?.data?.detail ?? t("errors.server")); }
 }
+/** 對話框裡的刪除：刪完要關掉對話框，否則會停在一個已經不存在的代理上。 */
+async function delFromModal() {
+  if (!editing.value) return;
+  await del(editing.value);
+  show.value = false;
+  editing.value = null;
+}
+
 async function scanNow(r: ScanAgent) {
   try {
     const res = await scanNowAgent(r.id);
@@ -269,6 +319,19 @@ const allCols = computed<DataTableColumns<ScanAgent>>(() => autoSort([
     render: (r) => r.subnet_count ?? 0,
   },
   {
+    // 負載＝上線偵測一輪耗時 ÷ 週期；點一下看逐子網路細節與建議（代理 1.10.0 起才有）
+    title: t("scan_load.col_load"), key: "load", width: 128,
+    render: (r) => {
+      const l = r.load;
+      if (!l) return h(NText, { depth: 3 }, () => "—");
+      const parts = [`${Math.round(l.ratio * 100)}%`];
+      if (l.heavy_backlog) parts.push(t("scan_load.backlog_short", { n: l.heavy_backlog }));
+      return h(NButton, { text: true, type: l.level === "overloaded" ? "error" : l.level === "busy" ? "warning" : "success",
+                          "data-testid": "scan-load-cell", onClick: () => openLoad(r) },
+        () => (l.truncated || l.coverage_gap ? `${parts.join(" · ")} ⚠` : parts.join(" · ")));
+    },
+  },
+  {
     title: t("scan_agent.deps"), key: "tools", width: 96,
     render: (r) => {
       const ts = r.tools ?? [];
@@ -287,7 +350,10 @@ const allCols = computed<DataTableColumns<ScanAgent>>(() => autoSort([
     render: (r) => h("span", { style: "white-space:nowrap" }, fmtDateTime(r.last_seen_at)) },
   { title: t("scanAgentHelp.col_last_error"), key: "last_error", minWidth: 150, ellipsis: { tooltip: true }, render: (r) => r.last_error ?? "—" },
   {
-    title: t("common.actions"), key: "actions", className: "col-actions", width: 140,
+    // 釘在右側 + 放得下四顆按鈕：欄位一多，表格就會橫向溢出，刪除鈕整個被推到畫面外
+    // （實機回報「缺少刪除功能」，其實是看不到）。與使用者／憑證頁的作法一致。
+    title: t("common.actions"), key: "actions", className: "col-actions",
+    width: 180, fixed: "right",
     render: (r) => h(NSpace, { size: 2, wrapItem: false, wrap: false }, () => [
       h(NPopconfirm, { onPositiveClick: () => scanNow(r) }, {
         trigger: () => iconAction(SyncIcon, t("scan_agent.scan_now"), () => {}, "primary"),
@@ -297,13 +363,16 @@ const allCols = computed<DataTableColumns<ScanAgent>>(() => autoSort([
       iconAction(RefreshIcon, t("scanAgentHelp.rotate"), () => rotate(r)),
       h(NPopconfirm, { onPositiveClick: () => del(r) }, {
         trigger: () => iconAction(DeleteIcon, t("common.delete"), () => {}, "error"),
-        default: () => t("common.confirm_delete"),
+        // 掃描一律要有代理：刪掉它，指派給它的子網路就沒有人掃了 —— 要先講
+        default: () => (r.subnet_count
+          ? t("scan_agent.delete_confirm_with_subnets", { name: r.name, n: r.subnet_count })
+          : t("scan_agent.delete_confirm", { name: r.name })),
       }),
     ]),
   },
 ]));
 const cols = computed<DataTableColumns<ScanAgent>>(() =>
-  allCols.value.filter((c: any) => saVis.value.includes(c.key)),
+  saOrderCols(allCols.value.filter((c: any) => saVis.value.includes(c.key))),
 );
 
 // 相依套件詳細資料
@@ -331,7 +400,12 @@ function toolStateLabel(s: ToolState): string {
       : t("scan_agent.dep_missing");
 }
 
-onMounted(() => { void refresh(); });
+onMounted(async () => {
+  await refresh();
+  const want = String(route.query.load || "");
+  const hit = want ? rows.value.find((a) => a.id === want) : undefined;
+  if (hit) openLoad(hit);
+});
 </script>
 
 <template>
@@ -342,30 +416,40 @@ onMounted(() => { void refresh(); });
         <span>{{ t("nav.scan_agents") }}</span>
       </n-space>
     </template>
-    <n-space style="margin-bottom: 12px" align="center">
-      <n-input v-model:value="filterQ" :placeholder="t('common.filter')" clearable style="width: 160px" />
-      <n-button @click="refresh" :loading="loading">
-        <template #icon><n-icon><RefreshIcon /></n-icon></template>
-        {{ t("common.refresh") }}
-      </n-button>
-      <n-button type="primary" @click="openCreate">
-        <template #icon><n-icon><PlusIcon /></n-icon></template>
-        {{ t("common.create") }}
-      </n-button>
-      <n-button quaternary @click="showHelp = true">
-        <template #icon><n-icon><InfoIcon /></n-icon></template>
-        {{ t("scanAgentHelp.button") }}
-      </n-button>
-      <ColumnPicker :all="saPicker" :visible="saVis"
-                    @update:visible="saSet" @reset="saReset" />
-      <ExportButton :columns="cols" :rows="rows" filename="scan-agents" :title="t('nav.scan_agents')" />
-    </n-space>
-    <n-data-table :columns="cols" :data="filteredRows" :loading="loading" :bordered="false" :scroll-x="1080" :pagination="pg" />
+    <!-- 主控台出口集中在這一頁：掃描代理（客戶端只能往外連時中繼）與 SSH 跳板（後端連得到站台上的 SSH 主機、
+         站台不能裝代理時用）。跳板原本是左側選單的獨立一項，看起來像重疊功能（使用者 2026-10-04） -->
+    <n-tabs v-model:value="tab" type="line" animated data-testid="agent-tabs">
+      <n-tab-pane name="agents" :tab="t('nav.scan_agents')">
+        <n-space style="margin-bottom: 12px" align="center">
+          <n-input v-model:value="filterQ" :placeholder="t('common.filter')" clearable style="width: 160px" />
+          <n-button @click="refresh" :loading="loading">
+            <template #icon><n-icon><RefreshIcon /></n-icon></template>
+            {{ t("common.refresh") }}
+          </n-button>
+          <n-button type="primary" @click="openCreate">
+            <template #icon><n-icon><PlusIcon /></n-icon></template>
+            {{ t("common.create") }}
+          </n-button>
+          <n-button quaternary @click="showHelp = true">
+            <template #icon><n-icon><InfoIcon /></n-icon></template>
+            {{ t("scanAgentHelp.button") }}
+          </n-button>
+          <ColumnPicker :all="saPicker" :visible="saVis"
+                        @update:visible="saSet" @reset="saReset"
+                        :order="saOrder" @update:order="saSetOrder" />
+          <ExportButton :columns="cols" :rows="rows" filename="scan-agents" :title="t('nav.scan_agents')" />
+        </n-space>
+        <n-data-table :columns="cols" :data="filteredRows" :loading="loading" :bordered="false" :scroll-x="1080" :pagination="pg" />
+      </n-tab-pane>
+      <n-tab-pane name="jump" :tab="t('jump_hosts.tab')" display-directive="show:lazy">
+        <JumpHosts embedded />
+      </n-tab-pane>
+    </n-tabs>
 
     <!-- 相依套件詳細資料 -->
     <n-modal v-model:show="toolsShow" preset="card" :title="t('scan_agent.deps_title')" style="width: 720px; max-width: 94vw">
       <p class="hint" style="margin-top:0">{{ t("scan_agent.deps_hint") }}</p>
-      <table class="dep-tbl">
+      <table v-col-resize class="dep-tbl">
         <thead>
           <tr>
             <th>{{ t("scan_agent.dep_tool") }}</th>
@@ -413,6 +497,41 @@ onMounted(() => { void refresh(); });
         <n-form-item :label="t('common.enabled')">
           <n-switch v-model:value="form.enabled" />
         </n-form-item>
+        <!-- 自動收錄未登錄的位址：預設關閉，而且要把代價講清楚 —— 收錄之後那個位址
+             就不會再被「未授權 IP」偵測列出來，等於私接的機器會安靜地變成正式紀錄。 -->
+        <n-form-item :label="t('scan_agents.auto_create_ips')">
+          <n-space vertical size="small" style="width:100%">
+            <n-switch v-model:value="form.autoCreate" />
+            <n-text depth="3" style="font-size:12px">
+              {{ t("scan_agents.auto_create_ips_hint") }}
+            </n-text>
+          </n-space>
+        </n-form-item>
+        <!-- 主控台中繼：打開＝這台代理變成通往客戶網路的跳點。系統設定與這裡兩道開關都開才會中繼；
+             代理主機不必設定任何東西（升級後自動可用），擁有者要否決才在代理主機寫 JT_IPAM_RELAY=0 -->
+        <n-form-item v-if="editing" :label="t('relay.agent_allow')">
+          <n-space vertical size="small" style="width:100%" data-testid="agent-relay">
+            <n-space align="center" :size="12">
+              <n-switch v-model:value="form.relayAllowed" data-testid="agent-relay-switch" />
+              <template v-if="form.relayAllowed">
+                <span style="font-size:12px">{{ t("relay.agent_max") }}</span>
+                <n-input-number v-model:value="form.relayMax" :min="1" :max="64" size="small" style="width:90px" />
+              </template>
+            </n-space>
+            <n-space v-if="form.relayAllowed" align="center" :size="8" :wrap="false">
+              <span style="font-size:12px;white-space:nowrap">{{ t("relay.agent_ports") }}</span>
+              <n-input v-model:value="form.relayPorts" size="small" style="max-width:240px"
+                       placeholder="22,3389,5900-5910" data-testid="agent-relay-ports" />
+            </n-space>
+            <n-tag :type="relayState.tag" size="small" :bordered="false" data-testid="agent-relay-state">
+              {{ relayState.text }}
+            </n-tag>
+            <n-text v-if="editing.relay_active" depth="3" style="font-size:12px">
+              {{ t("relay.agent_active", { n: editing.relay_active }) }}
+            </n-text>
+            <n-text depth="3" style="font-size:12px">{{ t("relay.agent_allow_hint") }}</n-text>
+          </n-space>
+        </n-form-item>
         <n-form-item :label="t('scanAgentHelp.assign_subnets')">
           <n-select v-model:value="form.subnet_ids" :options="subnetOpts"
                     multiple filterable clearable
@@ -443,7 +562,7 @@ onMounted(() => { void refresh(); });
                     </template>
                     <div class="probe-help-pop">
                       <div class="probe-help-intro">{{ t("scan_probes.install_help_intro") }}</div>
-                      <code class="probe-help-cmd">{{ probeInstall(p.key) }}</code>
+                      <code class="probe-help-cmd">{{ probeInstall(p.key, t) }}</code>
                     </div>
                   </n-popover>
                   <n-tooltip v-if="p.intrusive" trigger="hover">
@@ -488,13 +607,27 @@ onMounted(() => { void refresh(); });
         </n-form-item>
       </n-form>
       <template #footer>
-        <n-space justify="end">
-          <n-button @click="show = false">
-            <template #icon><n-icon><CancelIcon /></n-icon></template>{{ t("common.cancel") }}
-          </n-button>
-          <n-button type="primary" @click="submit">
-            <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
-          </n-button>
+        <n-space justify="space-between" align="center">
+          <!-- 刪除放左側、與儲存分開：這是不可復原的動作，不該緊鄰主要按鈕 -->
+          <n-popconfirm v-if="editing" @positive-click="delFromModal">
+            <template #trigger>
+              <n-button type="error" ghost>
+                <template #icon><n-icon><DeleteIcon /></n-icon></template>{{ t("common.delete") }}
+              </n-button>
+            </template>
+            {{ editing.subnet_count
+              ? t("scan_agent.delete_confirm_with_subnets", { name: editing.name, n: editing.subnet_count })
+              : t("scan_agent.delete_confirm", { name: editing.name }) }}
+          </n-popconfirm>
+          <span v-else />
+          <n-space>
+            <n-button @click="show = false">
+              <template #icon><n-icon><CancelIcon /></n-icon></template>{{ t("common.cancel") }}
+            </n-button>
+            <n-button type="primary" @click="submit">
+              <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
+            </n-button>
+          </n-space>
         </n-space>
       </template>
     </n-modal>
@@ -560,6 +693,9 @@ onMounted(() => { void refresh(); });
         </n-alert>
       </div>
     </n-modal>
+
+    <ScanAgentLoadPanel v-model:show="loadShow" :agent="loadAgent" :agents="rows"
+                        @changed="refresh" @create="loadShow = false; openCreate()" />
   </n-card>
 </template>
 

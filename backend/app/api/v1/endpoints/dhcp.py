@@ -24,12 +24,12 @@ router = APIRouter(tags=["dhcp"], dependencies=[Depends(require_global_read)])
 async def list_dhcp_ranges(
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> list[dict[str, Any]]:
-    """所有 DHCP 來源同步回來的發放範圍。"""
+    """所有 DHCP 來源同步回來的發放範圍，加上子網路裡手動定義的 DHCP 集區（source_type=manual）。"""
     from app.models.dhcp import DHCPPoolRange
-
-    rows = (await session.execute(
+    from app.services.ip_ranges import manual_dhcp_pools
+    rows: list[Any] = [*(await session.execute(
         select(DHCPPoolRange).order_by(DHCPPoolRange.source_type, DHCPPoolRange.start_ip)
-    )).scalars().all()
+    )).scalars().all(), *await manual_dhcp_pools(session)]   # 手動定義的 DHCP 集區（issue #40）
     return [{
         "id": str(r.id),
         "source_type": r.source_type,          # opnsense / pfsense / windows_dhcp

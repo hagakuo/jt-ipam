@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { getImpactSettings, putImpactSettings } from "@/api/changeImpact";
+import { useChangeImpact } from "@/composables/useChangeImpact";
 /**
  * 系統設定（僅管理員）— 全域、所有使用者共用的設定，獨立於「個人設定」。
  * 含：地圖供應商、機櫃名稱對齊、上線判定閾值、GeoIP(MaxMind) 本地資料庫與排程。
@@ -6,40 +8,213 @@
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
-  NCard, NSpace, NIcon, NSelect, NInput, NInputNumber, NSwitch, NCheckbox, NButton, NTag, useMessage,
+  NCard, NSpace, NIcon, NSelect, NInput, NInputNumber, NSwitch, NCheckbox, NCheckboxGroup,
+  NButton, NPopconfirm, NTag, NAlert, useMessage,
 } from "naive-ui";
 const origin = window.location.origin;
-import { AdminIcon, SaveIcon, RefreshIcon } from "@/icons";
+import { AdminIcon, SaveIcon, RefreshIcon, WarnIcon } from "@/icons";
+import { getRackEmbedConfig, setRackEmbedConfig, type RackEmbedConfig } from "@/api/racks";
 import { getLdap, putLdap, testLdap, testLdapAuth, type LdapConfig,
   getAuditForward, putAuditForward, testAuditForward, type AuditForward,
   getOidcConfig, putOidcConfig, testOidc, type OidcConfig,
   getSamlConfig, putSamlConfig, testSaml, type SamlConfig,
-  getConsoleSecurity, setConsoleSecurity,
-  getUiDisplay, setUiDisplay } from "@/api/system";
+  getConsoleSecurity, setConsoleSecurity, type RdpEngine, type ConsoleEngine,
+  type ConsoleSecurity, type ConsoleSecurityPatch, requestSftpProbeTicket,
+  getUiDisplay, setUiDisplay,
+  getDevicePortFilter, setDevicePortFilter } from "@/api/system";
 import { listGroups } from "@/api/admin";
 import { getAutolink, putAutolink, previewAutolink,
   type AutolinkConfig, type AutolinkPreview } from "@/api/system";
 import { listSubnets } from "@/api/subnets";
 import { fmtDateTime, fmtRelative } from "@/utils/datetime";
 import { apiErrMsg } from "@/api/client";
+import { runSftpProbe, fmtRate, roughDuration, type ProbeResult } from "@/utils/sftpProbe";
 import {
   getMapProvider, setMapProvider, getRackNameAlign, setRackNameAlign,
   getOnlineGrace, setOnlineGrace,
+  getIpCooldown, setIpCooldown,
+  getCertExpiryDays, setCertExpiryDays,
   getGeoipConfig, setGeoipConfig, updateGeoipDbNow,
-  type GeoIPConfig, type RackNameAlign,
+  type GeoIPConfig, type RackNameAlign, type LivenessSource,
 } from "@/api/basic";
 
 const { t } = useI18n();
 const msg = useMessage();
 
 // 地圖供應商
-// 連線管理資安：RDP 控制端貼上文字到被控端（預設關閉）
+// 連線管理資安：RDP 控制端貼上文字到被控端（預設關閉）＋ RDP 連線引擎
+// 兩個欄位共用同一個端點，所以每次都要把另一個一起送回去，否則會把它蓋成預設值
 const rdpClipPaste = ref(false);
-async function changeRdpClipPaste(v: boolean) {
-  rdpClipPaste.value = v;
-  try { await setConsoleSecurity({ rdp_clipboard_paste: v }); msg.success(t("common.ok")); }
-  catch { rdpClipPaste.value = !v; msg.error(t("errors.network")); }
+const consoleRelay = ref(false);
+// RDP／VNC 的預設是 guacd（2026-09-27）；載入前先顯示預設值
+const rdpEngine = ref<RdpEngine>("guacd");
+// 這台機器能不能用 FreeRDP（後端算好的事實）。缺套件時要把安裝指令原樣顯示出來，
+// 讓管理者可以直接複製 —— 不要只說「不可用」。
+const freerdpOk = ref(true);
+const freerdpMissing = ref<string[]>([]);
+/** aardwolf（選用的備用引擎：RDP 的 aardwolf、VNC 的內建）有沒有裝起來；裝不起來多半是 Python 太新（issue #39／#42） */
+const aardwolfOk = ref(true);
+const pythonVer = ref("");
+const freerdpCmd = ref("");
+const rdpEngineOpts = computed(() => [
+  { label: t("settings.system.engine_guacd_default"), value: "guacd" },
+  { label: t("settings.system.rdp_engine_aardwolf"), value: "aardwolf" },
+  { label: t("settings.system.rdp_engine_freerdp"), value: "freerdp" },
+]);
+// VNC 預設 guacd、SSH 預設內建：「（預設）」標在各自的預設值上，所以兩份選項分開
+const vncEngine = ref<ConsoleEngine>("guacd");
+const sshEngine = ref<ConsoleEngine>("builtin");
+const vncEngineOpts = computed(() => [
+  { label: t("settings.system.engine_guacd_default"), value: "guacd" },
+  { label: t("settings.system.engine_builtin_plain"), value: "builtin" },
+]);
+const sshEngineOpts = computed(() => [
+  { label: t("settings.system.engine_builtin"), value: "builtin" },
+  { label: t("settings.system.engine_guacd"), value: "guacd" },
+]);
+// guacd 服務的狀態（後端實際連一次問出來的）：選了 guacd 卻沒在跑，要用警示色講清楚
+const guacdOk = ref(false);
+// 載入完成前不畫 guacd 狀態：guacd 是 RDP／VNC 的預設，未載入的初始值會先閃一個紅色「連不到 guacd（）」
+const consoleLoaded = ref(false);
+const guacdProtocols = ref<Record<string, boolean>>({});
+const guacdAddress = ref("");
+const guacdError = ref("");
+const guacdCmd = ref("");
+const guacdUsedBy = computed(() => [
+  rdpEngine.value === "guacd" ? "rdp" : "", vncEngine.value === "guacd" ? "vnc" : "",
+  sshEngine.value === "guacd" ? "ssh" : "",
+].filter(Boolean));
+const guacdMissingFor = computed(() => guacdUsedBy.value.filter((p) => !guacdProtocols.value[p]));
+// SFTP 單檔上限（MB）與傳輸路徑檢查。上限放大之後，瀏覽器 → 前端反向代理 → IPAM 的 nginx
+// 任何一層吃不下都會讓傳輸失敗，而那些設定讀不到 —— 所以由瀏覽器實際送一次（utils/sftpProbe）。
+const SFTP_MAX_DEFAULT = 100;
+const sftpMaxMb = ref(SFTP_MAX_DEFAULT);
+// 載入完成前留空：否則畫面先顯示預設的 100，這時輸入的值會被晚到的載入結果蓋掉
+const sftpMaxInput = ref<number | null>(null);
+const probe = ref<{ running: boolean; stage?: "up" | "down"; pct?: number; result?: ProbeResult } | null>(null);
+async function checkSftpPath() {
+  if (probe.value?.running) return;
+  probe.value = { running: true };
+  try {
+    const tk = await requestSftpProbeTicket();
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const result = await runSftpProbe({
+      url: `${proto}//${window.location.host}${tk.ws_path}?ticket=${encodeURIComponent(tk.ticket)}`,
+      upBytes: tk.up_bytes, downBytes: tk.down_bytes,
+      onProgress: (stage, done, total) => {
+        if (probe.value) probe.value = { running: true, stage, pct: Math.round((done / total) * 100) };
+      },
+    });
+    probe.value = { running: false, result };
+  } catch (e) {
+    probe.value = { running: false, result: { ok: false, problem: "error", detail: apiErrMsg(e) } };
+  }
 }
+/** 檢查結果要講的話（成功也講：速度與「傳一個上限大小的檔案要多久」） */
+const probeText = computed(() => {
+  const r = probe.value?.result;
+  if (!r) return "";
+  const max = sftpMaxMb.value >= 1024 ? `${(sftpMaxMb.value / 1024).toFixed(1)} GB` : `${sftpMaxMb.value} MB`;
+  const bytes = sftpMaxMb.value * 1024 * 1024;
+  if (r.ok) {
+    return t("settings.system.sftp_probe_ok", {
+      up: fmtRate(r.upBps!), down: fmtRate(r.downBps!), max,
+      upTime: roughDuration(bytes / r.upBps!, t), downTime: roughDuration(bytes / r.downBps!, t),
+    });
+  }
+  const mb = (n?: number) => `${((n ?? 0) / 1024 / 1024).toFixed(1)} MB`;
+  return t(`settings.system.sftp_probe_${r.problem}`, {
+    code: r.closeCode ?? "-", done: mb(r.done), total: mb(r.total), sec: r.stallSec ?? 0,
+    reason: r.detail ?? "",
+  });
+});
+/** 成功但慢到傳一個上限大小的檔案要超過一小時：用警示色，提醒這個上限在這條路上不實際 */
+const probeSlow = computed(() => {
+  const r = probe.value?.result;
+  return !!r?.ok && (sftpMaxMb.value * 1024 * 1024) / Math.min(r.upBps!, r.downBps!) > 3600;
+});
+function commitSftpMax() {
+  if (sftpMaxInput.value === null) return;
+  const v = Math.round(Number(sftpMaxInput.value));
+  if (v === sftpMaxMb.value) return;
+  // 範圍自己檢查、不讓輸入框自動夾到邊界：多打幾個 0 被默默存成 100 GB 比擋下來更糟
+  if (!Number.isFinite(v) || v < 1 || v > 102400) {
+    msg.warning(t("settings.system.sftp_max_mb_range"));
+    sftpMaxInput.value = sftpMaxMb.value;
+    return;
+  }
+  void saveConsole({ sftp_max_file_mb: v }).then(() => {
+    sftpMaxInput.value = sftpMaxMb.value;     // 存檔失敗時回到原本的值
+    // 改了上限就自動檢查一次路徑（使用者要求：前面的吃不下要自動檢查出來並提示）
+    if (sftpMaxMb.value === v && v > SFTP_MAX_DEFAULT) void checkSftpPath();
+  });
+}
+function applyConsole(c: ConsoleSecurity) {
+  rdpClipPaste.value = c.rdp_clipboard_paste;
+  consoleRelay.value = !!c.console_relay;
+  sftpMaxMb.value = c.sftp_max_file_mb ?? SFTP_MAX_DEFAULT;
+  sftpMaxInput.value = sftpMaxMb.value;
+  rdpEngine.value = c.rdp_engine;
+  vncEngine.value = c.vnc_engine ?? "guacd";
+  sshEngine.value = c.ssh_engine ?? "builtin";
+  freerdpOk.value = c.freerdp_available ?? true;
+  freerdpMissing.value = c.freerdp_missing ?? [];
+  aardwolfOk.value = c.aardwolf_available ?? true;
+  pythonVer.value = c.python_version ?? "";
+  freerdpCmd.value = c.freerdp_install_cmd ?? "";
+  guacdOk.value = !!c.guacd_available;
+  consoleLoaded.value = true;
+  guacdProtocols.value = c.guacd_protocols ?? {};
+  guacdAddress.value = c.guacd_address ?? "";
+  guacdError.value = c.guacd_error ?? "";
+  guacdCmd.value = c.guacd_install_cmd ?? "";
+}
+// 同一個端點管好幾個欄位：每次都把全部送回去，否則沒送的會被蓋成預設值
+async function saveConsole(patch: Partial<ConsoleSecurityPatch>) {
+  const prev = { clip: rdpClipPaste.value, rdp: rdpEngine.value, vnc: vncEngine.value, ssh: sshEngine.value };
+  try {
+    const c = await setConsoleSecurity({
+      rdp_clipboard_paste: rdpClipPaste.value, rdp_engine: rdpEngine.value,
+      vnc_engine: vncEngine.value, ssh_engine: sshEngine.value,
+      sftp_max_file_mb: sftpMaxMb.value, ...patch,
+    });
+    applyConsole(c);
+    msg.success(t("common.ok"));
+  } catch {
+    rdpClipPaste.value = prev.clip; rdpEngine.value = prev.rdp;
+    vncEngine.value = prev.vnc; sshEngine.value = prev.ssh;
+    msg.error(t("errors.network"));
+  }
+}
+// 變更影響預演的設定（後端 /change-impact/settings；管理員才拿得到 config）
+const impactCfg = ref<Record<string, any>>({ enabled: false, ai_enabled: true, allow_self_review: false,
+                                             run_valid_hours: 24, retention_days: 180 });
+const impactShared = useChangeImpact();
+async function loadImpact() {
+  try { const s = await getImpactSettings(); if (s.config) impactCfg.value = s.config; } catch { /* 舊後端沒有這支 */ }
+}
+async function saveImpact(patch: Record<string, unknown>) {
+  const prev = { ...impactCfg.value };
+  impactCfg.value = { ...impactCfg.value, ...patch };
+  try {
+    const s = await putImpactSettings(patch);
+    if (s.config) impactCfg.value = s.config;
+    void impactShared.load(true);          // 選單與入口跟著出現或消失
+    msg.success(t("common.ok"));
+  } catch { impactCfg.value = prev; msg.error(t("errors.network")); }
+}
+function changeRdpClipPaste(v: boolean) { rdpClipPaste.value = v; void saveConsole({ rdp_clipboard_paste: v }); }
+// 主控台中繼：只送這一個欄位（後端「沒帶＝維持原值」），失敗時退回原值
+async function changeConsoleRelay(v: boolean) {
+  const prev = consoleRelay.value;
+  consoleRelay.value = v;
+  try { applyConsole(await setConsoleSecurity({ rdp_clipboard_paste: rdpClipPaste.value, rdp_engine: rdpEngine.value,
+                                                 console_relay: v })); msg.success(t("common.ok")); }
+  catch { consoleRelay.value = prev; msg.error(t("errors.network")); }
+}
+function changeRdpEngine(v: RdpEngine) { rdpEngine.value = v; void saveConsole({ rdp_engine: v }); }
+function changeVncEngine(v: ConsoleEngine) { vncEngine.value = v; void saveConsole({ vnc_engine: v }); }
+function changeSshEngine(v: ConsoleEngine) { sshEngine.value = v; void saveConsole({ ssh_engine: v }); }
 
 // 異動記錄淡化天數（超過 N 天的項目以淡色顯示；0 = 不淡化）
 const changeLogDimDays = ref(30);
@@ -48,6 +223,19 @@ async function changeDimDays(v: number | null) {
   changeLogDimDays.value = days;
   try { await setUiDisplay({ change_log_dim_days: days }); msg.success(t("common.ok")); }
   catch (e) { msg.error(apiErrMsg(e)); }
+}
+
+// 裝置連接埠匯入：偽介面過濾（總開關 + 名稱樣式清單，一行一個正則）
+const portFilterOn = ref(true);
+const portFilterText = ref("");
+async function savePortFilter() {
+  const patterns = portFilterText.value.split("\n").map((s) => s.trim()).filter(Boolean);
+  try {
+    const saved = await setDevicePortFilter({ filter_pseudo: portFilterOn.value, ignore_patterns: patterns });
+    portFilterOn.value = saved.filter_pseudo;
+    portFilterText.value = saved.ignore_patterns.join("\n");
+    msg.success(t("common.ok"));
+  } catch (e) { msg.error(apiErrMsg(e)); }
 }
 
 const mapProvider = ref<"builtin" | "osm" | "google">("builtin");
@@ -73,15 +261,111 @@ async function changeRackAlign(a: RackNameAlign) {
   try { await setRackNameAlign(a); msg.success(t("common.ok")); } catch (e) { msg.error(apiErrMsg(e)); }
 }
 
-// 上線判定閾值（分鐘）
+// 上線判定：閾值（分鐘）＋採信哪些證據
 const grace = ref(30);
+// LibreNMS 的 ARP 預設不勾 —— 它沒有時間概念，來源設備的快取不老化就會讓關機的
+// 機器一直顯示上線。候選清單由後端給（只列這個站台真的有的整合）。
+const livenessSrc = ref<string[]>(["scanner", "librenms"]);
+const livenessAvail = ref<LivenessSource[]>([]);
+
+const VENDOR_LABEL: Record<string, string> = {
+  opnsense: "OPNsense", pfsense: "pfSense",
+  fortigate: "FortiGate", paloalto: "Palo Alto", mikrotik: "MikroTik",
+};
+
+/** `arp:opnsense` → 「ARP 表（OPNsense）」；沒有廠牌後綴的用既有翻譯。 */
+function srcLabel(key: string): string {
+  if (!key.includes(":")) return t(`system_settings.src_${key}`);
+  const [kind, vendor] = key.split(":", 2);
+  return `${t(`system_settings.src_kind_${kind}`)}（${VENDOR_LABEL[vendor] ?? vendor}）`;
+}
+
+/** 分組顯示時，種類已經在列首寫過了 → 每一格只寫廠牌名。 */
+function vendorLabel(key: string): string {
+  // 舊的籠統 "arp" 就是 LibreNMS 的 ARP（同一件事的舊鍵）→ 併進 ARP 那一列，
+  // 放在「探測／監控」會既不同類、又因為字長而把那一列撐出換行。
+  if (key === "arp") return "LibreNMS";
+  const vendor = key.split(":", 2)[1] ?? key;
+  return VENDOR_LABEL[vendor] ?? vendor;
+}
+
+/** 這個來源歸在哪一組。 */
+function srcKind(key: string): string {
+  if (key === "arp") return "arp";
+  return key.includes(":") ? key.split(":", 1)[0] : "base";
+}
+
+//: 分組的順序＝可信度由高到低（探測 → 防火牆的 ARP／VPN → 不會過期的租約與 ARP 記錄）
+const SRC_KINDS = ["base", "arp", "vpn", "lease"] as const;
+
+const livenessGroups = computed(() =>
+  SRC_KINDS.map((kind) => ({
+    kind,
+    title: kind === "base"
+      ? t("system_settings.src_kind_base")
+      : t(`system_settings.src_kind_${kind}`),
+    // 會過期的排前面：那些才是預設採信的，不建議的（不會過期）擺最後
+    items: livenessAvail.value.filter((s) => srcKind(s.key) === kind)
+      .slice().sort((a, b) => Number(b.aging) - Number(a.aging)),
+  })).filter((g) => g.items.length));
+// IP 生命週期：釋放後的冷卻天數
+const cooldownDays = ref(30);
+// 憑證到期通知的全域預設。每張憑證可各自覆寫（憑證頁的鈴鐺按鈕）——
+// 這裡只是「沒特別設定時用哪個」。
+const certExpiryDays = ref(21);
+async function changeCertExpiry(n: number | null) {
+  if (n == null) return;
+  certExpiryDays.value = n;
+  try { await setCertExpiryDays(n); msg.success(t("common.ok")); } catch (e) { msg.error(apiErrMsg(e)); }
+}
+async function changeCooldown(v: number | null) {
+  const n = v ?? 0;
+  cooldownDays.value = n;
+  try { await setIpCooldown(n); msg.success(t("common.ok")); } catch (e) { msg.error(apiErrMsg(e)); }
+}
+
+async function changeSources(v: (string | number)[]) {
+  const list = v.map(String);
+  livenessSrc.value = list;
+  try { await setOnlineGrace(grace.value, list); msg.success(t("common.ok")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
+}
 async function changeGrace(v: number | null) {
   const n = v ?? 30;
   grace.value = n;
-  try { await setOnlineGrace(n); msg.success(t("common.ok")); } catch (e) { msg.error(apiErrMsg(e)); }
+  try { await setOnlineGrace(n, livenessSrc.value); msg.success(t("common.ok")); }
+  catch (e) { msg.error(apiErrMsg(e)); }
 }
 
 // GeoIP
+// 機櫃圖對外嵌入：這裡只管系統層的總開關與權杖，要公開哪一櫃在機櫃頁逐櫃決定
+const rackEmbed = ref<RackEmbedConfig | null>(null);
+const showRackToken = ref(false);
+const rackEmbedToken = computed(() => rackEmbed.value?.token ?? "");
+async function loadRackEmbed() {
+  try { rackEmbed.value = await getRackEmbedConfig(); } catch { rackEmbed.value = null; }
+}
+async function changeRackEmbed(v: boolean) {
+  try {
+    rackEmbed.value = await setRackEmbedConfig(v);
+    msg.success(t("common.saved"));
+  } catch { msg.error(t("errors.server")); }
+}
+async function regenRackToken() {
+  try {
+    rackEmbed.value = await setRackEmbedConfig(rackEmbed.value?.enabled ?? true, true);
+    // 舊網址立刻失效，這件事一定要講出來，否則別人的儀表板會突然破圖而找不到原因
+    msg.success(t("system_settings.rack_embed_regenerated"));
+  } catch { msg.error(t("errors.server")); }
+}
+async function copyRackToken() {
+  if (!rackEmbedToken.value) return;
+  try {
+    await navigator.clipboard.writeText(rackEmbedToken.value);
+    msg.success(t("common.copied"));
+  } catch { msg.error(t("errors.server")); }
+}
+
 const geoip = ref<GeoIPConfig | null>(null);
 const geoipAccount = ref("");
 const geoipKey = ref("");
@@ -264,7 +548,7 @@ async function doTestLdapAuth() {
   ldapAuthTesting.value = true;
   try {
     const r = await testLdapAuth(ldapTestUser.value, ldapTestPw.value);
-    msg.success(`✓ ${r.dn}${r.is_admin ? " · 管理員" : ""}${r.display_name ? " · " + r.display_name : ""}`, { duration: 8000 });
+    msg.success(`✓ ${r.dn}${r.is_admin ? ` · ${t("users.is_admin")}` : ""}${r.display_name ? " · " + r.display_name : ""}`, { duration: 8000 });
     ldapTestPw.value = "";
   } catch (e: any) { msg.error(e?.response?.data?.detail ?? t("settings.system.ldap_test_fail")); }
   finally { ldapAuthTesting.value = false; }
@@ -290,11 +574,26 @@ async function doTestAf() {
 }
 
 onMounted(() => {
+  void loadImpact();
+  void loadRackEmbed();
   getUiDisplay().then((d) => { changeLogDimDays.value = d.change_log_dim_days; }).catch(() => {});
-  getConsoleSecurity().then((c) => { rdpClipPaste.value = c.rdp_clipboard_paste; }).catch(() => {});
+  getDevicePortFilter().then((d) => {
+    portFilterOn.value = d.filter_pseudo;
+    portFilterText.value = d.ignore_patterns.join("\n");
+  }).catch(() => {});
+  getConsoleSecurity().then((c) => {
+    applyConsole(c);
+    // 上限放大過就每次開頁面都檢查一次：路徑可能在設定之後才變（換了代理、加了 WAF）
+    if (sftpMaxMb.value > SFTP_MAX_DEFAULT) void checkSftpPath();
+  }).catch(() => {});
   getMapProvider().then((p) => { mapProvider.value = p; }).catch(() => {});
   getRackNameAlign().then((a) => { rackAlign.value = a; }).catch(() => {});
-  getOnlineGrace().then((m) => { grace.value = m; }).catch(() => {});
+  getOnlineGrace().then((c) => {
+    grace.value = c.minutes; livenessSrc.value = c.sources; livenessAvail.value = c.available;
+  })
+    .catch(() => {});
+  getIpCooldown().then((d) => { cooldownDays.value = d; }).catch(() => {});
+  getCertExpiryDays().then((d) => { certExpiryDays.value = d; }).catch(() => {});
   void loadGeoip();
   void loadLdap();
   void loadLdapGroups();
@@ -335,29 +634,182 @@ async function doPreviewAutolink() {
 </script>
 
 <template>
-  <n-card>
-    <template #header>
-      <n-space align="center" :wrap-item="false">
-        <n-icon :size="22"><AdminIcon /></n-icon>
-        <span>{{ t("system_settings.title") }}</span>
-      </n-space>
-    </template>
+  <div class="ss-page">
+    <div class="ss-title">
+      <n-icon :size="22"><AdminIcon /></n-icon>
+      <span>{{ t("system_settings.title") }}</span>
+    </div>
     <div class="ss-wrap">
       <!-- 資安：連線管理 -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("system_settings.grp_security") }}</h3>
-        <div class="ss-grid">
-          <div class="fld">
-            <label>{{ t("settings.system.rdp_clip_paste") }}</label>
-            <n-switch :value="rdpClipPaste" @update:value="changeRdpClipPaste" />
-            <div class="hint">{{ t("settings.system.rdp_clip_paste_hint") }}</div>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_security") }}</span></template>
+        <!-- 一列一個設定：左邊名稱與說明、右邊控制項。以前三欄格子裡說明有長有短，
+             整區高低不齊、控制項東一個西一個（使用者回報排列不好看） -->
+        <div class="ss-rows">
+          <div class="ss-r fld">
+            <div class="ss-r__text">
+              <label>{{ t("settings.system.rdp_engine") }}</label>
+              <div class="hint">{{ t("settings.system.rdp_engine_hint") }}</div>
+            </div>
+            <div class="ss-r__ctl">
+              <n-select :value="rdpEngine" :options="rdpEngineOpts" @update:value="changeRdpEngine" />
+            </div>
+            <!-- 缺套件就講清楚缺哪些、怎麼裝；選了 FreeRDP 卻沒裝是會連不上的，要用警示色 -->
+            <!-- aardwolf 是選用的備用引擎（2026-09-27 起）：沒裝只在真的選了它時才要講 -->
+            <n-alert v-if="!aardwolfOk && (rdpEngine === 'aardwolf' || vncEngine === 'builtin')" type="error"
+                     :bordered="false" class="ss-r__full">
+              {{ t("settings.system.rdp_engine_no_aardwolf", { python: pythonVer }) }}
+            </n-alert>
+            <n-alert v-if="!freerdpOk" :type="rdpEngine === 'freerdp' ? 'error' : 'warning'"
+                     :bordered="false" class="ss-r__full">
+              <div>{{ t("settings.system.rdp_engine_missing", { pkgs: freerdpMissing.join("、") }) }}</div>
+              <code class="rdp-install-cmd">{{ freerdpCmd }}</code>
+            </n-alert>
+          </div>
+          <div class="ss-r fld">
+            <div class="ss-r__text">
+              <label>{{ t("settings.system.vnc_engine") }}</label>
+              <div class="hint">{{ t("settings.system.vnc_engine_hint") }}</div>
+            </div>
+            <div class="ss-r__ctl">
+              <n-select :value="vncEngine" :options="vncEngineOpts" @update:value="changeVncEngine" />
+            </div>
+          </div>
+          <div class="ss-r fld">
+            <div class="ss-r__text">
+              <label>{{ t("settings.system.ssh_engine") }}</label>
+              <div class="hint">{{ t("settings.system.ssh_engine_hint") }}</div>
+            </div>
+            <div class="ss-r__ctl">
+              <n-select :value="sshEngine" :options="sshEngineOpts" @update:value="changeSshEngine" />
+            </div>
+          </div>
+          <!-- guacd 的實際狀態：選了卻不能用要講清楚原因與怎麼裝；能用就列出支援哪些協定 -->
+          <div class="ss-r fld guacd-status">
+            <div class="ss-r__text">
+              <label>{{ t("settings.system.guacd_status") }}</label>
+              <div class="hint">{{ t("settings.system.guacd_hint") }}</div>
+            </div>
+            <div class="ss-r__ctl">
+              <span v-if="!consoleLoaded" class="hint">…</span>
+              <n-space v-else-if="guacdOk" :size="6" align="center" :wrap="true">
+                <n-tag v-for="p in ['rdp', 'vnc', 'ssh']" :key="p" size="small" :bordered="false"
+                       :type="guacdProtocols[p] ? 'success' : 'default'">
+                  {{ p.toUpperCase() }} {{ guacdProtocols[p] ? "✓" : "—" }}
+                </n-tag>
+                <span class="hint" style="margin:0">{{ guacdAddress }}</span>
+              </n-space>
+            </div>
+            <n-alert v-if="consoleLoaded && !guacdOk" type="error" :bordered="false" class="ss-r__full">
+              <div>{{ t("settings.system.guacd_down", { address: guacdAddress, reason: guacdError }) }}</div>
+              <code v-if="guacdCmd" class="rdp-install-cmd">{{ guacdCmd }}</code>
+            </n-alert>
+            <n-alert v-else-if="consoleLoaded && guacdMissingFor.length" type="error" :bordered="false"
+                     class="ss-r__full">
+              {{ t("settings.system.guacd_protocol_missing", { protocols: guacdMissingFor.join("、").toUpperCase() }) }}
+            </n-alert>
+          </div>
+          <div class="ss-r fld sftp-max">
+            <div class="ss-r__text">
+              <label>{{ t("settings.system.sftp_max_mb") }}</label>
+              <div class="hint">{{ t("settings.system.sftp_max_mb_hint") }}</div>
+            </div>
+            <div class="ss-r__ctl">
+              <n-space :size="8" align="center" :wrap="false">
+                <!-- Enter 由外層的 div 接：n-input-number 不會把 keyup 轉出來。
+                     不給 min／max：那會讓元件把超出範圍的值自動夾到邊界後存下去 -->
+                <div @keyup.enter="commitSftpMax">
+                  <n-input-number v-model:value="sftpMaxInput" :step="100" :show-button="false"
+                                  style="width:150px" @blur="commitSftpMax">
+                    <template #suffix>MB</template>
+                  </n-input-number>
+                </div>
+                <n-button size="small" :loading="probe?.running" @click="checkSftpPath">
+                  {{ t("settings.system.sftp_probe_run") }}
+                </n-button>
+              </n-space>
+            </div>
+            <div v-if="probe?.running" class="hint sftp-probe-running ss-r__full">
+              {{ t("settings.system.sftp_probe_running", {
+                stage: probe.stage === "down" ? t("settings.system.sftp_probe_down") : t("settings.system.sftp_probe_up"),
+                pct: probe.pct ?? 0 }) }}
+            </div>
+            <n-alert v-else-if="probe?.result" class="sftp-probe-result ss-r__full" :bordered="false"
+                     :type="probe.result.ok ? (probeSlow ? 'warning' : 'success') : 'error'">
+              <div>{{ probeText }}</div>
+              <div class="hint" style="margin-top:4px">{{ t("settings.system.sftp_probe_note") }}</div>
+            </n-alert>
+          </div>
+          <div class="ss-r fld">
+            <div class="ss-r__text">
+              <label>{{ t("settings.system.rdp_clip_paste") }}</label>
+              <div class="hint">{{ t("settings.system.rdp_clip_paste_hint") }}</div>
+            </div>
+            <div class="ss-r__ctl">
+              <n-switch :value="rdpClipPaste" @update:value="changeRdpClipPaste" />
+            </div>
+          </div>
+          <div class="ss-r fld">
+            <div class="ss-r__text">
+              <label>{{ t("relay.system_switch") }}</label>
+              <div class="hint">{{ t("relay.system_switch_hint") }}</div>
+            </div>
+            <div class="ss-r__ctl">
+              <n-switch :value="consoleRelay" data-testid="console-relay-switch" @update:value="changeConsoleRelay" />
+            </div>
           </div>
         </div>
-      </section>
+      </n-card>
+
+      <!-- 變更影響預演（預設關閉；開了之後選單、IP 頁、裝置頁才有入口） -->
+      <n-card class="ss-group" size="small" data-testid="ss-change-impact">
+        <template #header><span class="ss-h">{{ t("change_impact.title") }}</span></template>
+        <div class="ss-grid">
+          <div class="ss-r fld">
+            <div class="ss-r__text">
+              <label>{{ t("change_impact.set_enabled") }}</label>
+              <div class="hint">{{ t("change_impact.set_enabled_hint") }}</div>
+            </div>
+            <div class="ss-r__ctl">
+              <n-switch :value="impactCfg.enabled" data-testid="cip-enabled-switch"
+                        @update:value="(v: boolean) => saveImpact({ enabled: v })" />
+            </div>
+          </div>
+          <div class="ss-r fld">
+            <div class="ss-r__text">
+              <label>{{ t("change_impact.set_ai") }}</label>
+              <div class="hint">{{ t("change_impact.set_ai_hint") }}</div>
+            </div>
+            <div class="ss-r__ctl">
+              <n-switch :value="impactCfg.ai_enabled" @update:value="(v: boolean) => saveImpact({ ai_enabled: v })" />
+            </div>
+          </div>
+          <div class="ss-r fld">
+            <div class="ss-r__text">
+              <label>{{ t("change_impact.set_self_review") }}</label>
+              <div class="hint">{{ t("change_impact.set_self_review_hint") }}</div>
+            </div>
+            <div class="ss-r__ctl">
+              <n-switch :value="impactCfg.allow_self_review"
+                        @update:value="(v: boolean) => saveImpact({ allow_self_review: v })" />
+            </div>
+          </div>
+          <div class="fld">
+            <label>{{ t("change_impact.set_valid_hours") }}</label>
+            <n-input-number :value="impactCfg.run_valid_hours" :min="1" :max="168" style="width: 160px"
+                            @update:value="(v: number | null) => v && saveImpact({ run_valid_hours: v })" />
+          </div>
+          <div class="fld">
+            <label>{{ t("change_impact.set_retention") }}</label>
+            <n-input-number :value="impactCfg.retention_days" :min="7" :max="3650" style="width: 160px"
+                            @update:value="(v: number | null) => v && saveImpact({ retention_days: v })" />
+          </div>
+        </div>
+      </n-card>
 
       <!-- 顯示與地圖 -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("system_settings.grp_display") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_display") }}</span></template>
         <div class="ss-grid">
           <div class="fld">
             <label>{{ t("settings.system.map_provider") }}</label>
@@ -376,21 +828,124 @@ async function doPreviewAutolink() {
             <div class="hint">{{ t("settings.system.change_log_dim_days_hint") }}</div>
           </div>
         </div>
-      </section>
+      </n-card>
+
+      <!-- 裝置連接埠匯入：偽介面過濾 -->
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_device_ports") }}</span></template>
+        <div class="ss-grid">
+          <div class="fld">
+            <label>{{ t("settings.system.port_filter_pseudo") }}</label>
+            <n-switch v-model:value="portFilterOn" />
+            <div class="hint">{{ t("settings.system.port_filter_pseudo_hint") }}</div>
+          </div>
+          <div class="fld" style="grid-column: 1 / -1">
+            <label>{{ t("settings.system.port_ignore_patterns") }}</label>
+            <n-input v-model:value="portFilterText" type="textarea" :disabled="!portFilterOn"
+                     :autosize="{ minRows: 4, maxRows: 12 }"
+                     placeholder="^ethernet_\d+$" style="font-family: monospace" />
+            <div class="hint">{{ t("settings.system.port_ignore_patterns_hint") }}</div>
+          </div>
+          <div class="fld">
+            <n-button type="primary" size="small" @click="savePortFilter">
+              <template #icon><n-icon><SaveIcon /></n-icon></template>{{ t("common.save") }}
+            </n-button>
+          </div>
+        </div>
+      </n-card>
 
       <!-- 上線判定 -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("system_settings.grp_liveness") }}</h3>
-        <div class="fld" style="max-width: 320px">
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_liveness") }}</span></template>
+        <div class="fld fld-narrow-input">
           <label>{{ t("settings.prefs.online_grace_minutes") }}</label>
           <n-input-number :value="grace" :min="1" :max="43200" style="width: 100%" @update:value="changeGrace" />
           <div class="hint">{{ t("settings.prefs.online_grace_minutes_hint") }}</div>
         </div>
-      </section>
+        <div class="fld" style="margin-top: 12px">
+          <label>{{ t("system_settings.liveness_sources") }}</label>
+          <!-- 依「證據種類」分組：同一種類的來源長度相近，網格才對得齊；
+               混在一起自由換行會因為字數不一而每列參差（使用者回報）。 -->
+          <n-checkbox-group :value="livenessSrc" @update:value="changeSources">
+            <div v-for="g in livenessGroups" :key="g.kind" class="ss-src-row">
+              <span class="ss-src-kind">{{ g.title }}</span>
+              <div class="ss-src-grid">
+                <n-checkbox v-for="s in g.items" :key="s.key" :value="s.key" class="ss-src-item">
+                  <span class="ss-src-name">{{ g.kind === "base" ? srcLabel(s.key) : vendorLabel(s.key) }}</span>
+                  <!-- 不會過期的證據勾了等於「看過一次就永遠上線」→ 講明白，不要只靠說明文字 -->
+                  <n-tag v-if="!s.aging" size="tiny" :bordered="false" type="warning"
+                         class="ss-src-tag">
+                    {{ t("system_settings.src_no_aging") }}
+                  </n-tag>
+                </n-checkbox>
+              </div>
+            </div>
+          </n-checkbox-group>
+          <div class="ss-warn">
+            <n-icon :size="15" :component="WarnIcon" />
+            <span>{{ t("system_settings.liveness_no_aging_warn") }}</span>
+          </div>
+          <div class="hint">{{ t("system_settings.liveness_sources_hint") }}</div>
+        </div>
+      </n-card>
+
+      <!-- IP 生命週期 -->
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_lifecycle") }}</span></template>
+        <div class="fld fld-narrow-input">
+          <label>{{ t("system_settings.cooldown_days") }}</label>
+          <n-input-number :value="cooldownDays" :min="0" :max="3650" style="width: 100%"
+                          @update:value="changeCooldown" />
+          <div class="hint">{{ t("system_settings.cooldown_days_hint") }}</div>
+        </div>
+      </n-card>
+
+      <!-- 憑證到期通知 -->
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_cert_alert") }}</span></template>
+        <div class="fld fld-narrow-input">
+          <label>{{ t("system_settings.cert_expiry_days") }}</label>
+          <n-input-number :value="certExpiryDays" :min="1" :max="365" style="width: 100%"
+                          @update:value="changeCertExpiry" />
+          <div class="hint">{{ t("system_settings.cert_expiry_days_hint") }}</div>
+        </div>
+      </n-card>
+
+      <!-- 機櫃圖對外嵌入 -->
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("system_settings.grp_rack_embed") }}</span></template>
+        <div class="ss-grid">
+          <div class="fld">
+            <label>{{ t("system_settings.rack_embed_enabled") }}</label>
+            <n-switch :value="rackEmbed?.enabled ?? false" @update:value="changeRackEmbed" />
+            <div class="hint">{{ t("system_settings.rack_embed_hint") }}</div>
+          </div>
+          <div v-if="rackEmbed?.enabled" class="fld">
+            <label>{{ t("system_settings.rack_embed_token") }}</label>
+            <n-input :value="rackEmbedToken" readonly
+                     :type="showRackToken ? 'text' : 'password'" style="width: 100%" />
+            <n-space size="small" style="margin-top: 6px">
+              <n-button size="small" @click="showRackToken = !showRackToken">
+                {{ showRackToken ? t("common.hide") : t("common.show") }}
+              </n-button>
+              <n-button size="small" @click="copyRackToken">{{ t("common.copy") }}</n-button>
+              <n-popconfirm @positive-click="regenRackToken">
+                <template #trigger>
+                  <n-button size="small" type="warning" ghost>
+                    {{ t("system_settings.rack_embed_regen") }}
+                  </n-button>
+                </template>
+                {{ t("system_settings.rack_embed_regen_confirm") }}
+              </n-popconfirm>
+            </n-space>
+            <div class="hint">{{ t("system_settings.rack_embed_token_hint") }}</div>
+          </div>
+        </div>
+      </n-card>
 
       <!-- GeoIP -->
-      <section v-if="geoip" class="ss-group">
-        <h3 class="ss-h">{{ t("settings.system.geoip") }}</h3>
+      <n-card v-if="geoip" class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("settings.system.geoip") }}</span></template>
         <div class="ss-grid">
           <div class="fld">
             <label>{{ t("settings.system.geoip_account") }}</label>
@@ -437,11 +992,11 @@ async function doPreviewAutolink() {
           {{ t("settings.system.geoip_hint") }}<br>
           {{ t("settings.system.geoip_freq_advice") }}
         </div>
-      </section>
+      </n-card>
 
       <!-- 外部認證 / LDAP（AD） -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("settings.system.ldap_title") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("settings.system.ldap_title") }}</span></template>
         <div class="fld">
           <n-space align="center">
             <n-switch v-model:value="ldap.enabled" />
@@ -531,11 +1086,11 @@ async function doPreviewAutolink() {
           <div class="hint" style="margin-top:4px">{{ t("settings.system.ldap_authtest_hint") }}</div>
         </div>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.ldap_hint") }}</div>
-      </section>
+      </n-card>
 
       <!-- 單一登入 (OIDC) -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("settings.system.oidc_title") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("settings.system.oidc_title") }}</span></template>
         <div class="fld">
           <n-space align="center">
             <n-switch v-model:value="oidc.enabled" />
@@ -588,11 +1143,11 @@ async function doPreviewAutolink() {
           </n-button>
         </n-space>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.oidc_hint") }}</div>
-      </section>
+      </n-card>
 
       <!-- 單一登入 (SAML 2.0) -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("settings.system.saml_title") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("settings.system.saml_title") }}</span></template>
         <div class="fld">
           <n-space align="center">
             <n-switch v-model:value="saml.enabled" />
@@ -652,11 +1207,11 @@ async function doPreviewAutolink() {
              style="font-size:13px; align-self:center">{{ t("settings.system.saml_sp_metadata") }}</a>
         </n-space>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.saml_hint") }}</div>
-      </section>
+      </n-card>
 
       <!-- 稽核轉送到 Graylog -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("settings.system.af_title") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("settings.system.af_title") }}</span></template>
         <div class="fld">
           <n-space align="center">
             <n-switch v-model:value="af.enabled" />
@@ -692,11 +1247,11 @@ async function doPreviewAutolink() {
           </n-button>
         </n-space>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("settings.system.af_hint") }}</div>
-      </section>
+      </n-card>
       <!-- 依網卡 MAC 自動掛裝置。預設關閉：升級之後突然多出一個每 5 分鐘自動改
            資料的作業，本身就是不該發生的事。開啟前可以先預覽會動到什麼。 -->
-      <section class="ss-group">
-        <h3 class="ss-h">{{ t("autolink.title") }}</h3>
+      <n-card class="ss-group" size="small">
+        <template #header><span class="ss-h">{{ t("autolink.title") }}</span></template>
         <div class="ss-grid">
           <div class="fld">
             <label>{{ t("autolink.enable") }}</label>
@@ -734,24 +1289,107 @@ async function doPreviewAutolink() {
           <div v-if="autolinkPreview.samples.length > 8">…</div>
         </div>
         <div class="hint" style="line-height:1.6; margin-top:10px">{{ t("autolink.rules_hint") }}</div>
-      </section>
+      </n-card>
     </div>
-  </n-card>
+  </div>
 </template>
 
 <style scoped>
-.ss-wrap { display: flex; flex-direction: column; gap: 24px; max-width: 780px; }
-.ss-group { border: 1px solid var(--n-border-color, rgba(127,127,127,.18)); border-radius: 14px;
-  padding: 20px 22px 22px; background: rgba(127,127,127,0.028); box-shadow: 0 1px 3px rgba(15,23,42,.05); }
-.ss-h { margin: 0; font-size: 16px; font-weight: 700; padding-left: 12px; line-height: 1.25;
-  border-left: 4px solid #18a058; }
-/* 統一卡片內每個區塊的垂直間距，避免欄位標題緊貼上一個元素 */
-.ss-group > * + * { margin-top: 16px; }
+/* 每個分類各自一張卡片，寬度撐滿內容區（原本全部擠在一張大卡片、右側留白） */
+.ss-page { display: flex; flex-direction: column; gap: 16px; }
+.ss-title { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600;
+  padding: 2px 2px 0; }
+.ss-wrap { display: flex; flex-direction: column; gap: 16px; max-width: none; }
+/* 卡片外觀（底色／邊框／深色模式）交給 n-card，不要自己刻 —— 自己刻就會與其他頁面不一致 */
+.ss-group { border-radius: 14px; }
+.ss-h { display: inline-block; font-size: 16px; font-weight: 700; padding-left: 12px;
+  line-height: 1.25; border-left: 4px solid #18a058; }
+/* 統一卡片內的垂直節奏。
+   原本只對「卡片內容的直接子元素」下間距，但很多區塊是包在 grid / div 裡的，
+   於是開關與底下的欄位就貼在一起（使用者回報：轉送稽核記錄那格最明顯）。
+   這裡改成三條規則一起管：卡片第一層、相鄰的欄位、以及開關列與後面的東西。 */
+/* 卡片內「直向堆疊」的區塊之間留白。
+   ⚠️ 間距只能加在**直向容器**上，不可以用「相鄰兄弟就補上邊距」——
+   欄位並排時（.ss-grid 的兩、三欄）那條規則會把右邊那欄整個往下推 14px，
+   看起來就是左右沒對齊（使用者在「顯示與地圖」與 GeoIP 兩處都抓到）。 */
+.ss-group :deep(.n-card__content) > * + * { margin-top: 16px; }
+/* 直向排列的容器用 gap，橫向排列的（.ss-grid）由它自己的 gap 負責 */
+.ss-group :deep(.n-card__content) { display: flex; flex-direction: column; }
+.ss-group :deep(.n-card__content) > .fld + .fld { margin-top: 14px; }
+/* 開關列之後一定要留白：開關本身沒有下邊界，視覺上會黏住下一個欄位的標題 */
+.ss-group :deep(.n-switch) { margin-bottom: 2px; }
+.ss-group :deep(.fld > .n-space) { margin-bottom: 6px; }
+/* 按鈕列與底下的說明文字 */
+.ss-group :deep(.n-button + .hint),
+.ss-group :deep(.ss-row + .hint) { margin-top: 10px; }
 .ss-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* 一列一個設定（資安區塊）：左邊名稱與說明、右邊控制項；警示與檢測結果整列寬放在下面 */
+.ss-rows { display: flex; flex-direction: column; }
+.ss-r { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 320px); gap: 8px 32px;
+        align-items: center; padding: 12px 0; }
+.ss-r + .ss-r { border-top: 1px solid var(--n-border-color, rgba(128, 128, 128, .16)); }
+.ss-r:first-child { padding-top: 2px; }
+.ss-r__text label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 3px; }
+.ss-r__text .hint { max-width: 760px; line-height: 1.6; }
+.ss-r__ctl { display: flex; justify-content: flex-end; min-width: 0; }
+.ss-r__ctl > :deep(.n-select) { width: 100%; }
+.ss-r__full { grid-column: 1 / -1; }
+@media (max-width: 760px) {
+  .ss-r { grid-template-columns: 1fr; }
+  .ss-r__ctl { justify-content: flex-start; }
+}
+/* 只有一個欄位時就別佔半格：右半邊空著、說明卻提早換行（使用者回報）。 */
+.ss-grid > :only-child { grid-column: 1 / -1; }
+/* 寬螢幕改三欄，把右邊的空間用掉 */
+@media (min-width: 1500px) { .ss-grid { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 640px) { .ss-grid { grid-template-columns: 1fr; } }
+/* 單一數字欄位：只把輸入框收窄，說明文字仍用滿卡片寬度。
+   先前是把整格限成 320px，說明被擠成窄長一條、右邊整片空白（使用者回報）。 */
+.ss-src-row { display: flex; align-items: flex-start; gap: 10px; padding: 12px 0; }
+/* 種類之間畫一條淡線：只靠左邊的標題分辨，兩組黏在一起時看起來像同一堆 */
+.ss-src-row + .ss-src-row { border-top: 1px solid var(--n-border-color, rgba(127, 127, 127, .18)); }
+.ss-src-kind {
+  flex: 0 0 96px; font-size: 12.5px; color: var(--n-text-color-3, #8a8a8a);
+  line-height: 22px; text-align: right; font-weight: 500;
+}
+/* 固定欄寬的網格：每一格一樣寬，列與列才對得齊 */
+.ss-src-grid {
+  /* ⚠️ `min-width: 0` 不能省：flex 子項預設 min-width:auto，撐不小於內容的最小寬度，
+     視窗一窄格線就整片衝出卡片外（實測 820px 視窗下超出 195px）。 */
+  /* `width: 100%` 是關鍵：只給 flex 屬性時，格線的寬度仍會由內容決定（欄數 × 最小欄寬），
+     視窗一窄就整片衝出卡片外。明確綁定容器寬度之後，欄數才會跟著縮。 */
+  /* `auto-fill` 而不是 `auto-fit`：auto-fit 會把用不到的欄收掉、讓剩下的撐滿，
+     於是 4 項的列是 4 欄、3 項的列變 3 欄（每欄更寬）、2 項變 2 欄，上下對不齊（使用者回報）。
+     auto-fill 保留空欄，每一列的欄數與欄寬都一樣。 */
+  flex: 1 1 auto; min-width: 0; width: 100%; display: grid; gap: 8px 14px;
+  grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 1fr)); max-width: 940px;
+}
+/* 選項本身也要能縮：長標籤（Wazuh 代理 keep-alive）在窄欄位裡要換行而不是撐開格線 */
+.ss-src-item { min-width: 0; }
+.ss-src-item :deep(.n-checkbox__label) { white-space: normal; }
+.ss-src-item { line-height: 22px; min-width: 0; }
+.ss-src-name { vertical-align: middle; }
+.ss-src-tag { margin-left: 4px; vertical-align: middle; }
+@media (max-width: 900px) {
+  .ss-src-row { flex-direction: column; gap: 2px; }
+  .ss-src-kind { text-align: left; flex-basis: auto; }
+}
+.fld-narrow-input :deep(.n-input-number) { max-width: 260px; }
 .fld label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 5px; }
 .hint { font-size: 11px; opacity: 0.65; margin-top: 4px; }
+/* 「不會過期」是會讓判定失真的選項 —— 從灰色說明裡拉出來，別讓它埋在一整段字裡 */
+.ss-warn {
+  display: flex; align-items: flex-start; gap: 6px; margin-top: 10px;
+  padding: 8px 10px; border-radius: 8px; font-size: 12.5px; line-height: 1.6;
+  color: #a2680a; background: rgba(240, 160, 32, 0.12);
+  border: 1px solid rgba(240, 160, 32, 0.35);
+}
 .ss-row { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
 .ss-status { margin-top: 12px; font-size: 12px; display: flex; flex-direction: column; gap: 3px; }
 .db-row { display: flex; gap: 8px; align-items: center; }
+.rdp-install-cmd {
+  display: block; margin-top: 6px; padding: 5px 8px; border-radius: 4px;
+  background: rgba(0, 0, 0, .06); font-size: 12px;
+  white-space: pre-wrap; word-break: break-all; user-select: all;
+}
 </style>

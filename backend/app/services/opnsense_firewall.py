@@ -28,15 +28,22 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.core.security import decrypt_secret, encrypt_secret
+from app.core.sqlin import in_values
 from app.models.address import IPAddress
 from app.models.firewall import OPNsenseAliasMapping, OPNsenseFirewall
 from app.models.subnet import Subnet
-from app.services.hostname import apply_observation
+from app.services import arp_seen as arp_seen_svc
+from app.services.dhcp_leases import LeaseRun
+from app.services.fw_sightings import SightingBatch
+from app.services.hostname_reports import HostnameRun, enabled_peers
+from app.services.ip_autocreate import (
+    addable_subnets,
+)
 
 
 class OPNsenseError(RuntimeError):
@@ -92,7 +99,7 @@ async def _api_get(fw: OPNsenseFirewall, path: str, *, timeout: float = 15.0) ->
     except UnsafeOutboundURL as exc:
         raise OPNsenseError(f"SSRF guard rejected URL: {exc}") from exc
     except httpx.HTTPError as exc:
-        raise OPNsenseError(f"transport: {exc.__class__.__name__}") from exc
+        raise OPNsenseError(f"transport: {transport_detail(exc)}") from exc
     if resp.status_code != 200:
         raise OPNsenseError(f"OPNsense GET {path}: {resp.status_code} {resp.text[:200]}")
     return resp.json()  # type: ignore[no-any-return]
@@ -153,7 +160,7 @@ async def _api_post(
     except UnsafeOutboundURL as exc:
         raise OPNsenseError(f"SSRF guard rejected URL: {exc}") from exc
     except httpx.HTTPError as exc:
-        raise OPNsenseError(f"transport: {exc.__class__.__name__}") from exc
+        raise OPNsenseError(f"transport: {transport_detail(exc)}") from exc
     if resp.status_code not in (200, 201):
         raise OPNsenseError(f"OPNsense POST {path}: {resp.status_code} {resp.text[:200]}")
     return resp.json()  # type: ignore[no-any-return]
@@ -323,38 +330,6 @@ async def sync_mapping(
     return summary
 
 
-async def _stamp_ip_seen(
-    session: AsyncSession, ip: str,
-    *, mac: str | None = None, hostname: str | None = None,
-    subnet_ids: list[uuid.UUID] | None = None, dhcp: bool = False,
-) -> bool:
-    """找到 jt-ipam IPAddress 就 stamp last_seen_scanner，回傳是否找到。
-
-    OPNsense 給的資料相當於我們自己 scanner 的證據，所以塞 last_seen_scanner。
-    DHCP/ARP 是當下事實 → 有 MAC / hostname 就覆寫舊值。
-    dhcp=True（來自 DHCP lease）→ 自動標記 in_dhcp_lease。
-    subnet_ids 給定時只在該防火牆關聯的子網路內找 IP（避免重疊網段同 IP 撈到別人，
-    也避免 .scalar_one_or_none() 在多筆同 IP 時 MultipleResultsFound 炸掉整批 sync）。
-    """
-    if not ip:
-        return False
-    stmt = select(IPAddress).where(IPAddress.ip == ip)
-    if subnet_ids:
-        stmt = stmt.where(IPAddress.subnet_id.in_(subnet_ids))
-    ipa = (await session.execute(stmt.limit(1))).scalars().first()
-    if ipa is None:
-        return False
-    ipa.last_seen_scanner = datetime.now(UTC)
-    if dhcp:
-        ipa.in_dhcp_lease = True
-    if mac:
-        from app.services.arp_precedence import consider_mac
-        await consider_mac(session, ip=ipa, mac=mac, source="opnsense")
-    if hostname:
-        await apply_observation(session, ip=ipa, source="opnsense", hostname=hostname)
-    return True
-
-
 async def sync_dhcp_ranges(
     session: AsyncSession, fw: OPNsenseFirewall,
 ) -> dict[str, int]:
@@ -370,8 +345,11 @@ async def sync_dhcp_ranges(
     for path, family in (("/api/kea/dhcpv4/searchSubnet", 4), ("/api/kea/dhcpv6/searchSubnet", 6)):
         try:
             data = await _api_get(fw, path, timeout=8.0)
-        except OPNsenseError:
-            continue
+        except OPNsenseError as exc:
+            if "404" in str(exc):
+                continue          # 沒有 Kea（或沒有 v6）→ 這台沒有範圍可同步
+            # 讀取失敗：往外拋、保留既有範圍。以前吞掉後照樣「刪光再重建」→ 連不上就清空
+            raise OPNsenseError(f"dhcp ranges {path}: {exc}（保留既有範圍）") from exc
         for row in (data.get("rows") or []):
             cidr = row.get("subnet")
             pools = row.get("pools") or ""
@@ -414,6 +392,7 @@ async def sync_dhcp_reservations(
 
     rows: list[Reservation] = []
     engine = "kea"
+    kea_error: str | None = None
     try:
         resp = await _api_get(fw, "/api/kea/dhcpv4/searchReservation")
         for d in (resp.get("rows") or []) if isinstance(resp, dict) else []:
@@ -425,15 +404,21 @@ async def sync_dhcp_reservations(
                     ip=ip, mac=d.get("hw_address"),
                     hostname=(d.get("hostname") or None),
                     description=(d.get("description") or None)))
-    except OPNsenseError:
-        pass          # 沒開 Kea → 走 ISC
+    except OPNsenseError as exc:
+        if "404" not in str(exc):
+            kea_error = str(exc)      # 不是「沒開 Kea」，是讀取失敗
+        # 沒開 Kea → 走 ISC
 
     if not rows:
         engine = "isc"
         try:
             rows = _parse_legacy_static_maps(await _download_config_xml(fw))
-        except OPNsenseError:
-            rows = []
+        except OPNsenseError as exc:
+            # 兩條路都沒讀到：往外拋、保留既有固定分配。以前拿空清單去取代 → 連不上就全刪，
+            # 連帶「DHCP 固定分配」旗標被重算清掉（2026-09-26 稽核）
+            raise OPNsenseError(f"dhcp reservations: {kea_error or ''} {exc}（保留既有資料）") from exc
+        if not rows and kea_error:
+            raise OPNsenseError(f"dhcp reservations: kea {kea_error}（保留既有資料）")
 
     return await replace_reservations(
         session, source_type="opnsense", source_id=fw.id, source_name=fw.name,
@@ -517,7 +502,14 @@ async def sync_dhcp_leases(
     used_sources: list[str] = []
     errors: list[str] = []
     scope_ids = list(fw.scope_subnet_ids) if fw.scope_subnet_ids else None
-    leased_ips: set[str] = set()
+    # 開了自動建立才去查候選子網路（沒開就省一次查詢）
+    create_in = await addable_subnets(session, scope_ids) if fw.auto_create_ips else None
+    before_created = 0
+    hn_run = HostnameRun(session, source="opnsense", origin=f"opnsense:{fw.id}",
+                         peers=await enabled_peers(session, OPNsenseFirewall))
+    lease_run = LeaseRun(session, source_type="opnsense", source_id=fw.id)
+    batch = SightingBatch(session, source="opnsense", subnet_ids=scope_ids, lease_run=lease_run,
+                          create_in=create_in, hn_run=hn_run)
 
     for path, kind in sources:
         try:
@@ -541,24 +533,29 @@ async def sync_dhcp_leases(
             if not ip:
                 continue
             seen += 1
-            leased_ips.add(ip)
-            if await _stamp_ip_seen(session, ip, mac=mac, hostname=host,
-                                    subnet_ids=scope_ids, dhcp=True):
-                matched += 1
+            batch.add(ip, evidence="lease:opnsense", mac=mac, hostname=host)
+    # 整批寫（以前每筆租約各查 4、5 次；見 services/fw_sightings.py）
+    for found, existed in await batch.flush():
+        if found:
+            matched += 1
+            if not existed:
+                before_created += 1
 
-    # 撤銷：此防火牆關聯子網路內、原本標 in_dhcp_lease 但這次租約已消失的 IP → 清旗標。
-    # 只在有設定關聯子網路範圍時做，避免多台 OPNsense（全域範圍）互相清掉對方的租約標記。
-    if scope_ids and used_sources:
-        from sqlalchemy import update as _update
-        stmt = (
-            _update(IPAddress)
-            .where(IPAddress.subnet_id.in_(scope_ids), IPAddress.in_dhcp_lease.is_(True))
-        )
-        if leased_ips:
-            stmt = stmt.where(func.host(IPAddress.ip).notin_(leased_ips))
-        await session.execute(stmt.values(in_dhcp_lease=False))
+    # 主機名稱：每支租約端點都讀成功（404＝沒裝那個 plugin，不算失敗）才清掉不再出現的
+    hn = await hn_run.finish(complete=not errors)
+    if hn["breaker"]:
+        errors.append(f"hostname cleanup skipped: {hn['breaker']}")
+
+    # 租約旗標：同樣只在每支端點都讀成功時清掉這台不再發的（逐來源，不會清到別台的）
+    lr = await lease_run.finish(complete=not errors)
+    if lr["breaker"]:
+        errors.append(f"lease cleanup skipped: {lr['breaker']}")
 
     out: dict[str, int] = {"seen": seen, "matched": matched}
+    # 對不到的筆數要說出來：原本完全靜默，客戶只能自己讀原始碼才知道資料被丟掉
+    out["skipped_no_ipam_record"] = seen - matched
+    if before_created:
+        out["created"] = before_created
     if used_sources:
         out["sources"] = ",".join(used_sources)  # type: ignore[assignment]
     if errors:
@@ -581,16 +578,34 @@ async def sync_arp_table(
     rows = data.get("rows") or data if isinstance(data, list) else data.get("rows") or []
     if isinstance(data, list):
         rows = data
-    seen = matched = 0
+    seen = 0
     scope_ids = list(fw.scope_subnet_ids) if fw.scope_subnet_ids else None
+    batch = SightingBatch(session, source="opnsense", subnet_ids=scope_ids)
+    # 每一筆帶 `expires`＝剩餘秒數，從 max_age 往下數（FreeBSD 預設 1200 秒，
+    # 實機兩台都是 1200）。**用整批的最大值當 max_age**，站台調過 net.link.ether.inet.max_age
+    # 也還是對得上；抓不到就退回 1200。
+    max_age = 1200.0
+    for r in rows:
+        try:
+            max_age = max(max_age, float(r.get("expires")))
+        except (TypeError, ValueError):
+            continue
     for r in rows:
         ip = (r.get("ip") or "").strip()
         mac = (r.get("mac") or "").strip() or None
         if not ip:
             continue
         seen += 1
-        if await _stamp_ip_seen(session, ip, mac=mac, subnet_ids=scope_ids):
-            matched += 1
+        # 靜態／永久項目不會因為機器關機而消失 → 不能拿來宣稱上線
+        perm = str(r.get("permanent") or r.get("type") or "").strip().lower() in (
+            "1", "true", "yes", "permanent", "static")
+        # 已過期但還列在表上的條目：那是「曾經看過」，不是「現在還在」
+        if str(r.get("expired") or "").strip().lower() in ("1", "true", "yes"):
+            perm = True
+        # 條目自己說了它是什麼時候被更新的 —— 用那個時間，不要一律蓋「現在」
+        when = arp_seen_svc.seen_from_remaining(r.get("expires"), max_age)
+        batch.add(ip, evidence="arp:opnsense", mac=mac, permanent=perm, seen_at=when)
+    matched = sum(1 for found, _e in await batch.flush() if found)
     return {"seen": seen, "matched": matched}
 
 
@@ -720,8 +735,6 @@ async def sync_nat_rules(
     """
     import ipaddress as _ip
 
-    from sqlalchemy import func
-
     from app.models.address import IPAddress
     from app.models.nat import NATTranslation
 
@@ -810,7 +823,7 @@ async def sync_nat_rules(
             stmt = (
                 select(IPAddress.id).where(
                     func.host(IPAddress.ip) == key,
-                    IPAddress.subnet_id.in_(allowed_subnet_ids),
+                    in_values(IPAddress.subnet_id, allowed_subnet_ids),
                 ).limit(1)
             )
         else:
@@ -952,12 +965,18 @@ async def sync_nat_rules(
                 setattr(existing, _k, _v)
             updated += 1
 
+    # 有任何一類規則沒讀到（連線失敗、逾時、legacy 退路也失敗），這一輪就不刪 ——
+    # 以前照刪：連不上時整台的 NAT 全部被清空、同步卻顯示成功（2026-09-26 稽核）。
+    # 404＝這台沒有那支 API（功能不存在），不算沒讀到。
+    incomplete = False
     for path, default_type in endpoints:
         try:
             data = await _api_post(fw, path, {"current": 1, "rowCount": -1})
         except OPNsenseError as exc:
             msg = str(exc)
             errors.append(f"{path}: {msg[:80]}")
+            if "404" not in msg:
+                incomplete = True
             # d_nat 404 → 用 legacy XML fallback 補 port_forward
             if default_type == "port_forward" and "404" in msg:
                 try:
@@ -967,11 +986,12 @@ async def sync_nat_rules(
                         await _upsert(r, "port_forward")
                 except OPNsenseError as exc2:
                     errors.append(f"legacy fallback: {str(exc2)[:80]}")
+                    incomplete = True
             continue
         for r in (data or {}).get("rows") or []:
             await _upsert(r, default_type)
 
-    # 刪掉已不存在的（鏡像同步）
+    # 刪掉已不存在的（鏡像同步）——只在每一類都讀到時
     removed = 0
     all_for_fw = (
         await session.execute(
@@ -979,7 +999,7 @@ async def sync_nat_rules(
         )
     ).scalars().all()
     for obj in all_for_fw:
-        if obj.external_id not in seen_uuids:
+        if not incomplete and obj.external_id not in seen_uuids:
             await session.delete(obj)
             removed += 1
 
@@ -993,6 +1013,9 @@ async def sync_nat_rules(
         out["legacy_xml_fallback"] = 1
     if errors:
         out["endpoint_errors"] = errors  # type: ignore[assignment]
+    if incomplete:
+        # 讓整批同步的 last_error 看得到（sync_all_for_firewall 依 "error" 彙整）
+        out["error"] = "部分 NAT 規則讀取失敗，這一輪不刪除任何 NAT：" + "；".join(errors)  # type: ignore[assignment]
     return out
 
 
@@ -1140,49 +1163,28 @@ async def sync_openvpn_sessions(
     except OPNsenseError:
         return {"seen": 0, "matched": 0, "error": "endpoint not available"}  # type: ignore[dict-item]
     rows = data.get("rows") or []
-    seen = matched = 0
+    seen = 0
+    batch = SightingBatch(session, source="opnsense")
     for r in rows:
         # 用 virtual_addr 對到 jt-ipam IPAddress（tunnel 內的 IP）
         ip = (r.get("virtual_addr") or r.get("vpn_ip") or "").strip()
         if not ip:
             continue
         seen += 1
-        if await _stamp_ip_seen(session, ip):
-            matched += 1
+        batch.add(ip, evidence="vpn:opnsense")
+    matched = sum(1 for found, _e in await batch.flush() if found)
     return {"seen": seen, "matched": matched}
 
 
 async def _resolve_fw_device_id(session: AsyncSession, fw: OPNsenseFirewall):  # type: ignore[no-untyped-def]
-    """防火牆對應的 jt-ipam device：API host IP 對到的 IPAddress.device → 名為該 IP 的
-    device → 名為防火牆名稱的 device。"""
-    from urllib.parse import urlsplit
-
-    from sqlalchemy import func
-
-    from app.models.address import IPAddress
-    from app.models.device import Device
-
-    host = (urlsplit(fw.api_url).hostname or "").strip()
-    if host:
-        did = (await session.execute(
-            select(IPAddress.device_id).where(
-                func.host(IPAddress.ip) == host, IPAddress.device_id.isnot(None)).limit(1)
-        )).scalar_one_or_none()
-        if did:
-            return did
-        did = (await session.execute(
-            select(Device.id).where(func.lower(Device.name) == host.lower()).limit(1)
-        )).scalar_one_or_none()
-        if did:
-            return did
-    return (await session.execute(
-        select(Device.id).where(func.lower(Device.name) == fw.name.lower()).limit(1)
-    )).scalar_one_or_none()
+    """防火牆對應的 jt-ipam device（共用規則見 services/vpn_pairing.resolve_device_for）。"""
+    from app.services.vpn_pairing import resolve_device_for
+    return await resolve_device_for(session, api_url=fw.api_url, name=fw.name)
 
 
 async def sync_vpn_tunnels(
     session: AsyncSession, fw: OPNsenseFirewall,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """從 OPNsense 拉 site-to-site VPN（WireGuard / IPsec）進 vpn_tunnels。
 
     a 端 = 此防火牆的 device；b 端為外部站點（b_device_id 留空，b_endpoint = 對端位址），
@@ -1194,6 +1196,7 @@ async def sync_vpn_tunnels(
 
     fw_dev = await _resolve_fw_device_id(session, fw)
     host = urlsplit(fw.api_url).hostname or None
+    origin = f"opnsense:{fw.id}"
     seen: set[str] = set()
     inserted = updated = 0
 
@@ -1210,13 +1213,14 @@ async def sync_vpn_tunnels(
         )).scalar_one_or_none()
         if obj is None:
             session.add(VPNTunnel(
-                name=full, type=vtype, status=status, a_device_id=fw_dev,
+                name=full, type=vtype, status=status, a_device_id=fw_dev, source_origin=origin,
                 a_endpoint=host, b_endpoint=b_endpoint or None, description=desc or None,
                 local_public_key=local_pk or None, peer_public_key=peer_pk or None,
             ))
             inserted += 1
         else:
             obj.type, obj.status = vtype, status
+            obj.source_origin = origin
             obj.a_device_id, obj.a_endpoint = fw_dev, host
             obj.b_endpoint, obj.description = (b_endpoint or None), (desc or None)
             obj.local_public_key = local_pk or None
@@ -1230,6 +1234,9 @@ async def sync_vpn_tunnels(
                 return v
         return ""
 
+    # 哪一類通道這一輪有完整讀到：只刪讀到的那一類裡沒出現的（404＝沒裝那個外掛，算讀到、沒有通道）。
+    # 以前讀取失敗被吞掉後照刪：連不上就清空，拓樸圖上的 VPN 連線跟著消失（2026-09-26 稽核）
+    read_ok = {"wg": True, "ipsec": True}
     # ── WireGuard：先抓本地 server（instance）公鑰，client = 對端 peer ──
     try:
         # 本地 instance 公鑰；單一 server 時直接當 local_public_key，
@@ -1263,8 +1270,9 @@ async def sync_vpn_tunnels(
                           "active" if _on(r.get("enabled")) else "offline",
                           f"allowed-ips: {allowed}" if allowed else "",
                           local_pk=local_pk, peer_pk=peer_pk)
-    except OPNsenseError:
-        pass
+    except OPNsenseError as exc:
+        if "404" not in str(exc):
+            read_ok["wg"] = False
 
     # ── IPsec connections（swanctl 新版 API）──
     try:
@@ -1275,15 +1283,23 @@ async def sync_vpn_tunnels(
             remote = (r.get("remote_addrs") or r.get("remote_addr") or "").strip()
             await _upsert(f"ipsec/{nm}", "ipsec_ikev2", remote,
                           "active" if _on(r.get("enabled")) else "offline", "")
-    except OPNsenseError:
-        pass
+    except OPNsenseError as exc:
+        if "404" not in str(exc):
+            read_ok["ipsec"] = False
 
-    # 鏡像刪除：此防火牆來源、這次沒看到的
-    existing = (await session.execute(
-        select(VPNTunnel).where(VPNTunnel.name.like(f"{fw.name}/%"))
-    )).scalars().all()
+    # 鏡像刪除：此防火牆建立的（名稱 `防火牆/wg/…`、`防火牆/ipsec/…`）、這次沒看到的，
+    # 而且那一類這一輪有讀到。只比對自己建立的兩種前綴 —— 以前用 `LIKE 防火牆/%`，
+    # 會連使用者手動建立、名字剛好以防火牆名開頭的通道一起刪（萬用字元也沒跳脫）
+    # 歸屬看 source_origin（防火牆改名後，舊名字的通道也是這台的）；兩類都讀到才能整批比對，
+    # 只讀到一類時只動那一類目前名稱的前綴
     removed = 0
-    for o in existing:
+    if all(read_ok.values()):
+        mine = [VPNTunnel.source_origin == origin]
+    else:
+        mine = [VPNTunnel.source_origin == origin,
+                or_(*[VPNTunnel.name.startswith(f"{fw.name}/{k}/", autoescape=True)
+                      for k, ok in read_ok.items() if ok] or [false()])]
+    for o in (await session.execute(select(VPNTunnel).where(*mine))).scalars().all():
         if o.name not in seen:
             await session.delete(o)
             removed += 1
@@ -1291,103 +1307,16 @@ async def sync_vpn_tunnels(
     await session.flush()
     paired = await link_wireguard_peers(session)
     paired += await link_ipsec_peers(session)
-    return {"seen": len(seen), "inserted": inserted, "updated": updated,
-            "removed": removed, "paired": paired}
+    out: dict[str, Any] = {"seen": len(seen), "inserted": inserted, "updated": updated,
+                           "removed": removed, "paired": paired}
+    failed = [k for k, ok in read_ok.items() if not ok]
+    if failed:
+        out["error"] = f"VPN 讀取失敗（{', '.join(failed)}），這一類通道這一輪不刪除"
+    return out
 
 
-async def link_wireguard_peers(session: AsyncSession) -> int:
-    """跨防火牆偵測 WireGuard 對接：A.peer_public_key == B.local_public_key
-    ⟹ A 的對端就是 B 的防火牆 device，設 A.b_device_id = B.a_device_id。
-
-    雙向都成立時兩條 tunnel 互指對方 device，拓樸圖即可把兩台連起來
-    （重複邊由 topology 以 device-pair 去重）。回傳本次新建立的對接數。
-    """
-    from app.models.physical import VPNTunnel
-
-    tunnels = list((await session.execute(
-        select(VPNTunnel).where(VPNTunnel.type == "wireguard")
-    )).scalars().all())
-
-    # local_public_key → (tunnel 的 a_device_id) + 反向對應整條 tunnel（拿對端記錄的我方 WAN）
-    by_local: dict[str, uuid.UUID] = {}
-    by_local_tunnel: dict[str, Any] = {}
-    for t in tunnels:
-        if t.local_public_key and t.a_device_id:
-            by_local.setdefault(t.local_public_key, t.a_device_id)
-            by_local_tunnel.setdefault(t.local_public_key, t)
-
-    linked = 0
-    for t in tunnels:
-        if not t.peer_public_key:
-            continue
-        peer_dev = by_local.get(t.peer_public_key)
-        # 不要連到自己（同台 fw 的 server/client）
-        if peer_dev and peer_dev != t.a_device_id:
-            if t.b_device_id != peer_dev:
-                t.b_device_id = peer_dev
-                t.pairing_method = "wireguard_pubkey"   # 公鑰配對 → 可靠
-                linked += 1
-            # 本端 a_endpoint 常是 LAN/管理 IP；對端 tunnel 記錄的 b_endpoint
-            # 正是「對端看到的我方位址」＝我方 WAN 公網 IP → 拿來補正
-            recip = by_local_tunnel.get(t.peer_public_key)
-            if recip is not None and recip.b_endpoint and t.a_endpoint != recip.b_endpoint:
-                t.a_endpoint = recip.b_endpoint
-        elif peer_dev is None and t.b_device_id is not None:
-            # 對端 fw 已不再宣告此公鑰 → 還原成遠端站點節點
-            t.b_device_id = None
-            t.pairing_method = None
-            linked += 1
-    return linked
-
-
-async def link_ipsec_peers(session: AsyncSession) -> int:
-    """偵測 IPsec site-to-site 對接（best-effort，用端點位址比對）：
-    若某條 IPsec tunnel 的對端閘道位址（b_endpoint）正好等於另一台已知防火牆的位址，
-    就把 b_device_id 指到那台防火牆。WireGuard 有公鑰可信賴；IPsec 沒有，
-    故只在「remote 位址精準命中另一台 fw 位址」時才連，降低誤判。回傳新連數。
-    """
-    from urllib.parse import urlsplit
-
-    from app.models.firewall import OPNsenseFirewall
-    from app.models.physical import VPNTunnel
-
-    fws = list((await session.execute(select(OPNsenseFirewall))).scalars().all())
-    # 位址 → 防火牆 device_id。多訊號彙整以提高命中率：
-    #   1) 防火牆 API host（可能是 mgmt 或 WAN）
-    #   2) 各防火牆自己 VPN tunnel 的本地端點 a_endpoint（通常正是該台 WAN/閘道）
-    addr_to_dev: dict[str, uuid.UUID] = {}
-    for fw in fws:
-        dev = await _resolve_fw_device_id(session, fw)
-        host = (urlsplit(fw.api_url).hostname or "").strip().lower()
-        if dev and host:
-            addr_to_dev.setdefault(host, dev)
-
-    all_tunnels = list((await session.execute(select(VPNTunnel))).scalars().all())
-    for t in all_tunnels:
-        if t.a_device_id and t.a_endpoint:
-            for a in t.a_endpoint.replace(";", ",").split(","):
-                a = a.strip().lower()
-                if a:
-                    addr_to_dev.setdefault(a, t.a_device_id)
-
-    tunnels = [t for t in all_tunnels if t.type in ("ipsec_ikev1", "ipsec_ikev2")]
-
-    linked = 0
-    for t in tunnels:
-        # b_endpoint 可能是 "1.2.3.4" 或 "1.2.3.4,5.6.7.8"
-        remotes = [a.strip().lower() for a in (t.b_endpoint or "").replace(";", ",").split(",") if a.strip()]
-        peer_dev = next((addr_to_dev[a] for a in remotes if a in addr_to_dev and addr_to_dev[a] != t.a_device_id), None)
-        if peer_dev:
-            if t.b_device_id != peer_dev:
-                t.b_device_id = peer_dev
-                t.pairing_method = "ipsec_endpoint"   # 端點比對 → best-effort（無加密身分）
-                linked += 1
-        elif t.b_device_id is not None:
-            # 之前連的對端位址已不再對應任何防火牆 → 還原
-            t.b_device_id = None
-            t.pairing_method = None
-            linked += 1
-    return linked
+# 配對規則搬到 services/vpn_pairing（各廠牌共用）；保留名稱給既有呼叫端
+from app.services.vpn_pairing import link_ipsec_peers, link_wireguard_peers  # noqa: E402
 
 
 def _opn_selected(v: Any) -> str:
@@ -1557,6 +1486,9 @@ async def sync_all_for_firewall(
     if fw.sync_rules:
         try:
             out.append({"task": "rules", **(await sync_filter_rules(session, fw))})
+            # 規則異動偵測：跟上一份快照 diff，變了就通知（sync 完才看得到完整清單）
+            from app.services.fw_review import run_sentinel
+            await run_sentinel(session, source_type="opnsense", instance=fw)
         except OPNsenseError as exc:
             out.append({"task": "rules", "error": str(exc)})
     if fw.sync_nat:
@@ -1594,5 +1526,9 @@ async def sync_all_for_firewall(
         out.append({"task": "vpn", "error": str(exc)})
 
     fw.last_sync_at = datetime.now(UTC)
-    fw.last_error = None
+    # 部分失敗要留下痕跡：以前一律設回 None，連不上時每個區段都失敗、畫面卻顯示成功，
+    # 健康告警也永遠不會響（2026-09-26 稽核）。格式比照 FortiGate
+    failed = [(o.get("task"), o.get("error")) for o in out if o.get("error")]
+    fw.last_error = ("部分區段失敗：" + "；".join(f"{t}: {str(e)[:160]}" for t, e in failed)
+                     if failed else None)
     return out

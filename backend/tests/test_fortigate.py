@@ -63,7 +63,7 @@ def _patch_api(monkeypatch, mapping, fail: set[str] | None = None):
 
 
 @pytest.mark.anyio
-async def test_list_vdoms_prefers_config_then_discovery_then_root(db_session, monkeypatch) -> None:
+async def test_list_vdoms_prefers_config_then_discovery_then_unscoped(db_session, monkeypatch) -> None:
     fw = await _mk_fw(db_session, "fgt-vdom", vdoms=["v1", "v2"])
     _patch_api(monkeypatch, {})
     assert await fg.list_vdoms(fw) == ["v1", "v2"]          # 使用者指定優先
@@ -72,8 +72,10 @@ async def test_list_vdoms_prefers_config_then_discovery_then_root(db_session, mo
     _patch_api(monkeypatch, {fg.EP_VDOMS: [{"name": "root"}, {"name": "guest"}]})
     assert await fg.list_vdoms(fw2) == ["root", "guest"]    # 自動探索
 
+    # 問不到 VDOM 清單 → **不指定範圍**（不是猜 "root"）。
+    # 猜一個名字塞進每一支請求，壞掉時會壞在全部端點上（issue #26，v0.6.4 改）。
     _patch_api(monkeypatch, {}, fail={fg.EP_VDOMS})
-    assert await fg.list_vdoms(fw2) == ["root"]             # 非 VDOM 模式 → 退回 root
+    assert await fg.list_vdoms(fw2) == [fg.NO_VDOM]
 
 
 @pytest.mark.anyio
@@ -236,13 +238,23 @@ async def test_failing_endpoint_does_not_break_other_syncs(db_session, admin_use
     fw.sync_dhcp_ranges = True
     fw.sync_policies = True
     fw.sync_arp = False
+    from app.models.dhcp import DHCPPoolRange
+    db_session.add(DHCPPoolRange(
+        source_type="fortigate", source_id=fw.id, source_name=fw.name,
+        subnet_cidr="internal", start_ip="10.7.0.1", end_ip="10.7.0.9", family=4, source="fortigate"))
+    await db_session.flush()
     _patch_api(monkeypatch, {
         fg.EP_POLICY: [{"policyid": 7, "name": "p7"}],
     }, fail={fg.EP_DHCP_SERVERS})     # DHCP server 端點不可用
     out = await fg.sync_instance(db_session, fw)
-    assert out["dhcp_ranges"] == 0    # 掛掉的項目回 0
     assert out["policies"] == 1       # 其他項不受影響
-    assert fw.last_error is None
+    # 以前：掛掉的項目回 0 —— 其實是把既有範圍整批清掉，而且 last_error 是空的（藏起失敗）。
+    # 現在：保留既有資料、講出來（2026-09-26 稽核）
+    assert "dhcp_ranges" in out["errors"]
+    kept = (await db_session.execute(select(DHCPPoolRange).where(
+        DHCPPoolRange.source_id == fw.id))).scalars().all()
+    assert len(kept) == 1, "讀取失敗不可以清掉既有的發放範圍"
+    assert fw.last_error and "dhcp_ranges" in fw.last_error
 
 
 @pytest.mark.anyio
@@ -339,3 +351,131 @@ async def test_vpn_reports_endpoint_unavailable(db_session, admin_user, monkeypa
     out = await fg.sync_vpn(db_session, fw, ["root"])
     assert out.get("ssl_unavailable") is True
     assert out.get("ipsec_unavailable") is True
+
+
+@pytest.mark.anyio
+async def test_one_dead_endpoint_does_not_abort_whole_sync(db_session, monkeypatch) -> None:
+    """實機常見「10 支端點有 9 支可讀」：單一區段失敗不可讓整台同步中止。
+
+    使用者實機回報 dhcp_leases 回 200 但不是 JSON（該韌體沒有這支端點）。原本
+    sync_instance 沒隔離 → ARP／政策／位址物件全部不同步，畫面只顯示一行錯誤。
+    """
+    from app.services import fortigate as fg
+
+    fw = FortiGateFirewall(
+        name=f"fg-{uuid.uuid4().hex[:6]}", api_url="https://192.0.2.20",
+        api_token_enc=b"x", api_token_nonce=b"y",
+        sync_dhcp=True, sync_arp=True, sync_policies=False, sync_nat=False,
+        sync_addresses=False, sync_vpn=False, sync_dhcp_ranges=False,
+    )
+    db_session.add(fw)
+    await db_session.flush()
+
+    async def _vdoms(_fw):
+        return ["root"], True     # (VDOM 清單, 是否權威)
+
+    async def _dead(*_a, **_k):
+        raise fg.FortiGateError("回應不是 JSON（/api/v2/monitor/system/dhcp）")
+
+    async def _arp_ok(*_a, **_k):
+        return 7
+
+    monkeypatch.setattr(fg, "list_vdoms_ex", _vdoms)
+    monkeypatch.setattr(fg, "sync_dhcp_leases", _dead)
+    monkeypatch.setattr(fg, "sync_arp", _arp_ok)
+
+    counts = await fg.sync_instance(db_session, fw)
+    assert counts["arp"] == 7, "DHCP 失敗把 ARP 一起帶走了"
+    assert "dhcp" in counts["errors"]
+    assert fw.last_error is not None, "部分失敗要留痕，不能假裝全部成功"
+    assert "dhcp" in fw.last_error
+    assert fw.last_sync_at is not None
+
+
+def test_concatenated_json_documents_are_parsed() -> None:
+    """FortiOS 實機把多份 JSON 直接串在一起回 —— 標準解析器會丟 Extra data。
+
+    客戶站台實際症狀：`monitor/system/dhcp` 的 content-type 是 application/json、
+    內容開頭也是合法的 `{"http_method":"GET","results":[...]}`，卻被判成「不是 JSON」，
+    整段 DHCP 同步失效。根因是回應由多份文件相接（每 VDOM 一份），不是內容有問題。
+    """
+    import json as _json
+
+    from app.services.fortigate import _loads_tolerant, _unwrap
+
+    doc1 = {"http_method": "GET", "results": [
+        {"ip": "198.51.100.84", "reserved": False,
+         "mac": "00:00:5e:00:53:bb", "hostname": "phone-a"}], "vdom": "root"}
+    doc2 = {"http_method": "GET", "results": [
+        {"ip": "203.0.113.10", "reserved": True,
+         "mac": "00:00:5e:00:53:cc", "hostname": "printer-b"}], "vdom": "vd2"}
+    raw = _json.dumps(doc1) + _json.dumps(doc2)
+
+    with pytest.raises(ValueError, match="Extra data"):
+        _json.loads(raw)          # 這正是舊行為失敗的地方
+
+    rows = _unwrap(_loads_tolerant(raw))
+    assert [r["ip"] for r in rows] == ["198.51.100.84", "203.0.113.10"]
+    assert [r["hostname"] for r in rows] == ["phone-a", "printer-b"]
+
+
+def test_single_document_still_unwraps() -> None:
+    """單一文件（絕大多數情況）行為不變。"""
+    import json as _json
+
+    from app.services.fortigate import _loads_tolerant, _unwrap
+
+    raw = _json.dumps({"http_method": "GET", "results": [{"ip": "198.51.100.5"}]})
+    assert _unwrap(_loads_tolerant(raw)) == [{"ip": "198.51.100.5"}]
+
+
+def test_real_html_body_still_raises() -> None:
+    """回網頁時仍要拋 ValueError（讓上層產生帶證據的錯誤訊息）。"""
+    from app.services.fortigate import _loads_tolerant
+
+    with pytest.raises(ValueError, match="Expecting value"):
+        _loads_tolerant("<!DOCTYPE html><html><body>login</body></html>")
+
+
+@pytest.mark.anyio
+async def test_one_failing_vdom_does_not_wipe_policies_or_raise_a_false_alert(db_session, admin_user, monkeypatch) -> None:
+    """兩個 VDOM、其中一個讀不到政策：以前照樣整份取代 → 那個 VDOM 的政策全被刪，
+    規則異動偵測還發出「移除」告警。現在整個區段不動。"""
+    from app.models.fortigate import FortiGatePolicy
+    fw = await _mk_fw(db_session, "fgt-2vdom", vdoms=["a", "b"])
+    both = {"a": [{"policyid": 1, "name": "pa"}], "b": [{"policyid": 2, "name": "pb"}]}
+    _patch_api(monkeypatch, {fg.EP_POLICY: lambda vdom: both[vdom]})
+    assert await fg.sync_policies(db_session, fw, ["a", "b"]) == 2
+
+    async def half(_fw, path, *, vdom=None, timeout=15.0):  # type: ignore[no-untyped-def]
+        if path == fg.EP_POLICY and vdom == "b":
+            raise fg.FortiGateError("HTTP 403")
+        return both[vdom] if path == fg.EP_POLICY else []
+    monkeypatch.setattr(fg, "_api_get", half)
+    with pytest.raises(fg.FortiGateError):
+        await fg.sync_policies(db_session, fw, ["a", "b"])
+    left = (await db_session.execute(select(FortiGatePolicy.name).where(
+        FortiGatePolicy.firewall_id == fw.id))).scalars().all()
+    assert sorted(left) == ["pa", "pb"]
+
+
+@pytest.mark.anyio
+async def test_an_unreadable_vdom_list_removes_nothing(db_session, admin_user, monkeypatch) -> None:
+    """VDOM 清單讀不到 → 只看得到管理 VDOM：整份取代的區段這一輪不動，並講出來。"""
+    from app.models.fortigate import FortiGatePolicy
+    fw = await _mk_fw(db_session, "fgt-novdoms")
+    fw.sync_policies = True
+    fw.sync_dhcp = False
+    fw.sync_arp = False
+    db_session.add(FortiGatePolicy(firewall_id=fw.id, vdom="guest", policyid="9", name="guest-rule"))
+    await db_session.flush()
+
+    async def _vdoms(_fw):
+        return [fg.NO_VDOM], False
+    monkeypatch.setattr(fg, "list_vdoms_ex", _vdoms)
+    _patch_api(monkeypatch, {fg.EP_POLICY: []})
+    out = await fg.sync_instance(db_session, fw)
+    assert "vdoms" in out["errors"]
+    left = (await db_session.execute(select(FortiGatePolicy.name).where(
+        FortiGatePolicy.firewall_id == fw.id))).scalars().all()
+    assert left == ["guest-rule"]

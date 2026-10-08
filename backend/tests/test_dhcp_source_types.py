@@ -14,8 +14,14 @@ from app.models.dhcp import DHCP_SOURCE_TYPES
 
 SERVICES = Path(__file__).resolve().parent.parent / "app" / "services"
 
-# 掃 `source_type="..."` / `source_type='...'`（含 DHCPPoolRange(...) 的關鍵字引數）
-_PATTERN = re.compile(r"""source_type\s*=\s*["']([a-z0-9_]+)["']""")
+# 掃**寫進 dhcp_pool_ranges 的那些** `source_type=`。
+#
+# ⚠️ 不能只認 `source_type=` 這個字：`fw_review.run_sentinel()` 的參數同名，但它講的是
+# 防火牆規則異動，跟 DHCP 發放範圍無關（Palo Alto 就是這種 —— 它同步 DHCP 租約，
+# 但沒有發放範圍可抓）。真正的判準是**旁邊有沒有 `source_id`** —— 那是這張表的鍵，
+# 只有寫這張表的地方才會帶。
+_PATTERN = re.compile(
+    r"""source_type\s*=\s*["']([a-z0-9_]+)["']\s*,\s*\n?\s*source_id""")
 
 
 def _written_source_types() -> set[str]:

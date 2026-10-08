@@ -136,10 +136,11 @@ const cableKeys = ["type", "label", "a_end", "b_end", "status", "description", "
 const cablePickerItems = computed(() => cableColsAll.value
   .map((c: any) => ({ key: c.key, label: typeof c.title === "function" ? c.title() : c.title }))
   .filter((c: any) => c.key));
-const { visibleKeys: cableVisible, setVisible: setCableVisible, reset: resetCableVisible } =
+const { visibleKeys: cableVisible, setVisible: setCableVisible, reset: resetCableVisible,
+  order: cableOrder, setOrder: setCableOrder, orderColumns: orderCableCols } =
   useColumnPrefs("cables", cableKeys, cableKeys);
 const cableCols = computed<DataTableColumns<any>>(() =>
-  cableColsAll.value.filter((c: any) => cableVisible.value.includes(c.key)));
+  orderCableCols(cableColsAll.value.filter((c: any) => cableVisible.value.includes(c.key))));
 const panelCols = computed<DataTableColumns<any>>(() => autoSort([
   { title: t("common.name"), key: "name" },
   { title: t("nav.locations"), key: "location_id", render: (r: any) => locations.value.find((l) => l.id === r.location_id)?.name ?? "—" },
@@ -158,14 +159,15 @@ const outletCols = computed<DataTableColumns<any>>(() => autoSort([
 // 電力三表的欄位顯示偏好（ColumnPicker + useColumnPrefs）+ 即時篩選。actions 欄永遠保留。
 function usePowerPrefs(name: string, cols: typeof panelCols, rows: typeof panels) {
   const allKeys = cols.value.filter((c: any) => c.key && c.key !== "actions").map((c: any) => String(c.key));
-  const { visibleKeys, setVisible, reset } = useColumnPrefs(`power_${name}`, allKeys, allKeys);
+  const { visibleKeys, setVisible, reset, order, setOrder, orderColumns } =
+    useColumnPrefs(`power_${name}`, allKeys, allKeys);
   const items = computed(() => cols.value
     .filter((c: any) => c.key && c.key !== "actions")
     .map((c: any) => ({ key: String(c.key), label: typeof c.title === "string" ? c.title : String(c.key) })));
   const visibleCols = computed<DataTableColumns<any>>(() =>
-    cols.value.filter((c: any) => c.key === "actions" || visibleKeys.value.includes(String(c.key))));
+    orderColumns(cols.value.filter((c: any) => c.key === "actions" || visibleKeys.value.includes(String(c.key)))));
   const { query, filtered } = useTableQuickFilter(rows);
-  return reactive({ visibleKeys, setVisible, reset, items, visibleCols, query, filtered });
+  return reactive({ visibleKeys, setVisible, reset, order, setOrder, items, visibleCols, query, filtered });
 }
 const panelP = usePowerPrefs("panels", panelCols, panels);
 const feedP = usePowerPrefs("feeds", feedCols, feeds);
@@ -357,8 +359,9 @@ watch(mode, () => { void refresh(); if (mode.value === "cabling") ensureCablingF
         {{ t("physical.add_cable") }}
       </n-button>
       <ColumnPicker v-if="mode === 'cabling'" :all="cablePickerItems" :visible="cableVisible"
-                    @update:visible="setCableVisible" @reset="resetCableVisible" />
-      <ExportButton v-if="mode === 'cabling'" :columns="cablePickerItems" :rows="filteredCables"
+                    @update:visible="setCableVisible" @reset="resetCableVisible"
+                    :order="cableOrder" @update:order="setCableOrder" />
+      <ExportButton v-if="mode === 'cabling'" :columns="orderCableCols(cablePickerItems)" :rows="filteredCables"
                     filename="cables" :title="t('nav.cabling')" />
     </n-space>
 
@@ -380,7 +383,8 @@ watch(mode, () => { void refresh(); if (mode.value === "cabling") ensureCablingF
             <template #icon><n-icon><PlusIcon /></n-icon></template>{{ t("common.add") }}
           </n-button>
           <ColumnPicker :all="panelP.items" :visible="panelP.visibleKeys"
-                        @update:visible="panelP.setVisible" @reset="panelP.reset" />
+                        @update:visible="panelP.setVisible" @reset="panelP.reset"
+                        :order="panelP.order" @update:order="panelP.setOrder" />
           <ExportButton :columns="panelP.visibleCols" :rows="panelP.filtered" filename="power-panels" :title="t('physical.panels')" />
         </n-space>
         <n-data-table :columns="panelP.visibleCols" :data="panelP.filtered" :loading="loading" :bordered="false" :pagination="pg" />
@@ -398,7 +402,8 @@ watch(mode, () => { void refresh(); if (mode.value === "cabling") ensureCablingF
             <template #icon><n-icon><PlusIcon /></n-icon></template>{{ t("common.add") }}
           </n-button>
           <ColumnPicker :all="feedP.items" :visible="feedP.visibleKeys"
-                        @update:visible="feedP.setVisible" @reset="feedP.reset" />
+                        @update:visible="feedP.setVisible" @reset="feedP.reset"
+                        :order="feedP.order" @update:order="feedP.setOrder" />
           <ExportButton :columns="feedP.visibleCols" :rows="feedP.filtered" filename="power-feeds" :title="t('physical.feeds')" />
         </n-space>
         <n-data-table :columns="feedP.visibleCols" :data="feedP.filtered" :loading="loading" :bordered="false" :pagination="pg" />
@@ -416,7 +421,8 @@ watch(mode, () => { void refresh(); if (mode.value === "cabling") ensureCablingF
             <template #icon><n-icon><PlusIcon /></n-icon></template>{{ t("common.add") }}
           </n-button>
           <ColumnPicker :all="outletP.items" :visible="outletP.visibleKeys"
-                        @update:visible="outletP.setVisible" @reset="outletP.reset" />
+                        @update:visible="outletP.setVisible" @reset="outletP.reset"
+                        :order="outletP.order" @update:order="outletP.setOrder" />
           <ExportButton :columns="outletP.visibleCols" :rows="outletP.filtered" filename="power-outlets" :title="t('physical.outlets')" />
         </n-space>
         <n-data-table :columns="outletP.visibleCols" :data="outletP.filtered" :loading="loading" :bordered="false" :pagination="pg" />

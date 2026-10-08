@@ -2,7 +2,7 @@
 
 OWASP A04 / A06：
 - WebhookSubscription 的 secret 雖然是 HMAC 簽章用的（非機密請求），仍加密
-- 出站 URL 由 safe_http 過 SSRF 白名單；此處只儲存定義
+- 出站 URL 由 safe_http 過 SSRF 允許清單；此處只儲存定義
 """
 
 from __future__ import annotations

@@ -33,9 +33,17 @@ async def _recently_notified(session: AsyncSession, cert_id: Any, since: datetim
 
 
 async def check_cert_alerts(
-    session: AsyncSession, *, expiry_days: int = 21, dedup_hours: int = 20,
+    session: AsyncSession, *, expiry_days: int | None = None, dedup_hours: int = 20,
 ) -> dict[str, int]:
-    """檢查到期與飄移,對管理員發站內通知。回傳統計。"""
+    """檢查到期與飄移,對管理員發站內通知。回傳統計。
+
+    門檻取用順序：**該張憑證自己的設定 → 全域預設**。不同憑證的更新流程長短差很多
+    （手動申請的商業憑證要提前一個月準備，自動續簽的提前七天就夠），
+    用同一個門檻不是太吵就是太晚。
+    """
+    from app.services.system_config import get_cert_expiry_days
+
+    default_days = expiry_days if expiry_days is not None else await get_cert_expiry_days(session)
     admins = (await session.execute(
         select(User).where(User.is_admin.is_(True), User.is_active.is_(True))
     )).scalars().all()
@@ -63,7 +71,9 @@ async def check_cert_alerts(
     expiry = 0
     for cert, ver in rows:
         days = (ver.not_after - now).days
-        if days > expiry_days:
+        # 逐張優先；沒設就用全域預設
+        threshold = cert.expiry_warn_days if cert.expiry_warn_days is not None else default_days
+        if days > threshold:
             continue
         if not (exp_ch.get("in_app") or exp_ch.get("email")):
             continue

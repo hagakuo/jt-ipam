@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.sqlin import in_values
 from app.models.device import Device
 from app.models.librenms import FDBEntry, LibreNMSDevice
 from app.models.physical import (
@@ -28,6 +29,8 @@ from app.models.physical import (
     VPNTunnel,
 )
 from app.schemas.base import Paginated, StrictModel
+from app.services.device_port_filter import is_pseudo_iface, prune_pseudo_ports
+from app.services.device_port_filter import load_patterns as load_pseudo_patterns
 
 router = APIRouter(tags=["physical"], dependencies=[Depends(require_global_read)])
 
@@ -112,7 +115,7 @@ async def list_cables(
     ends: dict[uuid.UUID, dict[str, Any]] = {cid: {} for cid in cable_ids}
     if cable_ids:
         terms = list((await session.execute(
-            select(CableTermination).where(CableTermination.cable_id.in_(cable_ids))
+            select(CableTermination).where(CableTermination.cable_id.in_(cable_ids))  # bounded: one page (≤ 500)
         )).scalars().all())
         # 預載相關 device_port → device 名稱
         port_ids = [t.object_id for t in terms if t.object_type == "device_port"]
@@ -120,14 +123,14 @@ async def list_cables(
         ports: dict[uuid.UUID, DevicePort] = {}
         if port_ids:
             ports = {p.id: p for p in (await session.execute(
-                select(DevicePort).where(DevicePort.id.in_(port_ids))
+                select(DevicePort).where(DevicePort.id.in_(port_ids))  # bounded: ends of one page of cables
             )).scalars().all()}
         # dev_meta: id → (name, customer_id, location_id)
         dev_meta: dict[uuid.UUID, tuple[str, uuid.UUID | None, uuid.UUID | None]] = {}
         need_dev = set(dev_ids) | {p.device_id for p in ports.values()}
         if need_dev:
             dev_meta = {d.id: (d.name, d.customer_id, d.location_id) for d in (await session.execute(
-                select(Device).where(Device.id.in_(need_dev))
+                select(Device).where(Device.id.in_(need_dev))  # bounded: ends of one page of cables
             )).scalars().all()}
         for t in terms:
             label = None
@@ -279,6 +282,7 @@ class DevicePortRead(StrictModel):
     description: str | None
     link: str | None = None   # 對端標籤（已接纜線時）：例「switch-003 · eth1/0/24」
     mac_address: str | None = None   # 此埠自身的實體 MAC（ifPhysAddress）
+    mac_vendor: str | None = None    # MAC 的 OUI 廠商（清單的 MAC 欄第二行，與 IP 清單一致）
 
 
 class DevicePortWrite(StrictModel):
@@ -311,6 +315,11 @@ async def list_device_ports(
     out = [DevicePortRead.model_validate(r) for r in rows]
     if not rows:
         return out
+    from app.services.oui import mac_prefix, vendor_map
+    vmap = await vendor_map(session, [r.mac_address for r in rows])
+    for o in out:
+        pfx = mac_prefix(o.mac_address)
+        o.mac_vendor = vmap.get(pfx) if pfx else None
     by_id = {r.id: r for r in out}
     port_ids = list(by_id)
 
@@ -318,7 +327,7 @@ async def list_device_ports(
     terms = list((await session.execute(
         select(CableTermination).where(
             CableTermination.object_type == "device_port",
-            CableTermination.object_id.in_(port_ids),
+            in_values(CableTermination.object_id, port_ids),      # 一台裝置可以有上萬個埠（issue #47）
         )
     )).scalars().all())
     for t in terms:
@@ -366,6 +375,10 @@ async def create_device_port(
     return DevicePortRead.model_validate(obj)
 
 
+# 偽介面過濾（排程同步也用同一份，見 services/device_port_filter.py）
+_is_pseudo_iface = is_pseudo_iface
+
+
 @router.post("/device-ports/import", dependencies=[Depends(require_admin)])
 async def import_device_ports(
     user: CurrentUser,
@@ -377,6 +390,10 @@ async def import_device_ports(
     退回 FDB 學到的 port_name（交換器）。"""
     from app.models.librenms import LibreNMSInstance
 
+    # 偽介面過濾設定（管理者可調）。關閉時完全不過濾也不清除。
+    pseudo_res = await load_pseudo_patterns(session)
+    filter_on = pseudo_res is not None
+
     lns_devs = list((await session.execute(
         select(LibreNMSDevice).where(LibreNMSDevice.jt_ipam_device_id == device_id)
     )).scalars().all())
@@ -384,6 +401,10 @@ async def import_device_ports(
     names: set[str] = set()
     name_mac: dict[str, str | None] = {}
     sources: set[str] = set()
+    # 每台 LibreNMS 這次完整讀到的埠名（記來源、清掉不再回報的；與排程同步同一套規則）
+    from app.services.librenms import port_origin, reconcile_librenms_ports
+    per_origin: dict[str, set[str]] = {}
+    origin_of: dict[str, str] = {}
 
     # 1) LibreNMS 介面清單（ifName）— 對 server / PVE 主機 / switch 都有效
     for d in lns_devs:
@@ -396,12 +417,16 @@ async def import_device_ports(
                 inst, f"/api/v0/devices/{d.legacy_device_id}/ports?columns=ifName,ifType,ifPhysAddress",
                 timeout=20.0,
             )
+            seen = per_origin.setdefault(port_origin(inst.id), set())
             for p in pdata.get("ports") or []:
                 nm = (p.get("ifName") or "").strip()
-                if nm and nm.lower() not in ("null", "unrouted vlan 1"):
+                if nm and nm.lower() not in ("null", "unrouted vlan 1") \
+                        and not (filter_on and _is_pseudo_iface(nm, p.get("ifType"), pseudo_res)):
                     names.add(nm)
                     name_mac[nm] = _norm_mac(p.get("ifPhysAddress"))
                     sources.add("librenms")
+                    seen.add(nm)
+                    origin_of.setdefault(nm, port_origin(inst.id))
         except Exception as exc:
             # LibreNMS 不可達/回應異常：略過此來源，改用 FDB
             logging.getLogger(__name__).debug("librenms ports fetch failed: %s", exc)
@@ -410,7 +435,7 @@ async def import_device_ports(
     if not names and lns_devs:
         rows = (await session.execute(
             select(FDBEntry.port_name).where(
-                FDBEntry.device_id.in_([d.id for d in lns_devs]),
+                FDBEntry.device_id.in_([d.id for d in lns_devs]),  # bounded: LibreNMS entries of one device
                 FDBEntry.port_name.is_not(None),
             ).distinct()
         )).all()
@@ -419,23 +444,35 @@ async def import_device_ports(
                 names.add(r[0].strip())
                 sources.add("librenms-fdb")
 
-    existing = {p.name for p in (await session.execute(
+    existing_ports = list((await session.execute(
         select(DevicePort).where(DevicePort.device_id == device_id)
-    )).scalars().all()}
+    )).scalars().all())
+    existing = {p.name for p in existing_ports}
 
     created = 0
     for n in sorted(names):
         if n in existing:
             continue
-        session.add(DevicePort(device_id=device_id, name=n, type="network"))
+        # FDB 學到的埠（交換器）不記來源：它們不在 LibreNMS 的介面清單裡，不該被清除規則碰到
+        session.add(DevicePort(device_id=device_id, name=n, type="network", source_origin=origin_of.get(n)))
         created += 1
+    await session.flush()
+    removed = 0
+    for origin, seen_names in per_origin.items():
+        removed += await reconcile_librenms_ports(session, device_id, origin, seen_names)
 
-    if created:
+    # 自我修復：清掉先前輪詢時被拉進來的偽介面（ethernet_N / ppp_N 等）。只刪未接線、
+    # 未做穿透對應的，避免動到手動建立或已納入佈線的埠。
+    pruned = await prune_pseudo_ports(session, device_id, pseudo_res) if pseudo_res is not None else 0
+
+    if created or pruned or removed:
         await _audit(session, user=user, request=request, object_type="device_port",
                      object_id=str(device_id), action="import",
-                     diff={"imported": created, "sources": sorted(sources)})
-        await session.commit()
-    return {"imported": created, "found": len(names),
+                     diff={"imported": created, "pruned": pruned, "removed": removed,
+                           "sources": sorted(sources)})
+    # 認領（只改來源欄位）沒有增刪也要寫進去
+    await session.commit()
+    return {"imported": created, "pruned": pruned, "removed": removed, "found": len(names),
             "linked_librenms": len(lns_devs), "sources": sorted(sources)}
 
 
@@ -976,7 +1013,7 @@ async def list_vpn(
     if dev_ids:
         names = {
             did: nm for did, nm in (await session.execute(
-                select(Device.id, Device.name).where(Device.id.in_(dev_ids))
+                select(Device.id, Device.name).where(Device.id.in_(dev_ids))  # bounded: one page (≤ 500)
             )).all()
         }
 

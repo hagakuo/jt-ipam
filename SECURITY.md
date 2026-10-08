@@ -1,13 +1,24 @@
 # Security Policy
 
-Security is a day-one requirement for jt-ipam. Every module and pull request is
-reviewed against the **OWASP Top 10:2025** checklist documented in
-[`docs/SECURITY.md`](docs/SECURITY.md).
+Security is a day-one requirement for jt-ipam: every module and every pull request
+is reviewed against the **OWASP Top 10:2025** checklist, and every release must pass
+an OWASP ZAP baseline scan with zero new findings before it is published.
+
+繁體中文: [SECURITY_zh-TW.md](SECURITY_zh-TW.md) · 日本語: [SECURITY_ja.md](SECURITY_ja.md)
 
 ## Supported versions
 
-The latest released `0.5.x` line receives security fixes. Older lines are not
-maintained — please upgrade.
+| Version | Support |
+|---|---|
+| `0.6.x` (current) | Fixes and security fixes |
+| `0.5.x` | Security fixes only |
+| `0.4.x` and older | Unsupported; please upgrade |
+
+Releases are tagged (`vX.Y.Z`) from `v0.6.8` onwards. Earlier versions were published
+without tags; if you are running one, upgrade rather than pin to it.
+
+Because releases are frequent, "supported" means the newest patch of that line:
+a fix is delivered as a new patch release, not as a backport onto an older patch.
 
 ## Reporting a vulnerability
 
@@ -63,7 +74,7 @@ neutralised in practice by the surrounding controls.
 
 Before every release we run a ZAP scan (HTTP + behind the public reverse proxy)
 and require **no findings beyond the documented baseline** above
-(`deploy/zap-baseline.conf`) — i.e. zero new High/Medium/Low.
+(`deploy/zap-baseline.conf`), i.e. zero new High/Medium/Low.
 
 When in doubt about whether something is a security issue, report it privately
 and we will triage.

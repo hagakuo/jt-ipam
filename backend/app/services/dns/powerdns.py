@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import httpx
 
-from app.core.safe_http import UnsafeOutboundURL, safe_request
+from app.core.safe_http import UnsafeOutboundURL, safe_request, transport_detail
 from app.services.dns.base import DNSAdapter, DNSAdapterError, DNSRecordOp, DNSZoneInfo
 
 
@@ -33,7 +33,7 @@ class PowerDNSAdapter(DNSAdapter):
         except UnsafeOutboundURL as exc:
             raise DNSAdapterError(f"SSRF guard rejected URL: {exc}") from exc
         except httpx.HTTPError as exc:
-            raise DNSAdapterError(f"transport: {exc.__class__.__name__}") from exc
+            raise DNSAdapterError(f"transport: {transport_detail(exc)}") from exc
         if resp.status_code != 200:
             raise DNSAdapterError(f"PowerDNS returned {resp.status_code}")
         try:

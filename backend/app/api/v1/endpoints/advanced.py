@@ -13,7 +13,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import EmailStr, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -641,8 +641,17 @@ DEFAULT_CIRCUIT_TYPES: list[tuple[str, str]] = [
 ]
 
 
+SEED_LOCK_CIRCUIT_TYPES = 0x6A74_0002
+
+
 async def seed_default_circuit_types(session: AsyncSession) -> int:
-    """表為空時塞入內建電路類型；回傳新增筆數（冪等）。"""
+    """表為空時塞入內建電路類型；回傳新增筆數（冪等）。
+
+    同 seed_default_roles：冪等不等於並行安全，多個 worker 同時啟動會撞 UniqueViolation，
+    所以先拿 advisory lock 排隊（同交易，commit 時自動釋放）。
+    """
+    await session.execute(text("SELECT pg_advisory_xact_lock(:k)"),
+                          {"k": SEED_LOCK_CIRCUIT_TYPES})
     existing = int(await session.scalar(select(func.count()).select_from(CircuitType)) or 0)
     if existing:
         return 0

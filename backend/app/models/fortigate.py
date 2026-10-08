@@ -1,4 +1,4 @@
-"""FortiGate 整合 model（Beta）—— 與 OPNsense / pfSense 分開，獨立資料表與設定。
+"""FortiGate 整合 model —— 與 OPNsense / pfSense 分開，獨立資料表與設定。
 
 走 FortiOS 官方 REST API（`/api/v2/monitor` 即時狀態、`/api/v2/cmdb` 設定物件），
 以 API token 認證（**`Authorization: Bearer` 標頭**；不用 `?access_token=` 網址參數 ——

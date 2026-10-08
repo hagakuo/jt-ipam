@@ -1,7 +1,27 @@
 #!/usr/bin/env python3
 """產生一張像樣的機房平面圖（俯視）：~6 坪、4.0m × 5.0m、含一個出入門。
 輸出 PNG 供 jt-ipam 機房平面圖上傳用。"""
+import argparse
+
 from PIL import Image, ImageDraw, ImageFont
+
+# 文字用 --lang 切換。文件站的截圖是逐語言的，但平面圖在資料庫裡只有一份 ——
+# 中文標題印在英文與日文的畫面上就露餡了。預設走中性版（只有尺寸，沒有詞）。
+LABELS = {
+    "neutral": ("Floor plan", "4.0 m × 5.0 m ｜ 19.8 m²", "Door"),
+    "zh": ("機房平面圖", "≈ 6 坪 ｜ 4.0 m × 5.0 m ｜ 19.8 m²", "門 (出入口)"),
+    "en": ("Floor plan", "4.0 m × 5.0 m ｜ 19.8 m²", "Door"),
+    "ja": ("フロアプラン", "4.0 m × 5.0 m ｜ 19.8 m²", "出入口"),
+}
+
+# 輸出路徑可由 -o 指定（示範資料集會把它畫到暫存檔再上傳）
+_ap = argparse.ArgumentParser(description=__doc__)
+_ap.add_argument("-o", "--out", default="machine-room.png")
+_ap.add_argument("--lang", choices=sorted(LABELS), default="neutral")
+_args = _ap.parse_args()
+out = _args.out
+TITLE, SUBTITLE, DOOR_LABEL = LABELS[_args.lang]
+
 
 PPM = 200                      # px per metre
 WALL = int(0.18 * PPM)         # 牆厚 0.18 m
@@ -62,7 +82,7 @@ hinge_x, hinge_y = op_r, by
 d.line([hinge_x, hinge_y, hinge_x, hinge_y - dw], fill=DOORC, width=5)        # 門板
 d.arc([hinge_x - dw, hinge_y - dw, hinge_x + dw, hinge_y + dw], 180, 270,
       fill=DOORC, width=3)                                                    # 開門弧
-ctext(((op_l + op_r) // 2, by + WALL + 26), "門 (出入口)", ft_door, DOORC)
+ctext(((op_l + op_r) // 2, by + WALL + 26), DOOR_LABEL, ft_door, DOORC)
 
 # ── 尺寸標註 ──
 def dim_h(x1, x2, y, label):
@@ -83,8 +103,8 @@ dim_h(IX, IX + IW, OY - 40, "4.0 m")
 dim_v(IY, IY + IH, OX - 40, "5.0 m")
 
 # ── 標題 / 面積 ──
-ctext((OX, 60), "機房平面圖", ft_title, INK, anchor="lm")
-ctext((OX, 108), "≈ 6 坪 ｜ 4.0 m × 5.0 m ｜ 19.8 m²", ft_sub, SUB, anchor="lm")
+ctext((OX, 60), TITLE, ft_title, INK, anchor="lm")
+ctext((OX, 108), SUBTITLE, ft_sub, SUB, anchor="lm")
 
 # ── 指北針（右上）──
 nx, ny = OX + OW - 36, OY + 60
@@ -99,6 +119,5 @@ for xx in (sx, sx + PPM):
     d.line([xx, sy - 6, xx, sy + 6], fill=INK, width=3)
 ctext((sx + PPM // 2, sy + 20), "1 m", ft_dim, INK)
 
-out = "/opt/jt-ipam/machine-room-6ping.png"
 img.save(out, "PNG")
 print("saved", out, img.size)

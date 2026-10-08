@@ -1,6 +1,7 @@
 [Unit]
 Description=jt-ipam GeoIP mmdb scheduled refresh
-Requires=jt-ipam-geoip-refresh.service
+# No Requires= on the service: it would make `systemctl enable --now` (install / upgrade)
+# start the service right away, racing the installer's own run of the same job.
 
 [Timer]
 # Fires daily; the script itself decides whether an update is due based on the

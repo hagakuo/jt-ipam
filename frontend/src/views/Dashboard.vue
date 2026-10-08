@@ -12,9 +12,11 @@
  */
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { usesLevels } from "@/utils/rackSlots";
 import { apiClient } from "@/api/client";
 import DashboardUptime from "@/components/DashboardUptime.vue";
 import DashboardAIAudit from "@/components/DashboardAIAudit.vue";
+import DashboardRacksCard from "@/components/DashboardRacksCard.vue";
 import { useAuthStore } from "@/stores/auth";
 import { useRouter } from "vue-router";
 import {
@@ -112,7 +114,7 @@ const kpiTiles = computed(() => {
 const DEVICE_TYPE_COLOR: Record<string, string> = {
   server: "#8b5cf6", switch: "#0ea5e9", router: "#6366f1", firewall: "#ef4444",
   ap: "#14b8a6", storage: "#f59e0b", ipmi: "#ec4899",
-  patch_panel: "#0d9488", pdu: "#d97706", ups: "#ca8a04", other: "#94a3b8",
+  patch_panel: "#0d9488", pdu: "#d97706", ups: "#ca8a04", workstation: "#0ea5e9", other: "#94a3b8",
 };
 const deviceTypes = computed(() => data.value?.device_types ?? []);
 const deviceTypeMax = computed(() => Math.max(1, ...deviceTypes.value.map((d) => d.count)));
@@ -177,8 +179,15 @@ onMounted(async () => {
     intg.value = p;
   } catch { /* 讀不到就用預設路由，交給頁面上的提示引導 */ }
 });
-const virtRoute = computed(() =>
-  (intg.value.esxi && !intg.value.proxmox) ? "virt_vmware" : "virt");
+// 兩個平台都在用時**不跳頁**：這個數字是兩邊的合計，送去任何一頁都只顯示一半，
+// 看起來像資料少了。只有一邊時才有唯一正確的目的地。
+const virtRoute = computed<string | null>(() => {
+  const pve = !!intg.value.proxmox;
+  const vmw = !!intg.value.esxi;
+  if (pve && vmw) return null;
+  if (vmw) return "virt_vmware";
+  return "virt";
+});
 
 const hierLayers = computed(() => [
   { key: "locations", label: "nav.locations",     icon: LocationsIcon,      value: data.value?.locations ?? 0, route: "locations", color: "#0ea5e9" },
@@ -198,6 +207,10 @@ const statusTotal = computed(() => {
 
 function go(name: string, params?: Record<string, string>) {
   router.push({ name, params }).catch(() => {});
+}
+/** 帶著機櫃 id 跳去機櫃頁並直接選到它 —— 只跳頁面會停在預設機櫃，等於沒帶到。 */
+function goRack(id: string) {
+  router.push({ name: "racks", query: { rack: id } }).catch(() => {});
 }
 
 // 區段熱度：使用率 → 顏色（與 n-progress status 對齊）
@@ -268,9 +281,10 @@ onMounted(() => { void load(); void loadPins(); });
           <CardTitle :icon="TopologyIcon" :text="t('dashboard.hierarchy_title')" />
         </template>
         <div class="hier-chain">
-          <template v-for="(layer, i) in hierLayers" :key="layer.key">
+          <div v-for="(layer, i) in hierLayers" :key="layer.key" class="hier-seg">
             <span v-if="i > 0" class="hier-arrow">→</span>
-            <div class="hier-node" :title="t(layer.label)" @click="go(layer.route)">
+            <div class="hier-node" :class="{ 'hier-node--static': !layer.route }"
+                 :title="t(layer.label)" @click="layer.route && go(layer.route)">
               <div class="hier-top">
                 <span class="hier-badge" :style="{ background: layer.color + '1f', color: layer.color }">
                   <n-icon :size="15"><component :is="layer.icon" /></n-icon>
@@ -279,7 +293,7 @@ onMounted(() => { void load(); void loadPins(); });
               </div>
               <div class="hier-count">{{ layer.value.toLocaleString() }}</div>
             </div>
-          </template>
+          </div>
         </div>
       </n-card>
 
@@ -381,12 +395,14 @@ onMounted(() => { void load(); void loadPins(); });
           </template>
           <div v-if="!rackUsage.length" class="chart-empty">{{ t("common.no_data") }}</div>
           <div v-else class="hbars">
-            <div v-for="r in rackUsage" :key="r.rack_id" class="hbar-row" @click="go('racks')">
+            <div v-for="r in rackUsage" :key="r.rack_id" class="hbar-row" @click="goRack(r.rack_id)">
               <span class="hbar-label">{{ r.name }}</span>
               <div class="hbar-track">
                 <div class="hbar-fill" :style="{ width: r.pct + '%', background: usePctColor(r.pct) }"></div>
               </div>
-              <span class="hbar-val">{{ r.used_u }}/{{ r.total_u }}U</span>
+              <!-- 層架的列是「層」不是 U：單位跟著每一列的型態走 -->
+              <span class="hbar-val">{{ r.used_u }}/{{ usesLevels(r.kind)
+                ? t("racks.rows_levels", { n: r.total_u }) : r.total_u + "U" }}</span>
             </div>
           </div>
         </n-card>
@@ -504,7 +520,7 @@ onMounted(() => { void load(); void loadPins(); });
           <CardTitle :icon="PinIcon" :text="t('dashboard.pinned_racks')" />
         </template>
         <n-space vertical :size="6">
-          <div v-for="r in pinnedRacks" :key="r.id" class="row-line" @click="go('racks')">
+          <div v-for="r in pinnedRacks" :key="r.id" class="row-line" @click="goRack(r.id)">
             <n-icon :size="16" style="opacity:.6"><RacksIcon /></n-icon>
             <span style="margin-left:8px">{{ r.name }}</span>
             <span style="margin-left:auto; opacity:.55; font-size:12px">{{ locName(r.location_id) }}</span>
@@ -591,6 +607,9 @@ onMounted(() => { void load(); void loadPins(); });
            LLM 沒啟用就整塊不顯示（跟 AI 對話小工具同一個判斷）；
            無全域讀取權限者拿到 403 → 元件自行不顯示。 -->
       <DashboardAIAudit v-if="aiEnabled" />
+
+      <!-- 機櫃：放最下面（使用者要求），可設定看哪個機房或挑哪幾個機櫃 -->
+      <DashboardRacksCard :locations="allLocations" :racks="allRacks" />
     </n-space>
   </n-spin>
 </template>
@@ -648,8 +667,18 @@ onMounted(() => { void load(); void loadPins(); });
   gap: 6px;
   row-gap: 10px;
 }
+/* 箭頭與它後面那一格是一個整體。原本兩者是兄弟節點，換行時箭頭會留在上一列尾端
+   指著空白處；而且落單的那一格會被 `flex: 1 1 0` 拉成整列寬（實測 974px）。 */
+.hier-seg {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 260px;     /* 換行後落單的一格不會被拉到整列寬 */
+}
 .hier-node {
-  flex: 1 1 0;
+  flex: 1 1 auto;
   min-width: 88px;
   display: flex;
   flex-direction: column;
@@ -663,6 +692,10 @@ onMounted(() => { void load(); void loadPins(); });
   transition: transform .12s, box-shadow .12s;
 }
 .hier-node:hover { transform: translateY(-2px); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08); }
+/* 沒有唯一目的地的節點（例如同時用了兩套虛擬化）→ 不要看起來可以點。
+   規則要寫在 .hier-node 之後：同樣是單一 class 選擇器，後面的才蓋得過去。 */
+.hier-node--static { cursor: default; }
+.hier-node--static:hover { transform: none; box-shadow: none; }
 .hier-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .hier-badge {
   width: 26px; height: 26px; border-radius: 7px; flex: 0 0 auto;

@@ -1,0 +1,12 @@
+# guacd 預編目標：每行一個容器映像（＝一個作業系統版本）。
+#
+# 預編檔動態連結發行版自己的函式庫（FreeRDP、libvncclient、cairo…），換一個 OS 版本就要重編一份。
+# 每次發版都要跑 scripts/guacd/check-new-os.sh 上網查 Debian／Ubuntu 有沒有新版，
+# 有就加在這裡、編好驗好隨版提供；已經停止支援的版本移掉（TEST_CHECKLIST 5h）。
+#
+# 目前只編 amd64。
+debian:12
+debian:13
+ubuntu:22.04
+ubuntu:24.04
+ubuntu:26.04

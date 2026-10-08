@@ -1,7 +1,11 @@
-"""by-user SSH 憑證管理：CRUD（永不回傳明文）。
+"""by-user 連線帳密金庫：CRUD（永不回傳明文）。
 
 授權：一律 owner-only（owner_user_id == 目前使用者）。明文（密碼/私鑰/passphrase）
 只在 POST 進來時收到，立即信封加密儲存；list/detail 只回遮罩資訊。
+
+用途（protocol）：ssh／rdp／vnc／pve／bmc／rustdesk。
+rustdesk（docs/SPEC_RUSTDESK_WEBCLIENT_zh-TW.md 附錄 D）：只有密碼、帳號可以空白、一律綁定 IP
+（RustDesk 的密碼是受控端各自的，沒有「個人預設」）；同一個人同一個 IP 只留一筆，新存的取代舊的。
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ from app.api.v1.dependencies import CurrentUser
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.security import envelope_encrypt
+from app.core.ui_error import ui_detail
 from app.models.address import IPAddress
 from app.models.ssh_credential import SSHCredential
 from app.schemas.base import StrictModel
@@ -32,11 +37,20 @@ def cred_aad(owner_user_id: uuid.UUID, field: str) -> bytes:
     return f"ssh_cred:{owner_user_id}:{field}".encode()
 
 
+#: 金庫允許的用途
+PROTOCOLS = ("ssh", "rdp", "vnc", "pve", "bmc", "rustdesk")
+#: 只有密碼的用途（不收私鑰）
+_PASSWORD_ONLY = ("rdp", "vnc", "pve", "bmc", "rustdesk")
+#: 可以沒有帳號的用途：傳統 VNC 只有密碼；RustDesk 只有密碼（附錄 D.2）
+_NO_USERNAME = ("vnc", "rustdesk")
+
+
 class SSHCredentialCreate(StrictModel):
     label: Annotated[str, Field(min_length=1, max_length=128)]
-    username: Annotated[str, Field(min_length=1, max_length=128)]
-    auth_type: str  # password | key（RDP 僅支援 password）
-    protocol: str = "ssh"  # ssh | rdp
+    # VNC／RustDesk 可以沒有帳號；其他協定必填（在建立時檢查）
+    username: Annotated[str, Field(max_length=128)] = ""
+    auth_type: str  # password | key（RDP／VNC／PVE／BMC／RustDesk 僅支援 password）
+    protocol: str = "ssh"  # 見 PROTOCOLS
     domain: Annotated[str | None, Field(max_length=128)] = None  # RDP 網域（選填）
     target_ip_id: uuid.UUID | None = None
     password: str | None = None
@@ -81,10 +95,10 @@ async def list_ssh_credentials(
 ) -> Any:
     """列出自己的憑證。帶 target_ip_id → 回該目標適用者（綁該 IP 的 + 個人預設）。
 
-    帶 protocol（ssh/rdp/vnc）→ 只回該協定的憑證。
+    帶 protocol（見 PROTOCOLS）→ 只回該協定的憑證。
     """
     stmt = select(SSHCredential).where(SSHCredential.owner_user_id == user.id)
-    if protocol in ("ssh", "rdp", "vnc", "pve", "bmc"):
+    if protocol in PROTOCOLS:
         stmt = stmt.where(SSHCredential.protocol == protocol)
     if target_ip_id is not None:
         stmt = stmt.where(
@@ -103,12 +117,17 @@ async def create_ssh_credential(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> Any:
-    if payload.protocol not in ("ssh", "rdp", "vnc", "pve", "bmc"):
-        raise HTTPException(400, detail="protocol must be 'ssh', 'rdp', 'vnc', 'pve' or 'bmc'")
+    if payload.protocol not in PROTOCOLS:
+        raise HTTPException(400, detail="protocol must be one of: " + ", ".join(PROTOCOLS))
     if payload.auth_type not in ("password", "key"):
         raise HTTPException(400, detail="auth_type must be 'password' or 'key'")
-    if payload.protocol in ("rdp", "vnc", "pve", "bmc") and payload.auth_type != "password":
+    if payload.protocol in _PASSWORD_ONLY and payload.auth_type != "password":
         raise HTTPException(400, detail=f"{payload.protocol.upper()} credentials only support password auth")
+    if payload.protocol not in _NO_USERNAME and not payload.username.strip():
+        raise HTTPException(400, detail=ui_detail("cred_username_required", "請填帳號"))
+    if payload.protocol == "rustdesk" and payload.target_ip_id is None:
+        # RustDesk 的密碼是受控端各自的：一律綁定 IP，不提供「個人預設」（附錄 D.2）
+        raise HTTPException(400, detail=ui_detail("cred_target_required", "這種帳密一定要綁定 IP"))
 
     secrets_enc: dict[str, Any] = {}
     if payload.auth_type == "password":
@@ -138,10 +157,22 @@ async def create_ssh_credential(
             elif payload.protocol == "bmc":
                 from app.services.permission import can_use_bmc
                 ok = await can_use_bmc(session, user=user, ip=ip)
+            elif payload.protocol == "rustdesk":
+                from app.services.permission import can_use_rustdesk
+                ok = await can_use_rustdesk(session, user=user, ip=ip)
             else:
                 ok = await can_use_ssh(session, user=user, ip=ip)
         if not ok:
-            raise HTTPException(403, detail="無此目標的連線權限")
+            raise HTTPException(403, detail=ui_detail("console_target_forbidden", "無此目標的連線權限"))
+
+    # RustDesk：同一個人、同一個 IP 只留一筆 —— 新存的取代舊的（附錄 D.2；對方改過密碼後重新記住就是這條路）
+    replaced: list[SSHCredential] = []
+    if payload.protocol == "rustdesk":
+        replaced = list((await session.execute(select(SSHCredential).where(
+            SSHCredential.owner_user_id == user.id,
+            SSHCredential.protocol == "rustdesk",
+            SSHCredential.target_ip_id == payload.target_ip_id,
+        ))).scalars().all())
 
     cred = SSHCredential(
         owner_user_id=user.id, label=payload.label.strip(), username=payload.username.strip(),
@@ -151,17 +182,28 @@ async def create_ssh_credential(
     )
     session.add(cred)
     await session.flush()
+    actor_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+    request_id = getattr(request.state, "request_id", None)
+    for old in replaced:
+        await append_audit(
+            session,
+            actor_user_id=str(user.id), actor_ip=actor_ip, actor_user_agent=user_agent,
+            object_type=f"{old.protocol}_credential", object_id=str(old.id),
+            action="delete", diff={"label": old.label, "replaced_by": str(cred.id)},
+            request_id=request_id,
+        )
+        await session.delete(old)
     await append_audit(
         session,
-        actor_user_id=str(user.id),
-        actor_ip=request.client.host if request.client else None,
-        actor_user_agent=request.headers.get("user-agent"),
+        actor_user_id=str(user.id), actor_ip=actor_ip, actor_user_agent=user_agent,
         object_type=f"{cred.protocol}_credential", object_id=str(cred.id),
         action="create",
         diff={"label": cred.label, "username": cred.username, "auth_type": cred.auth_type,
               "protocol": cred.protocol,
-              "target_ip_id": str(cred.target_ip_id) if cred.target_ip_id else None},
-        request_id=getattr(request.state, "request_id", None),
+              "target_ip_id": str(cred.target_ip_id) if cred.target_ip_id else None,
+              **({"replaced": [str(o.id) for o in replaced]} if replaced else {})},
+        request_id=request_id,
     )
     await session.commit()
     await session.refresh(cred)

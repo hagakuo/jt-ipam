@@ -1,4 +1,4 @@
-# jt-ipam v0.5.161
+# jt-ipam v0.6.51
 
 [![License](https://img.shields.io/github/license/jasoncheng7115/jt-ipam?color=blue)](LICENSE)
 [![Last commit](https://img.shields.io/github/last-commit/jasoncheng7115/jt-ipam)](https://github.com/jasoncheng7115/jt-ipam/commits/main)
@@ -11,9 +11,9 @@
 
 **🌐 [Project site / 專案介紹網站 →](https://jasoncheng7115.github.io/jt-ipam/?lang=en)**
 
-> A self-hosted, integration-focused IPAM, independently developed with an operation flow familiar to phpIPAM users, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, pfSense, FortiGate, Windows DHCP Server, Proxmox VE, VMware ESXi / vCenter, Wazuh, and a local LLM.
+> A self-hosted, integration-focused IPAM, independently developed with an operation flow familiar to phpIPAM users, deeply integrated with multiple DNS servers, LibreNMS, OPNsense, pfSense, FortiGate, Palo Alto, MikroTik RouterOS, Windows DHCP Server, standalone Kea and ISC DHCP, Proxmox VE, VMware ESXi / vCenter, Wazuh, Zabbix, and a local LLM.
 >
-> By Jason Tools Co., Ltd. · License: Apache-2.0 · 繁體中文: [README_zh-TW.md](README_zh-TW.md)
+> By Jason Tools Co., Ltd. · License: AGPL-3.0 · 繁體中文: [README_zh-TW.md](README_zh-TW.md) · 日本語: [README_ja.md](README_ja.md)
 
 ---
 
@@ -21,14 +21,18 @@
 
 Familiar to phpIPAM users so they are productive from day one, but built from scratch on a modern stack (not based on phpIPAM's codebase). Deep integrations:
 
-- **DNS** — PowerDNS, BIND 9, OPNsense Unbound, Univention UCS, Microsoft Windows DNS (reads forward/reverse status, optional record push)
-- **LibreNMS** — device sync, ARP / FDB harvesting, online-status reconciliation, auto-onboarding to monitoring
-- **Infrastructure** — Proxmox VE, **VMware ESXi / vCenter (Beta)** — one setup covering both a standalone ESXi host and vCenter, read-only over the vSphere API for virtual machines, NICs and addresses, landing in the same virtualisation tables as Proxmox; Wazuh, OPNsense / pfSense (alias / rule / NAT sync), and **FortiGate (Beta)** — read-only over the FortiOS REST API (DHCP leases and ranges, ARP, IPsec tunnels and SSL-VPN sessions, policies, NAT, address objects; multi-VDOM)
-- **DHCP** — each server is configured on its own: OPNsense (Kea/ISC) and pfSense sync leases and address ranges over their REST APIs; **Windows DHCP Server (Beta)** is read-only over WinRM + PowerShell (`Get-*` only, needs WinRM reachable — 5986/HTTPS by default). Addresses inside a pool are flagged in the IP list and detail view.
-- **Graylog** — exposes an IP→hostname/FQDN DSV lookup endpoint for Graylog's "DSV File from HTTP" data adapter
-- **Local AI** — natural-language queries and semantic search over LLM Server (self-hosted by default, so data never leaves the host; an OpenAI-compatible endpoint can be selected explicitly instead), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM; `gemma4:26b` works well in our testing
+- **DNS**: PowerDNS, BIND 9, OPNsense Unbound, Univention UCS, Microsoft Windows DNS (reads forward/reverse status, optional record push)
+- **LibreNMS**: device sync, ARP / FDB harvesting, online-status reconciliation, auto-onboarding to monitoring
+- **Zabbix**: read-only complement on the monitoring side, providing host-to-IP mapping, availability as an extra evidence source for effective status, maintenance windows, and a **monitoring coverage gap** (addresses IPAM has a hostname for that Zabbix is not watching). ARP/FDB stay with LibreNMS; they are not part of Zabbix's built-in data
+- **Infrastructure**: Proxmox VE, **VMware ESXi / vCenter (Beta)**, one setup covering both a standalone ESXi host and vCenter, read-only over the vSphere API for virtual machines, NICs and addresses, landing in the same virtualisation tables as Proxmox; Wazuh, OPNsense / pfSense (alias / rule / NAT sync), **FortiGate**, read-only over the FortiOS REST API (DHCP leases and ranges, ARP, IPsec tunnels and SSL-VPN sessions, policies, NAT, address objects; multi-VDOM), **Palo Alto (Beta)**, read-only over the PAN-OS API (ARP, DHCP leases, security policies with App-ID, NAT, address objects; multi-vsys), and **MikroTik RouterOS (Beta)**, read-only over the RouterOS v7 REST API (firewall filter/mangle/NAT rules, address lists, DHCP leases and ranges, VPN, ARP). A MikroTik is usually the site's main router, so sections run sequentially with pauses between them, the round stops once CPU load passes a threshold, and responses are size-capped (the RouterOS REST API has no pagination); the expensive sections are off by default and the connection diagnostic reports rows and seconds per endpoint
+- **DHCP**: each server is configured on its own. OPNsense (Kea/ISC) and pfSense sync leases and address ranges over their REST APIs; **Windows DHCP Server (Beta)** is read-only over WinRM + PowerShell (`Get-*` only, needs WinRM reachable, 5986/HTTPS by default); a **standalone Kea** server is read over its JSON control API (Control Agent, or Kea 3.0's own HTTP control socket; leases need the lease_cmds hook); a **standalone ISC DHCP** server (isc-dhcp-server, which has no lease-listing API) is read by a scan agent installed on the DHCP host, which parses dhcpd.conf / dhcpd.leases locally and reports only the parsed pools, fixed addresses and active leases. Addresses inside a pool are flagged in the IP list and detail view.
+- **Wazuh**: agent inventory (status, OS, CVE counts, SCA) matched to IPs, plus the IPs with a hostname that have no active agent
+- **OCS Inventory NG**: computers matched to existing IPs by NIC MAC (never creates records), hardware on the device page, plus the IPs OCS has never inventoried
+- **RustDesk Server (open source)**: a dedicated RustDesk agent on the RustDesk host (one-line install) reads the registered device IDs and their online state (read-only; the private key is never opened; when both jt-ipam and the host admin allow it, it can also delete old registrations); IDs are mapped to IPs only when the registered IP is unambiguous and recently online, the IP page connects right in the browser (RustDesk-compatible web connection, encrypted end to end in the browser) or launches the local RustDesk client with the server and key filled in (no password in the link), and the clients' own reports give connection audit, host name / OS / user and brute-force alarms without reconfiguring any client
+- **Graylog**: exposes an IP→hostname/FQDN DSV lookup endpoint for Graylog's "DSV File from HTTP" data adapter
+- **Local AI**: natural-language queries and semantic search over LLM Server (self-hosted by default, so data never leaves the host; an OpenAI-compatible endpoint can be selected explicitly instead), plus an MCP server (stdio and Streamable HTTP transports) so external LLM clients can drive the IPAM; `gemma4:26b` works well in our testing Security-side AI: a **firewall rule-change sentinel** (per-sync snapshot diffs of all three firewall families; a permit rule appearing overnight notifies admins), **IP forensics in chat** (ask "who was this IP last week" and get the field-level change log, ARP/MAC bindings and per-source hostnames as an evidence timeline), and an **AI triage card for unauthorised IPs** (OUI vendor, hostnames and switch port assembled into "what this likely is and where to look next", with evidence fencing against prompt injection).
 
-Also built in: a **browser-based remote console** — an SSH terminal, an **SFTP file browser** (upload/download without a separate client), plus RDP and VNC desktops and a **BMC out-of-band serial console** (IPMI SOL) (RDP/VNC/BMC are **Beta**), in the browser — credentials are not stored by default, with an optional per-user **encrypted credential vault**, object-level RBAC, single-use ticket→WebSocket sessions and full audit (RDP/VNC use an optional dependency that is installed only when a prebuilt wheel is available, so the base install is unchanged), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes; one is installed on the host automatically — scanning always runs through an agent), **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service — plus a **PowerShell agent for Windows / IIS** that imports into the Windows certificate store, repoints the HTTPS binding and verifies the switch over a real TLS connection, rolling back if it fails — with encrypted private keys, expiry alerts and manual renew), **floor plans + rack U-diagrams** (half-U, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
+Also built in: a **browser-based remote console** offering an SSH terminal, an **SFTP file browser** (upload/download without a separate client), plus RDP and VNC desktops, a **BMC out-of-band serial console** (IPMI SOL) and a RustDesk-compatible **web connection** (encrypted in the browser, with file transfer, no RustDesk client needed) (BMC is **Beta**) in the browser, with the connected time in the status bar, where credentials are not stored by default, with an optional per-user **encrypted credential vault**, **jump hosts** (for sites the backend cannot reach directly, a console can go backend → jump host → target; the exit is set per subnet and can be overridden per address, and the jump host's key must be pinned before any connection is allowed), object-level RBAC, single-use ticket→WebSocket sessions and full audit (every session records its length; RDP and VNC run on **guacd**, a required component prebuilt by jt-ipam for each supported OS version and installed automatically; the old pure-Python engine aardwolf is an optional fallback; SSH can use guacd too), an **IP request approval workflow** (configurable multi-stage / parallel sign-off, with in-app + email notifications), **DNS record review** (find records with no matching IPAM address), a **scan agent** (ICMP/ARP/rDNS/NetBIOS/mDNS/OS probes; one is installed on the host automatically; scanning always runs through an agent), an admin-only **IP probe** that works out what a host is from its services, OS fingerprint, banners and certificates (matched against the optional [Recog](https://github.com/rapid7/recog) fingerprint database, downloaded at install and checked weekly), with every conclusion shown with its evidence, **central certificate storage & distribution** (upload a commercial / self-signed cert once; a pure-bash agent pulls it on a schedule and deploys it to nginx / apache / caddy / haproxy / Proxmox VE·PMG·PBS / Zimbra and more, reloading the service; plus a **PowerShell agent for Windows / IIS** that imports into the Windows certificate store, repoints the HTTPS binding and verifies the switch over a real TLS connection, rolling back if it fails; all with encrypted private keys, expiry alerts and manual renew), **floor plans + rack elevations** (standard racks, industrial enclosures and shelving including chrome wire, slotted angle steel, wooden (IKEA IVAR-style) and IKEA KALLAX shelving, plus LackRack (an IKEA LACK side table as a 19" rack), with non-standard widths, a height you can set per level, an open top you can put things on, and devices stacked within one level; up to six devices side by side in one row, front/rear, SVG/PNG/draw.io export), **cable tracing** (multi-hop), an IP change log with stale-IP reclaim, and a universal table column-picker + multi-format export.
 
 ## Graylog log enrichment (DSV lookup)
 
@@ -36,7 +40,7 @@ jt-ipam generates a **live** IP → hostname / FQDN lookup table that Graylog's 
 
 - Enable under **Admin → System Settings → Graylog DSV**: pick a path slug, output format (CSV / TSV), and generate an access token
 - Endpoint `GET /api/v1/lookup/<path>?token=<token>` is generated on each request straight from the database
-- **Fields provided**: two columns per row — column 1 = IP (key), column 2 = hostname or FQDN (value); only IPs that have a hostname are emitted
+- **Fields provided**: two columns per row, with column 1 = IP (key) and column 2 = hostname or FQDN (value); only IPs that have a hostname are emitted
 - **Data format**: UTF-8 plain text. CSV is comma-separated with **every field wrapped in double quotes** (RFC 4180 escaping); TSV is tab-separated (unquoted). For example:
 
   ```csv
@@ -49,55 +53,96 @@ jt-ipam generates a **live** IP → hostname / FQDN lookup table that Graylog's 
 
 ## BMC out-of-band console (IPMI SOL, Beta)
 
-Open a keyboard + text console to a server's **BMC** (IPMI 2.0 Serial-over-LAN) straight from its IP — no vendor Java/HTML5 KVM. Enable it per IP (same RBAC level as SSH), keep the BMC credentials in the same encrypted vault, and every session is audited. It is **non-destructive**: keyboard + text screen only, no power control or mouse.
+Open a keyboard + text console to a server's **BMC** (IPMI 2.0 Serial-over-LAN) straight from its IP, with no vendor Java/HTML5 KVM. Enable it per IP (same RBAC level as SSH), keep the BMC credentials in the same encrypted vault, and every session is audited. It is **non-destructive**: keyboard + text screen only, no power control or mouse.
 
 SOL only relays the host's **serial port**, so the host needs a serial console configured or the screen stays blank. One-time host setup:
 
-1. **Find the port SOL maps to** — `dmesg | grep -iE 'ttyS|SPCR'` (e.g. `SPCR: console: uart,io,0x3f8,115200` → `0x3f8` = ttyS0, `0x2f8` = ttyS1). The wrong port stays blank.
+1. **Find the port SOL maps to**: `dmesg | grep -iE 'ttyS|SPCR'` (e.g. `SPCR: console: uart,io,0x3f8,115200` → `0x3f8` = ttyS0, `0x2f8` = ttyS1). The wrong port stays blank.
 2. **Add the kernel console** (keep `tty0` so the physical monitor keeps its output):
    - Generic Linux (GRUB): add `console=tty0 console=ttyS0,115200n8` to `GRUB_CMDLINE_LINUX` in `/etc/default/grub`, then `update-grub`.
    - Proxmox VE (systemd-boot / ZFS): append the same to `/etc/kernel/cmdline`, then `proxmox-boot-tool refresh`.
 3. **Enable serial login** (immediate, no reboot): `systemctl enable --now serial-getty@ttyS0`.
-4. **(Optional) BIOS Console Redirection** — point it at the same COM port (115200 8N1) to also see POST / BIOS over SOL.
-5. **Reboot** so `console=` takes effect — then SOL shows the whole boot and kernel panics. The physical monitor is unaffected.
+4. **(Optional) BIOS Console Redirection**: point it at the same COM port (115200 8N1) to also see POST / BIOS over SOL. Per-field values (Terminal Type, Flow Control, **Redirection After BIOS POST**, …) are in the [BMC / SOL setup guide](https://jasoncheng7115.github.io/jt-ipam/bmc-sol.html?lang=en).
+5. **Reboot** so `console=` takes effect; then SOL shows the whole boot and kernel panics. The physical monitor is unaffected.
 
 Just want a login now? Step 3 alone is enough. The same guide is built into the app, from the BMC console's **Setup guide** button.
 
 **Troubleshooting (gotchas seen in the field):**
 
-- **Connected but blank / Enter does nothing** — SOL may not map to the port SPCR declares. With SOL connected, `echo test > /dev/ttyS0` (and `/dev/ttyS1`) and see which appears; or check `/proc/tty/driver/serial` — the ttyS with a non-zero `rx` is the SOL port.
-- **Login prompt shows but no boot messages** — the kernel console landed on the wrong ttyS (a non-SOL port) while `serial-getty` is on the right one. Put **only** the SOL port in `console=` (e.g. `console=tty0 console=ttyS1,115200n8`), not multiple `ttyS` — the kernel may pick the wrong one. Verify with `cat /proc/consoles`.
-- **Output appears but is garbled** — the serial baud doesn't match SOL. Check `ipmitool -I open sol info 1 | grep 'Bit Rate'` and set `serial-getty` to the same baud.
-- **Boxes / colors look broken (e.g. glances)** — set the serial login's `TERM` to `xterm-256color` (serial-getty often defaults to `vt220`).
-- **Emoji (⚠️ etc.) in the OS boot messages** — those are systemd's own glyphs; add `systemd.setenv=SYSTEMD_EMOJI=0` to the kernel cmdline. For emoji on the **BIOS** screen, set the BIOS Console Redirection **Terminal Type = VT100+** (not VT-UTF8).
-- **Console area is tiny with black margins** — serial can't auto-negotiate window size; use the console's **Fit to window** button (it sends an `stty rows/cols` command — press it at a shell prompt), or run `stty rows N cols N` yourself.
+- **Connected but blank / Enter does nothing**: SOL may not map to the port SPCR declares. With SOL connected, `echo test > /dev/ttyS0` (and `/dev/ttyS1`) and see which appears; or check `/proc/tty/driver/serial`, where the ttyS with a non-zero `rx` is the SOL port.
+- **Login prompt shows but no boot messages**: the kernel console landed on the wrong ttyS (a non-SOL port) while `serial-getty` is on the right one. Put **only** the SOL port in `console=` (e.g. `console=tty0 console=ttyS1,115200n8`), not multiple `ttyS`; the kernel may pick the wrong one. Verify with `cat /proc/consoles`.
+- **Output appears but is garbled**: the serial baud doesn't match SOL. Check `ipmitool -I open sol info 1 | grep 'Bit Rate'` and set `serial-getty` to the same baud.
+- **Boxes / colors look broken (e.g. glances)**: set the serial login's `TERM` to `xterm-256color` (serial-getty often defaults to `vt220`).
+- **Emoji (⚠️ etc.) in the OS boot messages**: those are systemd's own glyphs; add `systemd.setenv=SYSTEMD_EMOJI=0` to the kernel cmdline. For emoji on the **BIOS** screen, set the BIOS Console Redirection **Terminal Type = VT100+** (not VT-UTF8).
+- **Console area is tiny with black margins**: serial can't auto-negotiate window size; use the console's **Fit to window** button (it sends an `stty rows/cols` command, so press it at a shell prompt), or run `stty rows N cols N` yourself.
+
+## Which sources create IP records on their own?
+
+When an integration sees an address IPAM does not have yet, the behaviour differs by
+source, and it matters, because the "unauthorised IPs" anomaly check is defined as
+**"seen in ARP, absent from IPAM"**. Hence this table:
+
+| Source | When IPAM has no such address | Toggle | Default | Subnet placement |
+|---|---|---|---|---|
+| **Scan agent** | Can create it | "Record unregistered IPs automatically" | **Off** | only inside subnets assigned to that agent with scanning enabled |
+| **LibreNMS** | May create (device primary IP only, never ARP neighbours) | "Auto-create discovered IPs" | **on by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
+| **Proxmox VE** | May create | "Trust addresses from virtualization" | **off by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
+| **VMware / ESXi** | May create | "Trust addresses from virtualization" | **off by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
+| **OPNsense / pfSense** | May create (DHCP leases) | "Create addresses IPAM does not have" | **off by default** | puts it in the smallest subnet containing it; creates nothing if that is unclear |
+| AdGuard / Wazuh / Zabbix / OCS / RustDesk / DNS / Windows DHCP / Kea / ISC DHCP / FortiGate / Palo Alto / MikroTik | **Match only, never create** | None | None | None |
+| CSV import / phpIPAM migration | Created from the imported data (an explicit user action) | None | None | as imported |
+
+**Shared rule**: every auto-creation path uses the same decision
+(`services/ip_autocreate.py`): **put the address in the smallest subnet that contains it;
+if which one is unclear, create nothing**.
+
+For example:
+- `10.1.1.5` falls inside both `10.0.0.0/8` and `10.1.1.0/24` → it goes into the **smaller**
+  `10.1.1.0/24`.
+- Tenants A and B **each have their own `192.168.1.0/24`** → there is no way to tell whose
+  machine this is, so **nothing is created**. Filing a record under the wrong tenant is worse
+  than having no record.
+- The address is inside no existing subnet → nothing is created (subnets are never invented).
+
+The second case disappears once you set that integration's subnet scope to your own
+subnets: only yours remain as candidates, the choice is clear, and records are created
+normally.
+
+> ⚠️ **Enabling auto-creation trades away part of your detection.** A machine that obtained
+> an address is not necessarily one that belongs in IPAM: once an unauthorised device is
+> recorded, it **no longer appears under "unauthorised IPs"**. Auto-created records are
+> flagged "Auto-recorded (unregistered)" in the IP list (orange icon) and outlined in orange on the
+> subnet grid, where the legend carries an "Auto-recorded" count; review them regularly.
 
 ## Core entities
 
-`Section → Subnet → IPAddress`, plus `Device` / `Rack` / `Location`, `Customer` (managing unit), `VLAN` / `VRF`, `NAT`, OPNsense / pfSense / FortiGate firewalls, and an IEEE OUI vendor table (monthly refresh).
+`Section → Subnet → IPAddress`, plus `Device` / `Rack` / `Location`, `Customer` (managing unit), `VLAN` / `VRF`, `NAT`, OPNsense / pfSense / FortiGate / Palo Alto / MikroTik firewalls, and an IEEE OUI vendor table (monthly refresh).
 
 ## Access control (RBAC)
 
 Object-level permissions across **7 object types** (customer / section / subnet / IP / device / rack / location) with:
 
-- **Hierarchical cascade** — granting an upper level (e.g. a customer or section) automatically covers everything beneath it (subnets → IPs; locations → racks → devices)
+- **Hierarchical cascade**: granting an upper level (e.g. a customer or section) automatically covers everything beneath it (subnets → IPs; locations → racks → devices)
 - **"All" wildcard** per object type
-- **5 built-in roles** — System Administrator, Read-only Viewer, Network Operator, Auditor, Department Administrator
+- **5 built-in roles**: System Administrator, Read-only Viewer, Network Operator, Auditor, Department Administrator
 - Visibility is enforced everywhere: list endpoints, global search, the topology graph, and every dropdown only ever show objects the principal may see. Deny-by-default.
 
 ## Security (OWASP Top 10:2025)
 
 Security is a day-one requirement; every module and PR is checked against **OWASP Top 10:2025**. See [`SECURITY.md`](SECURITY.md).
 
-- **TLS enforced** — pick one: nginx reverse-proxy termination (`BACKEND_TLS_MODE=nginx`) or uvicorn serving a self-signed cert directly (`BACKEND_TLS_MODE=direct`)
-- A01 — deny-by-default RBAC with object-level checks (above)
-- A02 — argon2id password hashing; application-layer encryption for stored secrets (DNS credentials / SNMP / API tokens)
-- A03 — parameterized SQLAlchemy, strict Pydantic v2 validation, CSP + output escaping
-- A05 — HSTS, CSP, X-Frame-Options, Referrer-Policy
-- A07 — TOTP MFA, account lockout, HttpOnly+Secure+SameSite cookies, API-token TTL
-- A08 — SHA-256 audit chain
-- A09 — structured audit logging
-- A10 — SSRF allow-listing for all outbound integrations; metadata / link-local blocked
+- **TLS enforced**: pick one of nginx reverse-proxy termination (`BACKEND_TLS_MODE=nginx`) or uvicorn serving a self-signed cert directly (`BACKEND_TLS_MODE=direct`)
+- A01: deny-by-default RBAC with object-level checks (above)
+- A02: argon2id password hashing; application-layer encryption for stored secrets (DNS credentials / SNMP / API tokens)
+- A03: parameterized SQLAlchemy, strict Pydantic v2 validation, CSP + output escaping
+- A05: HSTS, CSP, X-Frame-Options, Referrer-Policy
+- A07: TOTP MFA, account lockout, HttpOnly+Secure+SameSite cookies, API-token TTL
+- A08: SHA-256 audit chain, verified every sync round and anchored outside the database
+  (`/var/lib/jt-ipam/audit-anchors.jsonl` + journald), because the chain alone cannot detect
+  the tail being cut off. `JT_IPAM_AUDIT_CHAIN_BASELINE_ID` sets the id verification starts
+  from, for deployments carrying older records that can no longer be made verifiable
+- A09: structured audit logging
+- A10: SSRF allow-listing for all outbound integrations; metadata / link-local blocked
 
 ## Stack
 
@@ -108,32 +153,45 @@ Security is a day-one requirement; every module and PR is checked against **OWAS
 | Frontend | Vue 3 · TypeScript · Vite · Naive UI · Pinia · vue-i18n |
 | Auth | argon2id · TOTP · short-lived JWT + refresh |
 | AI | LLM Server (local) · pgvector · MCP server |
-| Deploy | systemd + nginx + apt packages — **no Docker image needed** (VM / container friendly) |
+| Deploy | systemd + nginx + apt packages; **no Docker image needed** (VM / container friendly) |
 
 ## Install (single host / VM / container)
 
-> Debian 12 / Ubuntu 22.04+ (64-bit). TLS is mandatory.
+> **Supported:** Debian 12 / 13 and Ubuntu 22.04 / 24.04 / 26.04, x86_64 (amd64); Ubuntu 24.04 LTS or Debian 12 / 13
+> recommended. TLS is mandatory. These are exactly the versions jt-ipam prebuilds guacd for (the required RDP / VNC
+> console engine); on other versions, derivatives (e.g. Linux Mint) or ARM the installer stops. New OS releases are added
+> as they ship; see [docs/INSTALL.md](docs/INSTALL.md#supported-distributions).
 >
-> **Minimum:** 2 vCPU · 4 GB RAM · 20 GB disk. **Recommended:** 4 vCPU · 8 GB RAM · 40 GB+ disk (room for the PostgreSQL database, GeoIP/OUI data, and backups to grow).
+> **Minimum:** 2 vCPU · 4 GB RAM · 20 GB disk. **Recommended:** 4 vCPU · 8 GB RAM · 50 GB disk (room for the database, audit log, IP history and backups to grow). On a 4 GB machine the backend runs 2 workers, and an upgrade pauses it while the frontend builds if memory is short; 2 GB of swap avoids that. Each RDP console session takes a few hundred MB and some CPU. An LLM server on the same machine needs its own memory on top.
 >
-> The optional local LLM (Ollama) is **not** included in these figures — run it on a separate host; it needs its own RAM/VRAM sized to the chosen model.
+> The optional local LLM (Ollama) is **not** included in these figures. Run it on a separate host; it needs its own RAM/VRAM sized to the chosen model.
 
 ```bash
 # Prerequisite: a minimal system may not ship curl (the one-liner needs it):
 sudo apt-get update && sudo apt-get install -y curl
-# One line — auto-clones to /opt/jt-ipam and installs (no manual git needed):
+# One line: auto-clones to /opt/jt-ipam and installs (no manual git needed):
 curl -fsSL https://raw.githubusercontent.com/jasoncheng7115/jt-ipam/main/scripts/bootstrap.sh | sudo bash
 ```
 
 The script installs `postgresql-16` / `python3.12` / `nginx` / `redis`, creates the `jtipam` system account and PG role, generates keys into `/etc/jt-ipam/backend.env`, runs `alembic upgrade head`, builds the frontend, and enables `jt-ipam-backend.service`.
 
-Upgrade an existing install with `sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade` — **the script runs `git pull` itself**, then backup → deps → alembic → build → restart. See [`docs/INSTALL.md`](docs/INSTALL.md).
+Upgrade an existing install with `sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade`: **the script runs `git pull` itself**, then backup → deps → alembic → build → restart. See [`docs/INSTALL.md`](docs/INSTALL.md).
+
+> **Coming from 0.5.170 or earlier, run `upgrade` twice.** The upgrade script is itself updated by the `git pull`, but that run is still driven by the old copy (from 0.5.171 it hands over to the new one after pulling). Afterwards, `sudo bash /opt/jt-ipam/scripts/jt-ipam.sh doctor` will confirm the result and print a fix for anything it cannot verify.
 
 > **Optional: Docker Compose.** A secondary deploy path lives in [`deploy/docker/`](deploy/docker/) (`./gen-env.sh` then `docker compose up -d --build`; update later with `./update.sh`). systemd + apt remains the primary, fully-supported method.
 
+### Installed, but something looks off? Run the health check
+
+```bash
+sudo bash /opt/jt-ipam/scripts/jt-ipam.sh doctor
+```
+
+It checks the configuration file, whether the backend actually answers, the database and its `pgvector` extension, whether the schema is at the latest revision, whether the built frontend matches the backend version, the timers and the backup directory, the last sync result, and the local scan agent. **Anything it can't confirm comes with a command you can copy and run** (the `→` line), so no log archaeology is required. Including this output makes a bug report much faster to act on.
+
 ### First login & resetting the admin password
 
-On a fresh install the script **creates an `admin` account with a random password and prints it once** at the end (also saved to `/etc/jt-ipam/.admin-initial-password`, root-only — it lives under `/etc`, outside the web root, so it is never reachable over HTTP). Log in and change it immediately, then you can safely delete the file: `sudo rm /etc/jt-ipam/.admin-initial-password`.
+On a fresh install the script **creates an `admin` account with a random password and prints it once** at the end (also saved to `/etc/jt-ipam/.admin-initial-password`, root-only; it lives under `/etc`, outside the web root, so it is never reachable over HTTP). Log in and change it immediately, then you can safely delete the file: `sudo rm /etc/jt-ipam/.admin-initial-password`.
 
 To reset the admin password (or create the first admin if none exists), run on the server:
 
@@ -150,7 +208,7 @@ Omit `--force-update` to create a brand-new admin instead of resetting an existi
 
 HTTPS is mandatory; pick one mode via `BACKEND_TLS_MODE` in `/etc/jt-ipam/backend.env`.
 
-**Mode A — nginx reverse proxy (default, recommended)** `BACKEND_TLS_MODE=nginx`
+**Mode A: nginx reverse proxy (default, recommended)** `BACKEND_TLS_MODE=nginx`
 nginx terminates TLS and proxies to uvicorn on 127.0.0.1:8000. To install a real cert:
 
 ```bash
@@ -176,7 +234,7 @@ server {
 }
 ```
 
-**Mode B — uvicorn direct, self-signed** `BACKEND_TLS_MODE=direct`
+**Mode B: uvicorn direct, self-signed** `BACKEND_TLS_MODE=direct`
 uvicorn serves TLS itself; `scripts/generate-self-signed-cert.sh` creates a self-signed cert at install. To replace it, overwrite the same paths and restart the service:
 
 ```bash
@@ -186,9 +244,9 @@ chmod 600 /etc/jt-ipam/tls/server.key
 systemctl restart jt-ipam-backend
 ```
 
-> Both modes use the same cert paths (`/etc/jt-ipam/tls/server.{crt,key}`); the only difference is who terminates TLS — Mode A reloads nginx, Mode B restarts the backend.
+> Both modes use the same cert paths (`/etc/jt-ipam/tls/server.{crt,key}`); the only difference is who terminates TLS: Mode A reloads nginx, Mode B restarts the backend.
 
-**Mode C — behind your own external reverse proxy** (a separate nginx / LB terminates TLS)
+**Mode C: behind your own external reverse proxy** (a separate nginx / LB terminates TLS)
 The local nginx serves plain HTTP; apply the external-proxy templates:
 
 ```bash
@@ -197,18 +255,18 @@ sudo cp deploy/nginx/jt-ipam-external-proxy-snippet.conf /etc/nginx/snippets/jt-
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-> ⚠️ **Required — security headers at the public edge.** The proxy that **terminates TLS for users** must
+> ⚠️ **Required: security headers at the public edge.** The proxy that **terminates TLS for users** must
 > emit the security headers (HSTS, CSP `frame-src 'self'`, X-Frame-Options, nosniff, Referrer-Policy,
 > Permissions-Policy, COOP, CORP) and `server_tokens off`. They do **not** survive an extra proxy hop, so if
 > your edge box is a *different* machine than the one above, **set the headers on that edge box too**
 > (the bundled templates already do; replicate them on a non-nginx LB). Verify through the real public URL:
 > `curl -skI https://your-domain/ | grep -iE 'strict-transport|content-security|x-frame|cross-origin|^server'`
-> — each header should appear **exactly once**, `Server: nginx` (no version).
+> and check that each header appears **exactly once**, with `Server: nginx` (no version).
 
 An external proxy does **not** break OIDC / M365 (Entra ID) login, but three things must be right or you'll be redirected to `ipam.example.com` or stuck on the login page:
 1. Set `APP_PUBLIC_URL` / `API_PUBLIC_URL` / `CORS_ORIGINS` in `/etc/jt-ipam/backend.env` to your public domain (not the default `ipam.example.com`), then `systemctl restart jt-ipam-backend`.
 2. The external proxy must forward `X-Forwarded-Proto $scheme` (=https) and `Host $host`; the template passes them through so the backend sees https (Secure cookies work).
-3. Set the OIDC Redirect URI to `https://your-domain/api/v1/auth/oidc/callback` in both the IdP and the jt-ipam UI — note the **UI/DB value overrides .env**, so re-save it in the UI after editing .env.
+3. Set the OIDC Redirect URI to `https://your-domain/api/v1/auth/oidc/callback` in both the IdP and the jt-ipam UI; note that the **UI/DB value overrides .env**, so re-save it in the UI after editing .env.
 
 ## Project layout
 
@@ -231,11 +289,29 @@ jt-ipam/
 
 ## Roadmap status
 
-- **Phase 1 (done)** — phpIPAM-equivalent features + improvements (Section/Subnet/IP/VLAN/VRF/NAT/Devices/Racks/Locations/IP-Requests, TOTP/API-Token/RBAC, phpIPAM import, CSV/RIPE/TWNIC, visual subnet grid, forced TLS)
-- **Phase 2 (done)** — multi-vendor DNS + deep LibreNMS integration (device/ARP/FDB/effective-status) + anomaly detection + SHA-256 audit chain + pgvector AI semantic search
-- **Phase 3 (done)** — Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox VE sync + Cytoscape topology + OIDC/SAML SSO + OPNsense / pfSense / FortiGate firewall sync + VMware ESXi / vCenter inventory + Wazuh agent inventory
-- **Phase 4 (done, scoped)** — MCP server + local-LLM natural language (LLM Server) + plugin mechanism
+- **Phase 1 (done)**: phpIPAM-equivalent features + improvements (Section/Subnet/IP/VLAN/VRF/NAT/Devices/Racks/Locations/IP-Requests, TOTP/API-Token/RBAC, phpIPAM import, CSV/RIPE/TWNIC, visual subnet grid, forced TLS)
+- **Phase 2 (done)**: multi-vendor DNS + deep LibreNMS integration (device/ARP/FDB/effective-status) + anomaly detection + SHA-256 audit chain + pgvector AI semantic search
+- **Phase 3 (done)**: Tenancy/Contacts/Cabling/Power/VPN/Virtualization + Proxmox VE sync + Cytoscape topology + OIDC/SAML SSO + OPNsense / pfSense / FortiGate / Palo Alto / MikroTik firewall sync + VMware ESXi / vCenter inventory + Wazuh agent inventory + Zabbix monitoring coverage
+- **Phase 4 (done, scoped)**: MCP server + local-LLM natural language (LLM Server) + plugin mechanism
+
+### Embedding a rack diagram in another system
+
+A rack diagram can be served as an SVG at a single URL, so another dashboard (a LibreNMS
+widget, for example) can show it with a plain `<img>`:
+
+```html
+<img src="https://your-ipam.example.com/api/v1/racks/<rack-id>/embed.svg?token=<token>">
+```
+
+Two switches must both be on: enable embedding and generate a token under **Admin → System
+settings**, and turn on **that rack's** own "external embedding" toggle (per rack, off by
+default). A rack diagram shows device names and positions, and the token is a key; do not
+post it publicly. Regenerating the token invalidates every existing URL immediately.
+
+Serving an image rather than an iframe is deliberate: this service sends
+`frame-ancestors 'none'`, so iframe embedding is blocked by design, and allowing specific
+origins would open a clickjacking surface.
 
 ## License
 
-Apache-2.0. Commercial support: contact Jason Tools.
+AGPL-3.0-or-later. Commercial support: contact Jason Tools.

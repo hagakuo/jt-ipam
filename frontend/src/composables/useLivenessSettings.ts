@@ -13,6 +13,16 @@ import { ref } from "vue";
 import { apiClient } from "@/api/client";
 
 const LS_KEY = "jt-ipam:online_grace_minutes";
+const LS_SRC = "jt-ipam:liveness_sources";
+
+/**
+ * 哪些證據算「上線」（全域系統設定）。**ARP 預設不勾**：它證明的是「某個 MAC↔IP
+ * 對應被學到過」，不是機器現在活著，而且 LibreNMS 的 ARP API 連時間都不回 ——
+ * 來源設備的快取不老化，關機的機器也會一直看起來剛剛才出現。
+ */
+export const livenessSources = ref<string[]>(
+  JSON.parse(localStorage.getItem(LS_SRC) || '["scanner","librenms"]'),
+);
 
 export const onlineGraceMinutes = ref<number>(
   Number(localStorage.getItem(LS_KEY) || "30") || 30,
@@ -24,10 +34,15 @@ async function loadOnce() {
   loaded = true;
   try {
     // 上線判定閾值改為「全域系統設定」（管理員設），不再是個人偏好
-    const { data } = await apiClient.get<{ minutes?: number }>("/api/v1/system/online-grace");
+    const { data } = await apiClient.get<{ minutes?: number; sources?: string[] }>(
+      "/api/v1/system/online-grace");
     if (data?.minutes && data.minutes > 0) {
       onlineGraceMinutes.value = data.minutes;
       localStorage.setItem(LS_KEY, String(data.minutes));
+    }
+    if (Array.isArray(data?.sources)) {
+      livenessSources.value = data.sources;
+      localStorage.setItem(LS_SRC, JSON.stringify(data.sources));
     }
   } catch {}
 }
@@ -35,10 +50,19 @@ void loadOnce();
 
 // 由管理員在「系統設定」調整（全域）。
 export async function setOnlineGraceMinutes(n: number): Promise<void> {
-  if (n < 1 || n > 43200) throw new Error("超出範圍 (1 ~ 43200 分鐘)");
+  // 參數防呆，不是給使用者看的文案（目前沒有呼叫端；真要上畫面時，訊息要由呼叫端翻譯）
+  if (n < 1 || n > 43200) throw new Error("onlineGraceMinutes out of range (1-43200)");
   onlineGraceMinutes.value = n;
   localStorage.setItem(LS_KEY, String(n));
-  await apiClient.put("/api/v1/system/online-grace", { minutes: n });
+  await apiClient.put("/api/v1/system/online-grace",
+    { minutes: n, sources: livenessSources.value });
+}
+
+export async function setLivenessSources(list: string[]): Promise<void> {
+  livenessSources.value = list;
+  localStorage.setItem(LS_SRC, JSON.stringify(list));
+  await apiClient.put("/api/v1/system/online-grace",
+    { minutes: onlineGraceMinutes.value, sources: list });
 }
 
 /** 根據最新 last_seen 時戳 (ms) 算狀態。 */
@@ -60,7 +84,7 @@ export function classifyLiveness(newestMs: number | null): LivenessKind {
 /**
  * 已登記 IP 的存活判定 (給指示計 / 狀態燈用)。
  *
- * 有 scanner/LibreNMS/DNS last_seen 就照時間分級；完全沒有任何線上記錄時：
+ * 有 scanner/LibreNMS/DNS/ARP last_seen 就照時間分級；完全沒有任何線上記錄時：
  *   - exclude_from_ping(刻意不偵測)→ 未知 (灰)
  *   - 所屬 subnet 沒啟用掃描 (subnet_scan_enabled === false) → 未知 (灰)
  *       根本沒主動偵測，標離線紅燈會誤導
@@ -69,14 +93,32 @@ export function classifyLiveness(newestMs: number | null): LivenessKind {
 export function classifyAddressLiveness(addr: {
   last_seen_scanner?: string | null;
   last_seen_librenms?: string | null;
+  last_seen_arp?: string | null;
   last_seen_dns?: string | null;
+  last_seen_wazuh?: string | null;
+  last_seen_zabbix?: string | null;
+  /** 防火牆給的逐來源觀測時間（`arp:opnsense` / `lease:pfsense` …） */
+  arp_seen?: Record<string, string> | null;
   exclude_from_ping?: boolean | null;
   subnet_scan_enabled?: boolean | null;
 }): LivenessKind {
   // 刻意不偵測（exclude_from_ping）或所屬 subnet 沒啟用掃描時：根本沒主動探測，
   // 不論有沒有舊的 last_seen，都不該顯示「離線(紅)」——過期最多降為未知(灰)。
   const noProbe = !!addr.exclude_from_ping || addr.subnet_scan_enabled === false;
-  const ts = [addr.last_seen_scanner, addr.last_seen_librenms, addr.last_seen_dns]
+  const use = livenessSources.value;
+  const ts = [
+    use.includes("scanner") ? addr.last_seen_scanner : null,
+    use.includes("librenms") ? addr.last_seen_librenms : null,
+    use.includes("wazuh") ? addr.last_seen_wazuh : null,
+    use.includes("zabbix") ? addr.last_seen_zabbix : null,
+    // last_seen_dns（AdGuard）刻意不算：它只代表「AdGuard 的設定裡有這個 IP」（固定用戶端、
+    // DNS 改寫），每輪同步都蓋成現在 —— 關機的機器也一直亮綠燈（2026-09-26 稽核）。後端也不採用。
+    use.includes("arp") || use.includes("arp:librenms") ? addr.last_seen_arp : null,
+    // 防火牆逐來源：只算被勾選的（`lease:*` 這種不會過期的預設沒被勾）
+    ...Object.entries(addr.arp_seen || {})
+      .filter(([k]) => use.includes(k))
+      .map(([, v]) => v),
+  ]
     .filter(Boolean)
     .map((s) => new Date(s as string).getTime());
   if (ts.length) {
@@ -85,4 +127,29 @@ export function classifyAddressLiveness(addr: {
     return kind;
   }
   return noProbe ? "unknown" : "offline";
+}
+
+/**
+ * 這個 IP 的「上線」是不是**只**靠 ARP 撐著。
+ *
+ * ARP 證據沒有時間概念：LibreNMS 的 ARP API 不回任何時間欄位，我們只能因為
+ * 「這筆還在清單裡」就蓋上同步當下的時間。來源設備（例如 AP／路由器）的 ARP 快取
+ * 不老化的話，機器早就關了也會一直看起來「剛剛才看到」。所以要標示出來，
+ * 讓看的人知道這個綠燈的可信度和實際探測到的不一樣。
+ */
+export function isArpOnlyEvidence(addr: {
+  last_seen_scanner?: string | null;
+  last_seen_librenms?: string | null;
+  last_seen_dns?: string | null;
+  last_seen_arp?: string | null;
+  last_seen_wazuh?: string | null;
+  last_seen_zabbix?: string | null;
+  arp_seen?: Record<string, string> | null;
+}): boolean {
+  if (!addr.last_seen_arp) return false;
+  // 防火牆自己的 ARP 表／VPN 連線會逾時淘汰，那是有時間概念的證據 —— 有它撐著
+  // 就不算「只靠 ARP」。DHCP 租約（lease:*）不算，租期比開機時間長得多。
+  const fw = Object.keys(addr.arp_seen || {}).some((k) => !k.startsWith("lease:"));
+  return !addr.last_seen_scanner && !addr.last_seen_librenms
+    && !addr.last_seen_wazuh && !addr.last_seen_zabbix && !fw;
 }

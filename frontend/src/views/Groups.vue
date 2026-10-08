@@ -24,7 +24,8 @@ import { apiErrMsg } from "@/api/client";
 const { t } = useI18n();
 const pg = useTablePagination();
 
-const { visibleKeys: grpVis, setVisible: grpSet, reset: grpReset } = useColumnPrefs(
+const { visibleKeys: grpVis, setVisible: grpSet, reset: grpReset,
+  order: grpOrder, setOrder: grpSetOrder, orderColumns: grpOrderCols } = useColumnPrefs(
   "groups",
   ["name", "description", "member_count", "is_builtin", "actions"],
   ["name", "description", "member_count", "is_builtin", "actions"],
@@ -168,7 +169,7 @@ const allColumns = computed<DataTableColumns<Group>>(() => autoSort([
 ]));
 
 const columns = computed<DataTableColumns<Group>>(() =>
-  allColumns.value.filter((c: any) => grpVis.value.includes(c.key)),
+  grpOrderCols(allColumns.value.filter((c: any) => grpVis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); });
@@ -192,7 +193,8 @@ onMounted(() => { void refresh(); });
         {{ t("common.create") }}
       </n-button>
       <ColumnPicker :all="grpPicker" :visible="grpVis"
-                    @update:visible="grpSet" @reset="grpReset" />
+                    @update:visible="grpSet" @reset="grpReset"
+                    :order="grpOrder" @update:order="grpSetOrder" />
       <span style="opacity: 0.6">{{ t("common.total_n", { n: total }) }}</span>
     </n-space>
     <n-data-table :columns="columns" :data="rows" :loading="loading" :bordered="false" :scroll-x="716" :pagination="pg">

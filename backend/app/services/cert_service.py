@@ -25,10 +25,12 @@ from cryptography.hazmat.primitives.serialization import (
 )
 from cryptography.x509.oid import NameOID
 
+from app.core.ui_error import UiError
+
 _BEGIN_CERT = "-----BEGIN CERTIFICATE-----"
 
 
-class CertError(ValueError):
+class CertError(UiError, ValueError):
     """憑證 bundle 驗證失敗。"""
 
 
@@ -60,9 +62,9 @@ def generate_self_signed(
     回傳 (cert_pem, key_pem)。SAN 留空時用 common_name；憑證可直接走上傳流程存成版本派送。
     """
     if not common_name.strip():
-        raise CertError("common name 不可為空")
+        raise CertError("common name 不可為空", code="cert_cn_empty")
     if days < 1:
-        raise CertError("天數需 >= 1")
+        raise CertError("天數需 >= 1", code="cert_days_min")
     san_list = [s.strip() for s in (sans or [common_name]) if s.strip()] or [common_name]
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -108,21 +110,21 @@ def validate_bundle(cert_pem: str, key_pem: str, chain_pem: str | None = None) -
     """
     cert_blocks = _split_pem_certs(cert_pem)
     if not cert_blocks:
-        raise CertError("找不到有效的憑證（PEM 需含 BEGIN CERTIFICATE）")
+        raise CertError("找不到有效的憑證（PEM 需含 BEGIN CERTIFICATE）", code="cert_no_cert")
     try:
         leaf = x509.load_pem_x509_certificate(cert_blocks[0].encode())
     except Exception as exc:
-        raise CertError(f"憑證無法解析：{exc}") from exc
+        raise CertError(f"憑證無法解析：{exc}", code="cert_bad_cert", reason=str(exc)) from exc
 
     # key 解析 + 與 cert 配對
     try:
         key = serialization.load_pem_private_key(key_pem.encode(), password=None)
     except TypeError as exc:
-        raise CertError("私鑰似乎有密碼保護；請提供未加密的私鑰") from exc
+        raise CertError("私鑰似乎有密碼保護；請提供未加密的私鑰", code="cert_key_encrypted") from exc
     except Exception as exc:
-        raise CertError(f"私鑰無法解析：{exc}") from exc
+        raise CertError(f"私鑰無法解析：{exc}", code="cert_bad_key", reason=str(exc)) from exc
     if _spki(key.public_key()) != _spki(leaf.public_key()):
-        raise CertError("私鑰與憑證不配對（public key 不一致）")
+        raise CertError("私鑰與憑證不配對（public key 不一致）", code="cert_key_mismatch")
 
     # chain：cert_pem 內多出來的 + 額外 chain_pem
     chain_blocks = cert_blocks[1:] + _split_pem_certs(chain_pem or "")
@@ -131,7 +133,7 @@ def validate_bundle(cert_pem: str, key_pem: str, chain_pem: str | None = None) -
         try:
             chain_certs.append(x509.load_pem_x509_certificate(b.encode()))
         except Exception as exc:
-            raise CertError(f"chain 憑證無法解析：{exc}") from exc
+            raise CertError(f"chain 憑證無法解析：{exc}", code="cert_bad_chain", reason=str(exc)) from exc
 
     # SAN
     domains: list[str] = []
@@ -220,7 +222,7 @@ def export_cert_file(
             enc = BestAvailableEncryption(pfx_password.encode())
         data = pkcs12.serialize_key_and_certificates(safe.encode(), key, leaf, cas, enc)
         return data, "application/x-pkcs12", f"{safe}.pfx"
-    raise CertError(f"unknown format: {fmt}")
+    raise CertError(f"unknown format: {fmt}", code="cert_unknown_format", fmt=fmt)
 
 
 @functools.lru_cache(maxsize=1)

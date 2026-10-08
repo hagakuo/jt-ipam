@@ -26,11 +26,13 @@ from ldap3 import (
 from ldap3.core.exceptions import LDAPException
 from ldap3.utils.conv import escape_filter_chars
 
+from app.core.ui_error import UiError
+
 if TYPE_CHECKING:
     from app.services.system_config import LdapConfig
 
 
-class LDAPAuthError(Exception):
+class LDAPAuthError(UiError):
     pass
 
 
@@ -86,7 +88,9 @@ def _bind_admin_sync(cfg: LdapConfig) -> Connection:
         # ldap3 在 raise_exceptions=True 時對 bind 失敗丟原生例外（含 AD 帳密錯誤）；轉成我們的型別
         msg = str(exc)
         if "invalidCredentials" in msg or "data 52e" in msg or "InvalidCredentials" in exc.__class__.__name__:
-            raise LDAPInvalidCredentials(f"bind rejected (帳號或密碼錯誤): {msg}") from exc
+            raise LDAPInvalidCredentials(f"bind rejected（帳號或密碼錯誤）：{msg}",
+                                         code="ldap_invalid_credentials",
+                                         reason=msg[:200]) from exc
         raise LDAPAuthError(f"LDAP bind failed: {exc.__class__.__name__}: {msg}") from exc
     if not ok:
         raise LDAPAuthError(f"LDAP admin bind failed: {conn.last_error}")

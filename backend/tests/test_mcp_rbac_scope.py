@@ -148,11 +148,14 @@ async def test_admin_stats_overview_has_global(db_session, admin_user):
 _PER_OBJECT_TOOLS = frozenset({
     "list_subnets", "list_sections", "list_devices", "list_customers", "list_racks",
     "list_locations", "list_subnet_ips", "get_subnet_detail", "get_subnet_usage",
-    "get_device", "get_ip_detail", "get_customer_summary", "search_ip", "global_search",
+    "get_device", "get_ip_detail", "get_ip_history", "get_customer_summary", "search_ip", "global_search",
     "find_free_ip", "find_free_ips", "recent_ip_changes", "stats_overview",
-    "list_ip_requests", "switch_port_for_ip", "trace_mac", "allocate_ip", "update_ip",
+    "list_ip_requests", "switch_port_for_ip", "trace_mac", "mac_history", "allocate_ip", "update_ip",
     "create_subnet", "create_device", "approve_ip_request", "reject_ip_request",
     "list_connection_targets", "investigate_ip",
+    # 變更影響預演：計畫依根目標的可見性、結果依 Viewer 逐筆過濾（services/change_impact/access.py）
+    "impact_list_plans", "impact_get_run", "impact_list_findings", "impact_get_evidence",
+    "impact_prepare_scenario", "impact_create_plan", "impact_start_run", "impact_accept_task_draft",
 })
 # 純計算 / 外部查詢，不碰本站資料 → 不需要可見範圍
 _STATELESS_TOOLS = frozenset({
@@ -175,3 +178,39 @@ def test_every_tool_is_classified():
         "GLOBAL_READ_TOOLS；逐物件資料要自己過 visible_ids 並登記在 _PER_OBJECT_TOOLS；"
         "純計算的登記在 _STATELESS_TOOLS。"
     )
+
+
+@pytest.mark.anyio
+async def test_trace_mac_shows_the_switch_port_to_users_who_can_see_the_switch(db_session, admin_user):
+    """FDB 的 device_id 是 **LibreNMS 的裝置**：以前直接拿它比對使用者看得到的 jt-ipam 裝置，
+    永遠對不上 → 非管理員用 AI 追 MAC 一律看不到交換器埠（2026-09-30 研究）。"""
+    from app.mcp.tools import trace_mac
+    from app.models.device import Device
+    from app.models.librenms import FDBEntry, LibreNMSDevice, LibreNMSInstance
+
+    sw = Device(name="sw-floor3", type="switch")
+    other = Device(name="sw-other", type="switch")
+    db_session.add_all([sw, other])
+    inst = LibreNMSInstance(name=f"lnms-{uuid.uuid4().hex[:6]}", api_url="https://librenms.example",
+                            api_token_enc=b"x", api_token_nonce=b"y")
+    db_session.add(inst)
+    await db_session.flush()
+    ln = LibreNMSDevice(instance_id=inst.id, legacy_device_id=5, hostname="sw-floor3", sysname="sw-floor3",
+                        jt_ipam_device_id=sw.id)
+    db_session.add(ln)
+    await db_session.flush()
+    db_session.add(FDBEntry(mac="00:00:5e:00:53:77", device_id=ln.id, instance_id=inst.id,
+                            port_name="ge-0/0/7", vlan_id_num=20))
+    can, cannot = await _nonadmin(db_session), await _nonadmin(db_session)
+    db_session.add(Permission(object_type="device", object_id=sw.id, principal_type="user",
+                              principal_id=can.id, level="read"))
+    db_session.add(Permission(object_type="device", object_id=other.id, principal_type="user",
+                              principal_id=cannot.id, level="read"))
+    await db_session.commit()
+
+    got = await trace_mac(db_session, user=can, mac="00-00-5E-00-53-77")
+    assert got["fdb"]["port_name"] == "ge-0/0/7"
+    assert got["fdb"]["switch"] == "sw-floor3"
+    assert got["fdb"]["switch_device_id"] == str(sw.id)
+    assert (await trace_mac(db_session, user=cannot, mac="00:00:5e:00:53:77"))["fdb"] is None
+    assert (await trace_mac(db_session, user=admin_user, mac="00:00:5e:00:53:77"))["fdb"]["switch"] == "sw-floor3"

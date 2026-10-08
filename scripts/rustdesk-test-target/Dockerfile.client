@@ -1,0 +1,24 @@
+# 可丟棄的受控端：官方 RustDesk 1.4.1 Linux 客戶端跑在 Xvfb 上，桌面只有一個大字級的 xterm，
+# 打什麼字畫面上就看得到，鍵盤、滑鼠肉眼可驗。用法見 README.md 與 run.sh。⚠️ 密碼寫在原始碼裡，只綁 127.0.0.1。
+FROM debian:12
+
+# libegl1／libgl1：圖形介面要（沒有的話一啟動就 abort）；libayatana-appindicator3-1：系統匣（沒有會在日誌裡 panic）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        xvfb openbox xterm x11-utils x11-xserver-utils xdotool dbus-x11 xfonts-base fonts-dejavu-core procps ca-certificates \
+        libegl1 libgl1 libgles2 libgl1-mesa-dri libayatana-appindicator3-1 imagemagick sudo xclip \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG RD_CLIENT_SHA256=a5cea9e1d36d07f6f20eb7adb45b97c43a59c055d6f6bcc7ea2f60c3960cd96d
+# run.sh 先把官方 deb 下載到建置目錄（GitHub release：rustdesk-1.4.1-x86_64.deb），這裡驗雜湊再裝
+COPY rustdesk-1.4.1-x86_64.deb /tmp/rustdesk.deb
+RUN echo "${RD_CLIENT_SHA256}  /tmp/rustdesk.deb" | sha256sum -c - \
+    && apt-get update && apt-get install -y --no-install-recommends /tmp/rustdesk.deb \
+    && rm -rf /var/lib/apt/lists/* /tmp/rustdesk.deb
+
+COPY client-start.sh /usr/local/bin/client-start.sh
+# 容器裡沒有 systemd-logind：受控端靠 loginctl 找 seat0 的使用者，找不到就以為還在登入畫面、永遠不啟動連線管理程式
+#（--cm，用 sudo 啟動），檔案傳輸的列目錄與上傳下載都沒有人處理。假 loginctl 回報 root 在 seat0 上有 X11 工作階段
+COPY fake-loginctl.sh /usr/bin/loginctl
+RUN chmod +x /usr/local/bin/client-start.sh /usr/bin/loginctl
+ENV DISPLAY=:0
+CMD ["/usr/local/bin/client-start.sh"]

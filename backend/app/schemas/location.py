@@ -45,6 +45,10 @@ class LocationRead(LocationBase):
 
 RackNumbering = Literal["top-down", "bottom-up"]
 RackFace = Literal["front", "rear"]
+RackKind = Literal["rack", "industrial", "shelf", "wire_shelf", "wood_shelf",
+                   "angle_shelf", "kallax", "lackrack"]
+#: 表面顏色（各型態可用的見 services/rack.py 的 FINISHES；不適用的值畫圖時用該型態預設色）
+RackFinish = Literal["black", "white", "galvanized", "black_brown", "oak", "brown"]
 
 
 class RackBase(StrictModel):
@@ -52,12 +56,27 @@ class RackBase(StrictModel):
     location_id: uuid.UUID | None = None
     u_height: Annotated[int, Field(ge=1, le=99)] = 42
     # 實體尺寸（mm）；機房平面圖用真實腳印按比例畫機櫃方框
+    # issue #30：rack＝標準 19" 機櫃（以 U 計）、shelf＝層架（以「層」計）
+    kind: RackKind = "rack"
+    finish: RackFinish | None = None
     width_mm: Annotated[int | None, Field(ge=100, le=2000)] = None
+    row_height_mm: Annotated[int | None, Field(ge=10, le=1000)] = None
+    # 逐層高度（mm），由第 1 層起算。層架的層板一層一層各自可調；
+    # 不給就整台用 row_height_mm。長度不必剛好等於層數，少的用 row_height_mm 補。
+    level_heights: Annotated[list[Annotated[int, Field(ge=10, le=1000)]] | None,
+                             Field(max_length=99)] = None
+    # 層板厚度（mm）。層高填的是**淨空高**（不含板），總高要另外把板算進去。
+    # null = 依 kind 取預設（木質層架 18mm＝IKEA IVAR 官方規格）。
+    board_mm: Annotated[int | None, Field(ge=0, le=200)] = None
+    # 最下面那片層板離地多高（mm）。null = 0。
+    floor_mm: Annotated[int | None, Field(ge=0, le=1000)] = None
     depth_mm: Annotated[int | None, Field(ge=100, le=3000)] = None
     description: Annotated[str | None, Field(max_length=1024)] = None
     seq: Annotated[int | None, Field(ge=0, le=9999)] = None   # 排序編號（小的排左邊）
     numbering: RackNumbering = "top-down"
     face: RackFace = "front"
+    #: 對外公開這個機櫃的示意圖（給別的系統嵌入）。預設關 —— 機櫃圖會揭露裝置名稱與位置
+    expose_svg: bool = False
 
 
 class RackCreate(RackBase):
@@ -68,12 +87,25 @@ class RackUpdate(StrictModel):
     name: Annotated[str | None, Field(min_length=1, max_length=64)] = None
     location_id: uuid.UUID | None = None
     u_height: Annotated[int | None, Field(ge=1, le=99)] = None
+    kind: RackKind | None = None
+    finish: RackFinish | None = None
     width_mm: Annotated[int | None, Field(ge=100, le=2000)] = None
+    row_height_mm: Annotated[int | None, Field(ge=10, le=1000)] = None
+    # 逐層高度（mm），由第 1 層起算。層架的層板一層一層各自可調；
+    # 不給就整台用 row_height_mm。長度不必剛好等於層數，少的用 row_height_mm 補。
+    level_heights: Annotated[list[Annotated[int, Field(ge=10, le=1000)]] | None,
+                             Field(max_length=99)] = None
+    # 層板厚度（mm）。層高填的是**淨空高**（不含板），總高要另外把板算進去。
+    # null = 依 kind 取預設（木質層架 18mm＝IKEA IVAR 官方規格）。
+    board_mm: Annotated[int | None, Field(ge=0, le=200)] = None
+    # 最下面那片層板離地多高（mm）。null = 0。
+    floor_mm: Annotated[int | None, Field(ge=0, le=1000)] = None
     depth_mm: Annotated[int | None, Field(ge=100, le=3000)] = None
     description: Annotated[str | None, Field(max_length=1024)] = None
     seq: Annotated[int | None, Field(ge=0, le=9999)] = None
     numbering: RackNumbering | None = None
     face: RackFace | None = None
+    expose_svg: bool | None = None
     pos_x: Annotated[float | None, Field(ge=0, le=1)] = None
     pos_y: Annotated[float | None, Field(ge=0, le=1)] = None
 

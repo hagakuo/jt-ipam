@@ -26,6 +26,8 @@ EVENT_TYPES = (
     "online",           # 失聯→上線
     "offline",          # 上線→失聯
     "arp_changed",      # ARP 對應到的 MAC 變了
+    "os_changed",       # 判讀出的 OS 家族變了（掃描代理定期偵測，services/device_identity）
+    "kind_changed",     # 判讀出的設備類型變了（同上）—— 異常偵測「類型或 OS 突變」的依據
     "edited",           # 其它人為欄位編輯（description/owner/switch_port/note...）
 )
 

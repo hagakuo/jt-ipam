@@ -1,6 +1,6 @@
 """FastAPI 應用入口。
 
-OWASP A02 — production guard、安全 headers、CORS 白名單；
+OWASP A02 — production guard、安全 headers、CORS 允許清單；
 A09 — 結構化日誌與 request id。
 """
 
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import structlog
 from fastapi import FastAPI, Request
@@ -28,6 +29,66 @@ from app.core.middleware import (
 )
 
 
+class _MCPTrailingSlash:
+    """把完全等於 /api/mcp、/mcp 的請求路徑補上斜線（純 ASGI，不動其他路徑）。"""
+
+    _PATHS = frozenset({"/api/mcp", "/mcp"})
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") == "http" and scope.get("path") in self._PATHS:
+            scope = dict(scope)
+            scope["path"] = scope["path"] + "/"
+            if scope.get("raw_path"):
+                scope["raw_path"] = bytes(scope["raw_path"]) + b"/"
+        await self.app(scope, receive, send)
+
+
+def _mount_spa(app: FastAPI) -> None:
+    """有 frontend/dist 就把 SPA 掛在根路徑（fallback 到 index.html）。
+
+    - 404 → 回 index.html：前端 client-side 路由（/attack-surface 這類）直接輸入
+      網址或重新整理才進得來。真正的 API 404 不受影響 —— /api、/healthz 這些
+      route 在 mount 之前註冊，永遠先匹配。
+    - index.html／version.json 帶 no-cache：長壽分頁的版本自動偵測靠 version.json，
+      index 被快取則發新版後一直跑舊 bundle；hash 過的 /assets 維持可快取。
+    - dist 不存在（純 API 部署、CI）就不掛，行為與過去一致。
+    """
+    from pathlib import Path
+
+    from starlette.staticfiles import StaticFiles
+    from starlette.types import Scope
+
+    dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    if not (dist / "index.html").is_file():
+        return
+
+    class _SPAStaticFiles(StaticFiles):
+        async def get_response(self, path: str, scope: Scope):  # type: ignore[override]
+            # API 命名空間的 404 保持 JSON（不可被 fallback 吃掉變成回 HTML）——
+            # 前端 client 靠 JSON 錯誤判斷；回 index.html 會變成「JSON 解析失敗」的迷惑錯誤
+            spa_fallback = path.split("/", 1)[0] not in ("api", "mcp", "healthz")
+            # Starlette 找不到檔案是「拋」HTTPException(404)，不是回 404 response —— 兩種都要接
+            fell_back = False
+            try:
+                resp = await super().get_response(path, scope)
+            except StarletteHTTPException as exc:
+                if exc.status_code != 404 or not spa_fallback:
+                    raise
+                resp = await super().get_response("index.html", scope)
+                fell_back = True
+            if not fell_back and resp.status_code == 404 and spa_fallback:
+                resp = await super().get_response("index.html", scope)
+                fell_back = True
+            if fell_back or path in ("index.html", "version.json", "."):
+                resp.headers["cache-control"] = "no-cache"
+            return resp
+
+    app.mount("/", _SPAStaticFiles(directory=str(dist), html=True), name="spa")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
@@ -46,7 +107,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 log.info("ai_chat_history_purged", removed=removed, retention_days=days)
     except Exception as exc:
         log.warning("ai_chat_purge_failed", error=str(exc))
-    # 啟動時確保內建角色存在（冪等）
+    # 資料庫結構落後於程式時，畫面會到處 500（清單要讀完整欄位，count 卻照樣過）——
+    # 啟動時就查得出來，那就要講出來，不要讓使用者一頁一頁踩了再自己猜。
+    app.state.schema_behind = False
+    try:
+        from app.core.db import SessionLocal
+        from app.services.self_check import warn_if_schema_behind
+        async with SessionLocal() as s:
+            app.state.schema_behind = await warn_if_schema_behind(s)
+    except Exception as exc:
+        log.warning("schema_check_failed", error=str(exc))
+
+    # 啟動時確保內建角色存在（冪等，且函式內以 advisory lock 擋多 worker 同時 seed 的競態）
     try:
         from app.core.db import SessionLocal
         from app.services.permission import seed_default_roles
@@ -56,7 +128,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 log.info("default_roles_seeded", created=n)
     except Exception as exc:
         log.warning("seed_default_roles_failed", error=str(exc))
-    # 啟動時確保內建電路類型存在（表為空才塞，冪等）
+    # 啟動時確保內建電路類型存在（表為空才塞，冪等；同樣在函式內排隊）
     try:
         from app.api.v1.endpoints.advanced import seed_default_circuit_types
         from app.core.db import SessionLocal
@@ -88,6 +160,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 log.info("orphan_tasks_reconciled", count=res.rowcount)
     except Exception as exc:
         log.warning("orphan_task_reconcile_failed", error=str(exc))
+    # 變更影響預演：沒有心跳的分析重新排隊並啟動（只看 impact_runs 自己的心跳，不會誤殺別的 worker 正在跑的）
+    try:
+        from app.services.change_impact.jobs import reclaim_and_relaunch
+        n = await reclaim_and_relaunch()
+        if n:
+            log.info("impact_runs_relaunched", count=n)
+    except Exception as exc:
+        log.warning("impact_run_reclaim_failed", error=str(exc))
     yield
     log.info("shutdown")
 
@@ -101,7 +181,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="jt-ipam",
         version=__version__,
-        description="jt-ipam — 新世代 IPAM 系統",
+        description="jt-ipam — 可自架、以整合為核心的 IPAM 系統",
         docs_url=docs_url,
         redoc_url=redoc_url,
         openapi_url="/openapi.json" if not settings.is_production else None,
@@ -127,20 +207,25 @@ def create_app() -> FastAPI:
     app.include_router(api_v1_router, prefix="/api/v1")
     app.include_router(phpipam_router, prefix="/api/phpipam")
 
-    # ── GraphQL（Phase 2）──
-    from app.graphql.schema import make_graphql_router
-    app.include_router(make_graphql_router(), prefix="/graphql")
-
     # ── MCP server（Phase 4）──
     # 掛在 /api/mcp：nginx 只反代 /api/ 到後端，掛 /api 底下外部 client 才連得到。
     # 另保留 /mcp 給 direct（uvicorn 自簽 TLS）模式 / 內部呼叫。
     from app.mcp.server import build_mcp_app
     app.mount("/api/mcp", build_mcp_app())
     app.mount("/mcp", build_mcp_app())
+    # 不帶斜線的 /api/mcp、/mcp 也要進到 MCP：掛載點只認 /api/mcp/…，不帶斜線的落到前端靜態檔回 405，
+    # 而手冊與設定頁的客戶端設定產生器給的正是不帶斜線的網址（2026-09-30 盤點 API 手冊時抓到）
+    app.add_middleware(_MCPTrailingSlash)
 
     # ── Plugins（Phase 4）──
     from app.plugins import load_plugins
     load_plugins(app)
+
+    # ── SPA（direct／self-signed 模式）──
+    # nginx 模式由 nginx 出 dist，這個 mount 打不到；direct 模式跳過 nginx，
+    # 沒有這段的話 UI 無人供應 —— 客戶開 https://host:8443/ 只拿到
+    # {"detail":"Not Found"}（2026-08-17 客戶回報）。掛在最後，API route 永遠優先。
+    _mount_spa(app)
 
     # ── Exception handlers ──
     @app.exception_handler(RequestValidationError)
@@ -157,9 +242,11 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        # 標頭要帶上：401 的 WWW-Authenticate、限流 429 的 Retry-After（以前被丟掉，2026-09-30 發現）
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.detail},
+            headers=getattr(exc, "headers", None),
         )
 
     @app.exception_handler(Exception)

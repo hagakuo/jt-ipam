@@ -9,6 +9,8 @@ OWASP A05：所有輸入透過 stdlib `ipaddress` 解析（service 層），拒�
 from __future__ import annotations
 
 import json
+import logging
+import uuid
 from dataclasses import asdict
 from typing import Annotated, Any
 
@@ -17,13 +19,16 @@ from fastapi.responses import StreamingResponse
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import CurrentUser
+from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.rate_limit import check_rate_limit
+from app.core.ui_error import detail_of, ui_detail
 from app.schemas.base import StrictModel
 from app.services import netdiag, nettools
 from app.services.nettools import NetToolError
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -73,7 +78,7 @@ class EUI64Result(StrictModel):
 
 
 def _bad(exc: NetToolError) -> HTTPException:
-    return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=400, detail=detail_of(exc, "nt_error"))
 
 
 # ─────────────────── Endpoints ───────────────────
@@ -233,7 +238,7 @@ async def dns_lookup(
     except NetToolError as exc:
         # 逾時翻 504、其餘 400
         if "逾時" in str(exc):
-            raise HTTPException(status_code=504, detail=str(exc)) from exc
+            raise HTTPException(status_code=504, detail=detail_of(exc, "nt_error")) from exc
         raise _bad(exc) from exc
 
 
@@ -263,7 +268,7 @@ async def dns_mail(
         return await nettools.dns_mail(domain, dkim_selector)
     except NetToolError as exc:
         if "逾時" in str(exc):
-            raise HTTPException(status_code=504, detail=str(exc)) from exc
+            raise HTTPException(status_code=504, detail=detail_of(exc, "nt_error")) from exc
         raise _bad(exc) from exc
 
 
@@ -326,7 +331,7 @@ async def net_ping(
             targets, count=payload.count, timeout=payload.timeout,
             concurrency=payload.concurrency)
     except netdiag.NetDiagUnavailable as exc:
-        raise HTTPException(status_code=501, detail=str(exc)) from exc
+        raise HTTPException(status_code=501, detail=detail_of(exc, "nd_unavailable")) from exc
     return {"count": len(results), "results": [asdict(r) for r in results]}
 
 
@@ -349,11 +354,30 @@ async def net_traceroute(
     try:
         res = await netdiag.traceroute(target, max_hops=payload.max_hops)
     except netdiag.NetDiagUnavailable as exc:
-        raise HTTPException(status_code=501, detail=str(exc)) from exc
+        raise HTTPException(status_code=501, detail=detail_of(exc, "nd_unavailable")) from exc
     except netdiag.NetDiagError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=detail_of(exc, "nd_error")) from exc
     return {"target": res.target, "tool": res.tool, "path_mtu": res.path_mtu,
             "truncated": res.truncated, "hops": [asdict(h) for h in res.hops]}
+
+
+def _trace_error_event(exc: netdiag.NetDiagError, *, admin: bool) -> dict[str, Any]:
+    """路徑追蹤串流的錯誤事件：代碼＋參數，前端照語系翻譯（以前直接送中文句子，英日文介面也看到中文）。
+
+    底層例外原文（例如無法啟動 traceroute 的 OSError）只給管理員看；一般帳號只拿到例外的類別名稱
+    （CodeQL #20）。完整原因寫日誌。
+    """
+    code = exc.code or "nd_error"
+    params = {k: v for k, v in (exc.params or {}).items() if k != "reason"}
+    raw = str((exc.params or {}).get("reason") or exc)
+    if admin:
+        params["reason"] = raw[:300]
+    else:
+        cause = exc.__cause__
+        params["reason"] = type(cause).__name__ if cause is not None else ""
+    log.warning("traceroute stream failed (%s): %s", code, raw[:300])
+    return {"type": "error", "code": code, "params": params,
+            "detail": raw[:300] if admin else "traceroute failed"}
 
 
 @router.post("/net/traceroute/stream")
@@ -372,14 +396,14 @@ async def net_traceroute_stream(
         raise _bad(exc) from exc
     await _diag_guard(session, user, request, "net_traceroute", {"target": target})
 
+    admin = bool(user.is_admin)
+
     async def gen() -> Any:
         try:
             async for ev in netdiag.traceroute_stream(target, max_hops=payload.max_hops):
                 yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
-        except netdiag.NetDiagUnavailable as exc:
-            yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
-        except netdiag.NetDiagError as exc:
-            yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"
+        except netdiag.NetDiagError as exc:          # 含 NetDiagUnavailable
+            yield f"data: {json.dumps(_trace_error_event(exc, admin=admin), ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         gen(), media_type="text/event-stream",
@@ -480,7 +504,15 @@ async def net_http(
     payload: _HttpIn, user: CurrentUser, request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    """狀態碼、轉址鏈與關鍵回應標頭。"""
+    """狀態碼、轉址鏈與關鍵回應標頭。
+
+    完全沒有任何檢視權限的帳號不能用（比照 AI 對話的 has_no_visibility 總閘）：這支會讓伺服器替呼叫者
+    對內網送出 GET，零權限帳號不該拿得到這個能力（2026-10-06 CodeQL 判讀）。
+    """
+    from app.mcp.tools import has_no_visibility
+    if await has_no_visibility(session, user):
+        raise HTTPException(status_code=403, detail=ui_detail(
+            "nd_no_visibility", "這個帳號沒有任何檢視權限，不能使用 HTTP 檢查"))
     await _diag_guard(session, user, request, "net_http", {"url": payload.url[:200]})
     res = await netdiag.http_check(
         payload.url, timeout=payload.timeout, max_redirects=payload.max_redirects,
@@ -513,3 +545,71 @@ async def net_rdns(
     return {"count": len(results),
             "with_ptr": sum(1 for r in results if r.ptr),
             "results": [asdict(r) for r in results]}
+
+# ─────────────────── 從掃描代理執行探測 ───────────────────
+# 為什麼要有這個：伺服器只看得到自己那一段網路。要確認「客戶站台內部通不通」，
+# 必須從**那個網段裡面**打。掃描代理本來就裝在各網段，重用它比另外開防火牆安全得多。
+#
+# 權限：**限管理員**。從代理執行探測等於能對客戶內網發包，比從伺服器執行的既有工具
+# 影響範圍大得多，不適用一般使用者。
+class _AgentProbeIn(StrictModel):
+    agent_id: uuid.UUID
+    kind: Annotated[str, Field(min_length=1, max_length=16)]
+    targets: Annotated[str, Field(min_length=1, max_length=4096)]
+    ports: str | None = None
+    count: int | None = None
+    timeout: float | None = None
+    max_hops: int | None = None
+
+
+@router.post("/net/agent-probe", status_code=202)
+async def agent_probe(
+    payload: _AgentProbeIn, user: Annotated[Any, Depends(require_admin)], request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """指派一次探測給某個掃描代理，回傳工作 id（結果另外查）。"""
+    from app.models.scan_agent import ScanAgent
+    from app.services.agent_probe import ProbeJobError, create_job
+
+    # identify（深度識別）只能從 IP 詳細頁對 jt-ipam 裡的 IP 發起（endpoints/ip_identify），
+    # 不開放在這裡對任意位址跑
+    if payload.kind == "identify":
+        raise HTTPException(status_code=400, detail=ui_detail(
+            "identify_use_ip_page", "探測請從 IP 詳細頁發起"))
+    agent = await session.get(ScanAgent, payload.agent_id)
+    if agent is None or not agent.enabled:
+        raise HTTPException(status_code=404, detail="agent not found or disabled")
+
+    await _diag_guard(session, user, request, f"agent_{payload.kind}",
+                      {"agent": str(payload.agent_id), "targets": payload.targets[:200]})
+    try:
+        job = await create_job(
+            session, agent_id=payload.agent_id, kind=payload.kind,
+            params={"targets": payload.targets, "ports": payload.ports,
+                    "count": payload.count, "timeout": payload.timeout,
+                    "max_hops": payload.max_hops},
+            requested_by=user.id,
+        )
+    except ProbeJobError as exc:
+        raise HTTPException(status_code=400, detail=detail_of(exc, "probe_job_error")) from exc
+    await session.commit()
+    return {"job_id": str(job.id), "status": job.status}
+
+
+@router.get("/net/agent-probe/{job_id}")
+async def agent_probe_result(
+    job_id: uuid.UUID, _user: Annotated[Any, Depends(require_admin)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    """查一次探測的結果。前端輪詢這支直到 status 不是 pending/running。"""
+    from app.models.agent_probe_job import AgentProbeJob
+    from app.services.agent_probe import expire_stale
+
+    await expire_stale(session)
+    await session.commit()
+    job = await session.get(AgentProbeJob, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"job_id": str(job.id), "kind": job.kind, "status": job.status,
+            "result": job.result, "error": job.error,
+            "created_at": job.created_at, "finished_at": job.finished_at}

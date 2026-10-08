@@ -1,6 +1,6 @@
 """BIND 9 adapter — AXFR (zone transfer) 讀 + nsupdate（TSIG）寫。
 
-依賴 dnspython。對外 IP/host 必須過 SSRF 白名單；TSIG 金鑰即時解密、
+依賴 dnspython。對外 IP/host 必須過 SSRF 允許清單；TSIG 金鑰即時解密、
 不在 instance 上常駐。
 
 OWASP 對應：

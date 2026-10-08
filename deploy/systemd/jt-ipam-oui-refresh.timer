@@ -1,0 +1,13 @@
+[Unit]
+Description=jt-ipam OUI vendor database monthly refresh
+# No Requires= on the service: it would make `systemctl enable --now` (install / upgrade)
+# start the service right away, racing the installer's own run of the same job.
+
+[Timer]
+# Wireshark regenerates its manuf file continuously; once a month is plenty.
+OnCalendar=*-*-01 03:30:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

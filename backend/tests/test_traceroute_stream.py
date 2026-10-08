@@ -61,3 +61,36 @@ async def test_stream_yields_hops_then_a_done_event():
     assert seen, "至少要有一個事件"
     assert seen[-1]["type"] == "done"
     assert all(e["type"] == "hop" for e in seen[:-1])
+
+
+async def test_stream_error_event_carries_a_code_and_hides_the_reason_from_ordinary_accounts(
+        client, auth_headers, db_session, monkeypatch):
+    """CodeQL #20：錯誤事件走代碼；底層例外原文（找不到執行檔之類）只給管理員。"""
+    import json as _json
+
+    async def broken(target, max_hops=30):
+        try:
+            raise FileNotFoundError(2, "No such file or directory", "stdbuf")
+        except FileNotFoundError as exc:
+            raise netdiag.NetDiagError(f"無法執行：{exc}", code="nd_exec_failed", reason=str(exc)) from exc
+        yield {}  # pragma: no cover
+
+    monkeypatch.setattr(netdiag, "traceroute_stream", broken)
+
+    async def events(headers):
+        r = await client.post("/api/v1/tools/net/traceroute/stream", headers=headers,
+                              json={"target": "192.0.2.1", "max_hops": 3})
+        assert r.status_code == 200, r.text
+        return [_json.loads(line[6:]) for line in r.text.splitlines() if line.startswith("data: ")]
+
+    (ev,) = await events(auth_headers)
+    assert ev["type"] == "error" and ev["code"] == "nd_exec_failed"
+    assert "stdbuf" in ev["params"]["reason"]
+
+    from tests.test_rbac_enforcement import _nonadmin_token
+    _u, token = await _nonadmin_token(db_session)
+    await db_session.commit()
+    (ev,) = await events({"Authorization": f"Bearer {token}"})
+    assert ev["code"] == "nd_exec_failed"
+    assert "stdbuf" not in _json.dumps(ev), ev
+    assert ev["params"]["reason"] == "FileNotFoundError"

@@ -15,7 +15,7 @@
 - 正式站 IP：`120.119.140.8`
 - 正式站 repo：`/opt/jt-ipam`
 - 正式站部署帳號：`kenboy`
-- 正式站服務：`jt-ipam-backend`、`nginx`、`redis-server`、`postgresql`
+- 正式站服務：`jt-ipam-backend`、`nginx`、`redis-server`、`postgresql`；1.0.1 另需 `jt-ipam-guacd`
 
 不要把正式站密碼、API token、`.env`、TLS key 或初始 admin password 寫進 repo。
 
@@ -146,8 +146,15 @@ merge migration 內容通常只需要 `pass`，因為它只是合併 migration g
 驗證結果必須只有：
 
 ```text
-0115_merge_local_refresh
+0188_merge_local_refresh
 ```
+
+2026-10-08 更新至 `1.0.1`：上游固定提交為
+`868635952f87548dfe8caac36fce8da04b35cabc`，最新上游 head 為
+`0187_change_impact`。保留正式站已套用的 `0115_merge_local_refresh`，新增
+`0188_merge_local_refresh` 合併兩條鏈。不要刪除或改名舊 migration。
+
+未來更新時，這個 head 可能再往前推進；每次都以當次 Alembic graph 為準。
 
 ## 5. 本機驗證
 
@@ -172,6 +179,19 @@ cd backend
 python -m pytest
 python -m ruff check app tests
 ```
+
+後端的 PTY／FreeRDP 使用 `termios`／`fcntl`，完整測試要在 Linux 執行。
+測試 fixture 會清空資料表，**不得指向正式資料庫**。先將備份還原至獨立的
+`*_test` 資料庫，使用獨立測試角色與 Redis，執行 `alembic upgrade head`，
+再設 `JTIPAM_TEST_DATABASE_URL` 跑回歸。不要為測試關閉正式 PostgreSQL 的持久化設定。
+
+至少驗證登入／refresh／logout、OIDC 驗簽、API scope、RBAC、MCP、SSRF、
+LibreNMS ARP、同步排程與新功能；再跑 `python -m pip_audit` 及
+`corepack pnpm audit --prod`。工具警告必須逐項判讀，不等於已確認漏洞。
+安裝工具 `pip` 本次需升至 `26.2.1`，之後依當期公告重新稽核，不要永久照抄版本。
+
+工作樹裡未追蹤的 NM_tools 匯入程式屬使用者既有工作，不能為了 inclusiveTerms
+測試改名或刪除。可用 `git archive` 匯出已追蹤的正式候選版本，在副本重跑該測試。
 
 前端驗證：
 
@@ -249,11 +269,35 @@ git remote -v
 systemctl is-active jt-ipam-backend nginx redis-server postgresql
 ```
 
+部署前先暫停同步，避免新版程式與舊 schema 同時執行，並另外建立可核對的完整備份：
+
+```bash
+sudo systemctl stop jt-ipam-sync.timer jt-ipam-sync.service
+sudo bash
+set -euo pipefail
+umask 077
+BACKUP="/var/backups/jt-ipam/pre-upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$BACKUP"
+sudo -u postgres pg_dump -Fc jt_ipam > "$BACKUP/jt-ipam.dump"
+cp /etc/jt-ipam/backend.env "$BACKUP/backend.env"
+git -c safe.directory=/opt/jt-ipam -C /opt/jt-ipam bundle create "$BACKUP/repo.bundle" --all
+tar -czf "$BACKUP/uploads.tar.gz" -C /var/lib/jt-ipam uploads
+tar -czf "$BACKUP/frontend-dist.tar.gz" -C /opt/jt-ipam/frontend dist
+# 另備份實際 TLS 憑證目錄及掃描代理設定；不要輸出密鑰內容。
+cd "$BACKUP"
+sha256sum jt-ipam.dump backend.env repo.bundle uploads.tar.gz frontend-dist.tar.gz > SHA256SUMS
+sha256sum -c SHA256SUMS
+pg_restore --list jt-ipam.dump >/dev/null
+exit
+```
+
+記錄備份絕對路徑、舊 commit 與舊 DB head。此備份含密鑰，目錄權限應為 `0700`，
+檔案 `0600`；不要上傳 GitHub。備份是否可還原須用隔離副本驗證。
+
 部署：
 
 ```bash
-sudo git -C /opt/jt-ipam config --global --add safe.directory /opt/jt-ipam || true
-sudo git -C /opt/jt-ipam pull --ff-only origin main
+sudo git -c safe.directory=/opt/jt-ipam -C /opt/jt-ipam pull --ff-only origin main
 cd /opt/jt-ipam
 sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade --no-pull
 ```
@@ -263,6 +307,8 @@ sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade --no-pull
 - 先由外部 `git pull --ff-only` 同步到 fork 最新 commit。
 - `upgrade` 一定加 `--no-pull`，避免 script 內部再 pull 一次造成版本不明。
 - upgrade script 會自動做 DB backup、backend dependency update、Alembic migration、frontend build、nginx reload、backend restart。
+- 本次升級另會安裝 guacd、更新必要的 nginx 主控台中繼規則。不要自行開放 guacd 的外網埠。
+- 升級失敗時先檢查服務與 migration，不要立即恢復同步或反覆重跑。
 
 ## 8. 部署後驗證
 
@@ -274,8 +320,10 @@ git rev-parse HEAD
 git status --short --branch
 grep __version__ backend/app/version.py
 sudo -u postgres psql -d jt_ipam -tAc "select version_num from alembic_version"
-systemctl is-active jt-ipam-backend nginx redis-server postgresql
+systemctl is-active jt-ipam-backend nginx redis-server postgresql jt-ipam-guacd
 curl -k -fsS https://ipam.nkust.edu.tw/healthz
+curl -k -fsS https://ipam.nkust.edu.tw/readyz
+curl -k -fsS https://ipam.nkust.edu.tw/api/v1/system/version
 curl -k -sS -o /dev/null -w '%{http_code} %{content_type}\n' https://ipam.nkust.edu.tw/
 journalctl -u jt-ipam-backend --since '10 minutes ago' --no-pager -p warning..alert
 ```
@@ -289,6 +337,19 @@ journalctl -u jt-ipam-backend --since '10 minutes ago' --no-pager -p warning..al
 - `/healthz` 回 `ok`。
 - 首頁回 `200 text/html`。
 - 最近 10 分鐘 backend warning/error 沒有異常。
+
+核對新版登入頁與靜態檔實際可載入，再恢復並驗證同步：
+
+```bash
+sudo systemctl start jt-ipam-sync.timer
+sudo systemctl start jt-ipam-sync.service
+systemctl show jt-ipam-sync.service -p Result -p ExecMainStatus
+systemctl is-active jt-ipam-sync.timer jt-ipam-backup.timer
+```
+
+正式站 `nz` 掃描代理原本由管理員停用，升級必須保持停用；代理不是為了通過 health
+檢查就可以重新啟用。`curl -k` 只驗證 HTTP 功能，不代表憑證鏈受信任，現有自簽 TLS
+需要另案處理。新增整合與外部 MCP 也不應在升級時擅自開啟。
 
 ## 9. 常見問題
 
@@ -348,3 +409,8 @@ ls -lh /var/backups/jt-ipam/
 ```
 
 再決定是回退 git commit、還原 DB backup，或只修 forward patch。
+
+不能只回退程式卻留下不相容的新 schema。若需完整還原，停止 backend 與同步，
+以舊 repo bundle 建立獨立舊版 checkout，重新建立相符環境，將備份還原至新資料庫
+並核對資料；保留故障資料庫作證據。確認舊版與還原庫可以服務後才切換設定。
+不確定 migration 是否可降版時，不要在正式庫直接執行 `alembic downgrade`。

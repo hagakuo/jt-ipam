@@ -31,12 +31,21 @@ from app.core.audit import append_audit
 from app.core.db import SessionLocal, get_session
 from app.core.rate_limit import _redis_client
 from app.core.security import envelope_decrypt
+from app.core.sqlin import in_values
 from app.core.tickets import take_once
+from app.core.ui_error import detail_of, ui_detail
+from app.core.ws_timeouts import (
+    HANDSHAKE_TIMEOUT,
+    PROMPT_TIMEOUT,
+    WsTimeout,
+    receive_text_within,
+)
 from app.models.address import IPAddress
 from app.models.device import Device
 from app.models.ssh_credential import SSHCredential
 from app.models.user import User
 from app.schemas.address import IPAddressRead
+from app.services import console_route
 from app.services.permission import (
     can_use_ssh,
     get_object_permission,
@@ -55,12 +64,23 @@ router = APIRouter(prefix="/addresses", tags=["ssh"])
 
 _TICKET_TTL = 60              # 秒；ticket 單次用、短壽
 _CONNECT_TIMEOUT = 15.0       # SSH 連線逾時
+#: guacd：等到第一個畫面（終端機畫好）才算連上
+_CONNECT_TIMEOUT_GUACD = 30.0
 _READ_CHUNK = 4096
 
 
 def _ticket_key(ticket: str) -> str:
     return f"ssh:tk:{ticket}"
 
+
+
+def _guac_font_pt(value: object) -> int:
+    """guacd 終端機字級（pt）。沒給或不合法就用 12；夾在 6～32 之間。"""
+    try:
+        pt = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return 12
+    return max(6, min(32, pt))
 
 @router.get("/ssh/targets", response_model=list[IPAddressRead])
 async def list_ssh_targets(
@@ -78,7 +98,7 @@ async def list_ssh_targets(
         if vis is not None:
             if not vis:
                 return []
-            stmt = stmt.where(IPAddress.subnet_id.in_(vis))
+            stmt = stmt.where(in_values(IPAddress.subnet_id, vis))
     rows = (await session.execute(stmt)).scalars().all()
 
     # 逐 IP 過可連線（per-subnet 權限快取，避免重複查）
@@ -104,7 +124,7 @@ async def list_ssh_targets(
     dev_names: dict[uuid.UUID, str] = {}
     if dev_ids:
         drows = (await session.execute(
-            select(Device.id, Device.name).where(Device.id.in_(dev_ids))
+            select(Device.id, Device.name).where(in_values(Device.id, dev_ids))
         )).all()
         dev_names = {d[0]: d[1] for d in drows}
 
@@ -138,10 +158,21 @@ async def issue_ssh_ticket(
         raise HTTPException(status_code=404, detail="Address not found")
     if not await can_use_ssh(session, user=user, ip=ip):
         # A01：不洩漏存在性差異 — 一律 403
-        raise HTTPException(status_code=403, detail="無 SSH 連線權限")
+        raise HTTPException(status_code=403, detail=ui_detail("console_ssh_forbidden", "無 SSH 連線權限"))
+
+    from app.services import console_engine
+    # 選了 guacd、這台的 guacd 卻處理不了 SSH → 退回內建（asyncssh 一定在）
+    engine = await console_engine.resolve(session, "ssh", fallbacks=[("builtin", True)])
+    if engine == "guacd":
+        from app.services import guacd as guac
+        try:
+            await guac.require("ssh")
+        except guac.GuacdError as exc:
+            raise HTTPException(status_code=503, detail=exc.ui()) from exc
 
     ticket = secrets.token_urlsafe(32)
-    payload = json.dumps({"user_id": str(user.id), "ip_id": str(ip.id)})
+    # 引擎寫進票證：WebSocket 照這個用，不自己再判斷（guacd 剛好起落時兩邊會講不同協定）
+    payload = json.dumps({"user_id": str(user.id), "ip_id": str(ip.id), "engine": engine})
     await _redis_client().set(_ticket_key(ticket), payload, ex=_TICKET_TTL)
 
     return {
@@ -149,24 +180,25 @@ async def issue_ssh_ticket(
         "ws_path": f"/api/v1/addresses/{ip.id}/ssh/ws",
         "host_key_pinned": bool(ip.ssh_host_key),
         "default_port": 22,
+        "engine": engine,
         "ttl": _TICKET_TTL,
     }
 
 
-async def _redeem_ticket(ticket: str, address_id: uuid.UUID) -> uuid.UUID | None:
-    """單次取出 ticket（getdel）；回傳通過驗證的 user_id，否則 None。"""
+async def _redeem_ticket(ticket: str, address_id: uuid.UUID) -> tuple[uuid.UUID | None, str | None]:
+    """單次取出 ticket → (user_id, 發票證時決定的引擎)；舊票證沒有引擎欄位 → None（呼叫端照設定）。"""
     if not ticket:
-        return None
+        return None, None
     raw = await take_once(_redis_client(), _ticket_key(ticket))
     if not raw:
-        return None
+        return None, None
     try:
         data = json.loads(raw)
         if data.get("ip_id") != str(address_id):
-            return None
-        return uuid.UUID(data["user_id"])
+            return None, None
+        return uuid.UUID(data["user_id"]), data.get("engine")
     except (ValueError, KeyError, TypeError):
-        return None
+        return None, None
 
 
 async def _audit_ssh(
@@ -223,10 +255,41 @@ def _strict_client_factory(known_host: str) -> type[asyncssh.SSHClient]:
     return _StrictClient
 
 
+def _host_key_algs(known_host: str) -> list[str]:
+    """釘選的金鑰類型 → 要求伺服器用的主機金鑰演算法（RSA 金鑰有三種簽章演算法）。"""
+    key_type = known_host.split()[0]
+    return ["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"] if key_type == "ssh-rsa" else [key_type]
+
+
+async def _pinned_key_still_matches(host: str, port: int, known_host: str) -> bool:
+    """用釘選的那一種演算法向伺服器要主機金鑰，比對指紋。
+
+    guacd 對主機金鑰不符只回一句「Aborted. See logs.」（原因只寫在它自己的日誌），
+    使用者看到的會是「guacd 內部錯誤」—— 而這是可能遭中間人攻擊的警訊，一定要講清楚。
+    所以交給 guacd 之前先自己比一次，訊息跟內建引擎一樣；guacd 那層照樣再比（縱深）。
+    伺服器已經不提供這種演算法＝金鑰換了，一樣視為不符。連不上則往外丟（照一般連線錯誤處理）。
+    """
+    # ⚠️ 演算法一定要用 get_server_host_key 自己的參數傳：它的預設值會蓋掉 options 裡的設定，
+    # 塞在 options 裡的話不管指定哪種都拿到伺服器偏好的那把 —— 正確的 ed25519 也會被判成不符
+    # （2026-09-25 正式機實測；本機測試靶釘的剛好是 RSA，所以測不出來）
+    opts = asyncssh.SSHClientConnectionOptions(**LEGACY_SSH_ALGS)
+    try:
+        async with asyncio.timeout(_CONNECT_TIMEOUT):
+            key = await asyncssh.get_server_host_key(
+                host, port=port, options=opts, server_host_key_algs=_host_key_algs(known_host))
+    except asyncssh.KeyExchangeFailed:
+        return False
+    if key is None:
+        return False
+    actual = key.export_public_key("openssh").decode("ascii").split()
+    return (server_key_fingerprint_sha256(_parse_pubkey_line(f"{actual[0]} {actual[1]}"))
+            == server_key_fingerprint_sha256(_parse_pubkey_line(known_host)))
+
+
 @router.websocket("/{address_id}/ssh/ws")
 async def ssh_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") -> None:
     # 1) 驗 ticket（單次取出）
-    user_id = await _redeem_ticket(ticket, address_id)
+    user_id, ticket_engine = await _redeem_ticket(ticket, address_id)
     if user_id is None:
         await websocket.close(code=4401)
         return
@@ -241,21 +304,38 @@ async def ssh_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
         allowed = await can_use_ssh(s, user=user, ip=ip)
         host = str(ip.ip).split("/")[0]
         pinned = ip.ssh_host_key
+        # 連線出口：直連或經由跳板（IP 覆寫 > 子網路 > 直連）
+        route = await console_route.resolve_route(s, ip)
+        from app.services.system_config import SSH_ENGINES, get_ssh_engine
+        engine = ticket_engine if ticket_engine in SSH_ENGINES else await get_ssh_engine(s)
     if not allowed:
         await websocket.close(code=4403)
         return
 
     await websocket.accept()
     actor_ip = websocket.client.host if websocket.client else None
+    tunnel: console_route.Tunnel | None = None
+    # guacd 連上之後這條 WebSocket 改講 Guacamole 協定：不可以再送 JSON
+    guac_mode = False
 
     async def send(obj: dict[str, Any]) -> None:
         await websocket.send_text(json.dumps(obj))
 
     try:
         # 3) 收第一個設定訊息
-        cfg = json.loads(await websocket.receive_text())
+        # 連上來卻不送設定的客戶端不可以無限期佔住這條連線（見 core/ws_timeouts）
+        try:
+            cfg = json.loads(await receive_text_within(
+                websocket, HANDSHAKE_TIMEOUT, what="config"))
+        except WsTimeout as exc:
+            with contextlib.suppress(Exception):
+                await websocket.send_text(json.dumps(
+                    {"type": "error", **detail_of(exc, "console_handshake_timeout")},
+                    ensure_ascii=False))
+            await websocket.close(code=4408)
+            return
         if cfg.get("type") != "config":
-            await send({"type": "error", "code": "bad_config", "message": "缺少連線設定"})
+            await send({"type": "error", **ui_detail("console_no_config", "缺少連線設定")})
             await websocket.close()
             return
         username = (cfg.get("username") or "").strip()
@@ -265,7 +345,7 @@ async def ssh_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
         rows = int(cfg.get("rows") or 24)
         credential_id = cfg.get("credential_id")
         if not (1 <= port <= 65535):
-            await send({"type": "error", "code": "bad_config", "message": "連接埠須為 1–65535"})
+            await send({"type": "error", **ui_detail("console_bad_port", "連接埠須為 1–65535")})
             await websocket.close()
             return
 
@@ -282,7 +362,8 @@ async def ssh_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
                     cred = None
                 if (cred is None or cred.owner_user_id != user_id
                         or (cred.target_ip_id is not None and str(cred.target_ip_id) != str(address_id))):
-                    await send({"type": "error", "code": "cred_not_found", "message": "找不到可用的已存帳密"})
+                    await send({"type": "error",
+                                **ui_detail("console_no_saved_credential", "找不到可用的已存帳密")})
                     await websocket.close()
                     return
                 used_cred_id = cred.id
@@ -300,7 +381,8 @@ async def ssh_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
                     connect_kw["preferred_auth"] = ("publickey",)
                     del pk, pp
             except Exception:
-                await send({"type": "error", "code": "bad_key", "message": "已存帳密解密 / 解析失敗"})
+                await send({"type": "error",
+                            **ui_detail("console_saved_credential_bad", "已存帳密解密／解析失敗")})
                 await websocket.close()
                 return
             # 標記最近使用
@@ -311,7 +393,7 @@ async def ssh_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
                     await s.commit()
         else:
             if not username:
-                await send({"type": "error", "code": "bad_config", "message": "帳號必填"})
+                await send({"type": "error", **ui_detail("console_no_username", "帳號必填")})
                 await websocket.close()
                 return
             if auth == "password":
@@ -324,14 +406,30 @@ async def ssh_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
                         )
                     ]
                 except Exception:  # 私鑰格式 / passphrase 錯
-                    await send({"type": "error", "code": "bad_key", "message": "私鑰無法解析（格式或 passphrase 錯誤）"})
+                    await send({"type": "error",
+                                **ui_detail("console_private_key_bad",
+                                            "私鑰無法解析（格式或密碼短語錯誤）")})
                     await websocket.close()
                     return
                 connect_kw["preferred_auth"] = ("publickey",)
             else:
-                await send({"type": "error", "code": "bad_config", "message": "不支援的認證方式"})
+                await send({"type": "error", **ui_detail("console_auth_unsupported", "不支援的認證方式")})
                 await websocket.close()
                 return
+
+        # 4b) 連線出口：經跳板時把目標換成本機轉發埠。
+        # 一定要在 host key 步驟**之前**——`fetch_host_key` 也得走同一條路，
+        # 否則會去釘到「後端直連看到的那台」的金鑰（可能根本是另一台機器）。
+        try:
+            tunnel = await console_route.open_route(route, host, port, user_id=user_id, purpose="ssh")
+        except console_route.JumpHostError as exc:
+            await send({"type": "error", **detail_of(exc, "jump_failed")})
+            await websocket.close()
+            return
+        host, port = tunnel.host, tunnel.port
+        if tunnel.via:
+            await send({"type": "status", "state": "via_jump", "via": tunnel.via,
+                        "via_kind": tunnel.via_kind})
 
         # 5) host key — TOFU：未釘選先取指紋給使用者確認再釘選
         known_host = pinned
@@ -339,13 +437,23 @@ async def ssh_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
             try:
                 hk = await fetch_host_key(host, port=port)
             except Exception as exc:
-                await send({"type": "error", "code": "connect_failed", "message": f"無法連線取得主機金鑰：{exc}"})
+                await send({"type": "error", **ui_detail("console_host_key_fetch_failed",
+                                              f"無法連線取得主機金鑰：{exc}",
+                                              reason=str(exc)[:200])})
                 await websocket.close()
                 return
             await send({"type": "hostkey", "fingerprint": hk["fingerprint"]})
-            ans = json.loads(await websocket.receive_text())
+            # 等人回答「要不要信任這把金鑰」也要有時限：要留時間讓人讀完再決定，
+            # 但不能無限 —— 那等於把連線資源的釋放時機交給對方決定。
+            try:
+                ans = json.loads(await receive_text_within(
+                    websocket, PROMPT_TIMEOUT, what="host_key"))
+            except WsTimeout as exc:
+                await send({"type": "error", **detail_of(exc, "console_host_key_timeout")})
+                await websocket.close(code=4408)
+                return
             if ans.get("type") != "hostkey_accept":
-                await send({"type": "error", "code": "hostkey_rejected", "message": "已取消（未信任主機金鑰）"})
+                await send({"type": "error", **ui_detail("console_host_key_rejected", "已取消（未信任主機金鑰）")})
                 await websocket.close()
                 return
             known_host = hk["known_host"]
@@ -353,6 +461,82 @@ async def ssh_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
 
         # 6) 連線（嚴格比對已釘選的 host key）
         await send({"type": "status", "state": "connecting"})
+        if engine == "guacd":
+            from app.services import guacd as guac
+            try:
+                key_ok = await _pinned_key_still_matches(host, port, known_host)
+            except (TimeoutError, asyncssh.Error, OSError) as exc:
+                await send({"type": "error", **ui_detail("console_connect_failed", f"連線失敗：{exc}",
+                                              reason=str(exc)[:200])})
+                await websocket.close()
+                return
+            if not key_ok:
+                await send({"type": "error",
+                            **ui_detail("console_host_key_mismatch",
+                                        "主機金鑰與先前釘選不符，可能遭中間人攻擊（連線中止）")})
+                await websocket.close()
+                return
+            # 帳密／私鑰只交給本機的 guacd，不經過瀏覽器；目標是通道的位址。
+            # 主機金鑰：把上面釘選（或剛經使用者確認）的那一把交給 guacd 嚴格比對，
+            # 安全性跟內建引擎一樣 —— 不符就中止，不會「先連再說」。
+            params: dict[str, str] = {
+                "hostname": host, "port": str(port), "username": username,
+                "host-key": guac.known_hosts_line(host, port, known_host),
+                "terminal-type": "xterm-256color", "font-name": "monospace",
+                # 字級（pt）由前端帶（使用者調過會記住）；連線中可再用 argv 串流改，不必重連
+                "font-size": str(_guac_font_pt(cfg.get("font_size"))),
+                "scrollback": "2000", "server-alive-interval": "15",
+                # 跟內建的 xterm.js 一樣可以複製、貼上
+                "disable-copy": "false", "disable-paste": "false",
+            }
+            if "password" in connect_kw:
+                params["password"] = connect_kw["password"]
+            elif connect_kw.get("client_keys"):
+                # 在這裡解開（密碼短語已用過），交給 guacd 的是不加密的 OpenSSH 格式：
+                # libssh2 對各種私鑰格式與加密方式的支援不一，這樣最不會出意外
+                params["private-key"] = connect_kw["client_keys"][0].export_private_key(
+                    "openssh").decode("ascii")
+            connect_kw.clear()
+            width = max(320, min(3840, int(cfg.get("width") or 1024)))
+            height = max(200, min(2160, int(cfg.get("height") or 640)))
+            gconn = None
+            try:
+                try:
+                    gconn = await guac.GuacdConnection.open()
+                    await gconn.handshake("ssh", params, width=width, height=height,
+                                          dpi=guac.client_dpi(cfg.get("dpi")),
+                                          timezone=guac.client_timezone(cfg.get("timezone")))
+                    params.clear()
+                    initial = await gconn.wait_first_frame(_CONNECT_TIMEOUT_GUACD)
+                except guac.GuacdError as exc:
+                    await send({"type": "error", **exc.ui()})
+                    await websocket.close()
+                    return
+                started = datetime.now(UTC)
+                await _audit_ssh(
+                    actor_user_id=str(user_id), actor_ip=actor_ip, object_id=str(address_id),
+                    action="ssh.session_open",
+                    diff={"host": host, "port": port, "username": username, "auth": auth,
+                          "via_jump_host": tunnel.via, "via_kind": tunnel.via_kind, "engine": "guacd",
+                          "credential_id": str(used_cred_id) if used_cred_id else None},
+                )
+                await send({"type": "status", "state": "connected", "engine": "guacd",
+                            "width": width, "height": height})
+                guac_mode = True
+                # 連線中只允許改字級（A−／A+），值是 6～32 的整數（pt）
+                await guac.relay(websocket, gconn, initial=initial,
+                                 argv_allow={"font-size": lambda v: v.isdigit() and 6 <= int(v) <= 32})
+                dur = (datetime.now(UTC) - started).total_seconds()
+                await _audit_ssh(
+                    actor_user_id=str(user_id), actor_ip=actor_ip, object_id=str(address_id),
+                    action="ssh.session_close", diff={"host": host, "duration_seconds": round(dur, 1)},
+                )
+            finally:
+                if gconn is not None:
+                    await gconn.aclose()
+                with contextlib.suppress(Exception):
+                    await websocket.close()
+            return
         try:
             async with asyncio.timeout(_CONNECT_TIMEOUT):
                 conn = await asyncssh.connect(
@@ -370,16 +554,19 @@ async def ssh_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
                     **connect_kw,
                 )
         except SSHHostKeyMismatch:
-            await send({"type": "error", "code": "hostkey_mismatch",
-                        "message": "主機金鑰與先前釘選不符，可能遭中間人攻擊（連線中止）"})
+            await send({"type": "error",
+                        **ui_detail("console_host_key_mismatch",
+                                    "主機金鑰與先前釘選不符，可能遭中間人攻擊（連線中止）")})
             await websocket.close()
             return
         except asyncssh.PermissionDenied:
-            await send({"type": "error", "code": "auth_failed", "message": "認證失敗（帳號 / 密碼 / 金鑰錯誤）"})
+            await send({"type": "error",
+                        **ui_detail("console_auth_failed", "認證失敗（帳號／密碼／金鑰錯誤）")})
             await websocket.close()
             return
         except (TimeoutError, asyncssh.Error, OSError) as exc:
-            await send({"type": "error", "code": "connect_failed", "message": f"連線失敗：{exc}"})
+            await send({"type": "error", **ui_detail("console_connect_failed", f"連線失敗：{exc}",
+                                          reason=str(exc)[:200])})
             await websocket.close()
             return
 
@@ -389,6 +576,7 @@ async def ssh_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
             actor_user_id=str(user_id), actor_ip=actor_ip, object_id=str(address_id),
             action="ssh.session_open",
             diff={"host": host, "port": port, "username": username, "auth": auth,
+                  "via_jump_host": tunnel.via, "via_kind": tunnel.via_kind,
                   "credential_id": str(used_cred_id) if used_cred_id else None},
         )
         async with conn:
@@ -412,8 +600,14 @@ async def ssh_ws(websocket: WebSocket, address_id: uuid.UUID, ticket: str = "") 
         return
     except Exception:  # 任何未預期錯誤都不可洩漏堆疊給前端
         with contextlib.suppress(Exception):
-            await send({"type": "error", "code": "internal", "message": "連線發生未預期錯誤"})
+            if not guac_mode:
+                await send({"type": "error", **ui_detail("console_internal", "連線發生未預期錯誤")})
             await websocket.close()
+    finally:
+        # 通道與 WS session 同生共死：不論怎麼離開（正常結束、斷線、例外）都要還回去，
+        # 否則跳板上會累積轉發，而同時連線數上限會慢慢把自己鎖死
+        if tunnel is not None:
+            await tunnel.aclose()
 
 
 async def _bridge(websocket: WebSocket, proc: Any, send: Any) -> None:

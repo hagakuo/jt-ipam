@@ -18,7 +18,8 @@ import { useColumnPrefs } from "@/composables/useColumnPrefs";
 import { apiErrMsg } from "@/api/client";
 const { t } = useI18n();
 
-const { visibleKeys: wbVis, setVisible: wbSet, reset: wbReset } = useColumnPrefs(
+const { visibleKeys: wbVis, setVisible: wbSet, reset: wbReset,
+  order: wbOrder, setOrder: wbSetOrder, orderColumns: wbOrderCols } = useColumnPrefs(
   "webhooks",
   ["name", "target_url", "events", "enabled", "failure_count", "last_error", "actions"],
   ["name", "target_url", "events", "enabled", "failure_count", "last_error", "actions"],
@@ -116,7 +117,7 @@ const allCols = computed<DataTableColumns<Webhook>>(() => autoSort([
 ]));
 
 const cols = computed<DataTableColumns<Webhook>>(() =>
-  allCols.value.filter((c: any) => wbVis.value.includes(c.key)),
+  wbOrderCols(allCols.value.filter((c: any) => wbVis.value.includes(c.key))),
 );
 
 onMounted(() => { void refresh(); });
@@ -140,7 +141,8 @@ onMounted(() => { void refresh(); });
         {{ t("common.create") }}
       </n-button>
       <ColumnPicker :all="wbPicker" :visible="wbVis"
-                    @update:visible="wbSet" @reset="wbReset" />
+                    @update:visible="wbSet" @reset="wbReset"
+                    :order="wbOrder" @update:order="wbSetOrder" />
     </n-space>
     <n-data-table :columns="cols" :data="rows" :loading="loading" :bordered="false" :scroll-x="956" />
 

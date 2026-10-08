@@ -188,7 +188,7 @@ const colsAll = computed<DataTableColumns<Row>>(() => autoSort([
     sorter: (a, b) => (a.days_remaining ?? 1e9) - (b.days_remaining ?? 1e9), render: expiryCell },
 ]));
 const cols = computed<DataTableColumns<Row>>(() =>
-  colsAll.value.filter((c: any) => prefs.visibleKeys.value.includes(c.key)));
+  prefs.orderColumns(colsAll.value.filter((c: any) => prefs.visibleKeys.value.includes(c.key))));
 
 // 匯出：純字串欄位（避免匯出 render 出來的物件）
 const exportCols = computed(() => pickerItems.value);
@@ -217,7 +217,8 @@ const exportRows = computed(() => rowsFiltered.value.map((r) => ({
         <ExportButton :columns="exportCols" :rows="exportRows" filename="cert-distribution-status"
                       :title="t('nav.cert_status')" />
         <ColumnPicker :all="pickerItems" :visible="prefs.visibleKeys.value"
-                      @update:visible="prefs.setVisible" @reset="prefs.reset" />
+                      @update:visible="prefs.setVisible" @reset="prefs.reset"
+                      :order="prefs.order.value" @update:order="prefs.setOrder" />
         <n-button size="small" quaternary @click="load">
           <template #icon><n-icon :component="RefreshIcon" /></template>{{ t("common.refresh") }}
         </n-button>

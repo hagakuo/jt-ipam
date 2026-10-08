@@ -22,6 +22,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from pydantic import Field
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,8 +30,10 @@ from app.api.v1.dependencies import CurrentUser, require_admin
 from app.core.audit import append_audit
 from app.core.db import get_session
 from app.core.security import decrypt_secret, encrypt_secret
+from app.core.ui_error import detail_of, ui_detail
 from app.models.certificate import CertAgent, Certificate, CertVersion
-from app.schemas.base import Paginated
+from app.models.user import User
+from app.schemas.base import Paginated, StrictModel
 from app.schemas.certificate import (
     CertificateCreate,
     CertificateRead,
@@ -40,11 +43,14 @@ from app.schemas.certificate import (
     SelfSignedRequest,
 )
 from app.services.cert_fetch import (
+    PIN_FIELDS,
     FetchError,
     fetch_certificate,
     generate_source_ssh_keypair,
     install_public_key_sftp,
     load_cert_secret,
+    merge_pin,
+    pin_target,
     probe_source_connection,
     save_cert_secret,
 )
@@ -76,7 +82,7 @@ async def _store_version(
             CertVersion.fingerprint_sha256 == info.fingerprint_sha256,
         ).limit(1)
     )).scalar_one_or_none() is not None:
-        raise HTTPException(409, detail="這張憑證(相同 fingerprint)已經上傳過")
+        raise HTTPException(409, detail=ui_detail("cert_duplicate_fingerprint", "這張憑證（相同指紋）已經上傳過"))
 
     key_enc, key_nonce = encrypt_secret(key_pem, aad=_key_aad(cert.id, info.fingerprint_sha256))
     await session.execute(
@@ -191,14 +197,32 @@ async def get_certificate(
 async def update_certificate(
     cert_id: uuid.UUID,
     payload: CertificateUpdate,
+    user: CurrentUser,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> CertificateRead:
     obj = await session.get(Certificate, cert_id)
     if obj is None:
         raise HTTPException(404, detail="Not found")
     data = payload.model_dump(exclude_unset=True)
+    # PATCH 的 None 意思是「不修改」，所以「改回沿用全域預設」要有自己的旗標，
+    # 否則使用者一旦設過天數就再也回不去預設。
+    if data.pop("clear_expiry_warn_days", False):
+        obj.expiry_warn_days = None
+        data["expiry_warn_days"] = None
+    else:
+        data.pop("clear_expiry_warn_days", None)
     for k, v in data.items():
         setattr(obj, k, v)
+    # 憑證的設定異動（名稱／範圍／來源…）同樣要留紀錄：上傳與刪除都有記，改設定卻沒有
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="certificate", object_id=str(obj.id), action="update",
+        diff={k: str(v) for k, v in data.items()},   # 不含任何金鑰內容
+        request_id=getattr(request.state, "request_id", None),
+    )
     await session.commit()
     await session.refresh(obj)  # commit 後 updated_at(onupdate)過期 → refresh 免 model_validate 同步 lazy IO 500
     return await _to_read(session, obj)
@@ -222,8 +246,12 @@ async def delete_certificate(
     if used_by:
         raise HTTPException(
             409,
-            detail=f"此憑證仍被派送代理使用（{'、'.join(used_by)}），"
-                   f"請先到這些代理的「可取憑證」移除它，再刪除憑證。",
+            detail=ui_detail(
+                "cert_in_use_by_agents",
+                f"此憑證仍被派送代理使用（{'、'.join(used_by)}），"
+                f"請先到這些代理的「可取憑證」移除它，再刪除憑證。",
+                agents="、".join(used_by),
+            ),
         )
     await append_audit(
         session, actor_user_id=str(user.id),
@@ -279,7 +307,8 @@ async def rebuild_chain(
         raise HTTPException(404, detail="Version not found")
     a = analyze_chain(ver.cert_pem, ver.chain_pem)
     if not a["can_rebuild"]:
-        raise HTTPException(409, detail="此版本無法自動組合完整鏈（可用憑證中沒有根 CA，或已是完整鏈）。")
+        raise HTTPException(409, detail=ui_detail("cert_chain_not_buildable",
+                            "此版本無法自動組合完整鏈（可用憑證中沒有根 CA，或已是完整鏈）。"))
     leaf_pem = _split_pem_certs(ver.cert_pem)[0]
     ver.cert_pem = leaf_pem if leaf_pem.endswith("\n") else leaf_pem + "\n"
     ver.chain_pem = a["built_chain_pem"]
@@ -299,15 +328,15 @@ async def rebuild_chain(
     return m
 
 
-@router.get("/{cert_id}/versions/{version_id}/file")
-async def download_version_file(
-    cert_id: uuid.UUID,
-    version_id: uuid.UUID,
-    user: CurrentUser,
-    request: Request,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    fmt: Annotated[str, Query(description="cert|key|chain|fullchain|combined|der|pfx")] = "fullchain",
-    password: Annotated[str, Query(description="pfx 加密密碼，選填")] = "",
+class CertExportIn(StrictModel):
+    fmt: str = "fullchain"
+    # PFX 的保護密碼（選填）。放在 body，不放網址參數 —— 見 download_version_file_post。
+    password: Annotated[str, Field(max_length=256)] = ""
+
+
+async def _export_version_file(
+    session: AsyncSession, request: Request, user: User,
+    cert_id: uuid.UUID, version_id: uuid.UUID, fmt: str, password: str,
 ) -> Response:
     """下載某版本憑證檔（多格式匯出）。含私鑰的格式（key/combined/pfx）逐次稽核。"""
     cert = await session.get(Certificate, cert_id)
@@ -322,7 +351,7 @@ async def download_version_file(
         data, media_type, filename = export_cert_file(
             ver.cert_pem, key_pem, ver.chain_pem, fmt, name=cert.name, pfx_password=password)
     except CertError as exc:
-        raise HTTPException(400, detail=str(exc)) from exc
+        raise HTTPException(400, detail=detail_of(exc, "cert_invalid")) from exc
     if fmt in ("key", "combined", "pfx"):
         await append_audit(
             session, actor_user_id=str(user.id),
@@ -335,6 +364,40 @@ async def download_version_file(
         await session.commit()
     return Response(content=data, media_type=media_type,
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.get("/{cert_id}/versions/{version_id}/file")
+async def download_version_file(
+    cert_id: uuid.UUID,
+    version_id: uuid.UUID,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    fmt: Annotated[str, Query(description="cert|key|chain|fullchain|combined|der|pfx")] = "fullchain",
+) -> Response:
+    """下載某版本憑證檔（不需要密碼的格式；要替 PFX 加密碼請用 POST）。"""
+    # 不宣告 password 參數（API 文件裡不公布它），但舊的呼叫方式帶了還是要擋下來
+    if request.query_params.get("password"):
+        # 網址參數會原封不動寫進 nginx 存取日誌、瀏覽器歷史與中間代理的記錄（0.6.43 ZAP
+        # 登入後掃描抓到）。靜靜照收的話舊的呼叫方式照樣把密碼寫進日誌，所以直接拒絕。
+        raise HTTPException(400, detail=ui_detail(
+            "cert_export_password_in_url",
+            "PFX 密碼不可以放在網址參數（會被寫進存取日誌）；請改用 POST，把 fmt 與 password 放在 body"))
+    return await _export_version_file(session, request, user, cert_id, version_id, fmt, "")
+
+
+@router.post("/{cert_id}/versions/{version_id}/file")
+async def download_version_file_post(
+    cert_id: uuid.UUID,
+    version_id: uuid.UUID,
+    payload: CertExportIn,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Response:
+    """下載某版本憑證檔；PFX 的保護密碼放在 body，不會出現在網址與存取日誌裡。"""
+    return await _export_version_file(session, request, user, cert_id, version_id,
+                                      payload.fmt, payload.password)
 
 
 @router.post("/{cert_id}/versions", response_model=CertVersionRead, status_code=201)
@@ -360,9 +423,11 @@ async def upload_version(
     try:
         info = validate_bundle(cert_pem, key_pem, chain_pem)
     except CertError as exc:
-        raise HTTPException(400, detail=str(exc)) from exc
+        raise HTTPException(400, detail=detail_of(exc, "cert_invalid")) from exc
     if info.is_expired and not allow_expired:
-        raise HTTPException(400, detail=f"憑證已於 {info.not_after.date()} 過期;如確定要上傳請勾選 allow_expired")
+        raise HTTPException(400, detail=ui_detail("cert_expired_upload",
+                            f"憑證已於 {info.not_after.date()} 過期；如確定要上傳請勾選 allow_expired",
+                            date=str(info.not_after.date())))
 
     v = await _store_version(
         session, cert=cert, cert_pem=cert_pem, key_pem=key_pem, chain_pem=chain_pem,
@@ -384,7 +449,8 @@ async def set_source(
     if cert is None:
         raise HTTPException(404, detail="Not found")
     cert.source_type = payload.source_type
-    cert.source_config = payload.source_config or {}
+    # SFTP 主機金鑰的釘選由伺服器記住：表單送來的一律不採用，主機與埠沒變才保留已記住的
+    cert.source_config = merge_pin(cert.source_config, payload.source_config)
     cert.fetch_interval_seconds = payload.fetch_interval_seconds
     if payload.source_password:
         await save_cert_secret(session, cert_id, "source_password", payload.source_password)
@@ -416,7 +482,7 @@ async def fetch_now(
     if cert is None:
         raise HTTPException(404, detail="Not found")
     if cert.source_type == "none":
-        raise HTTPException(400, detail="此憑證未設定自動來源")
+        raise HTTPException(400, detail=ui_detail("cert_no_auto_source", "此憑證未設定自動來源"))
     return await fetch_certificate(session, cert, actor_user_id=user.id)
 
 
@@ -424,6 +490,8 @@ async def fetch_now(
 async def test_source(
     cert_id: uuid.UUID,
     payload: CertSourceUpdate,
+    user: CurrentUser,
+    request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, object]:
     """以表單目前內容測試來源連線（不存檔）。密碼/私鑰留空時沿用已存的。"""
@@ -433,13 +501,54 @@ async def test_source(
     password = payload.source_password or await load_cert_secret(session, cert_id, "source_password")
     private_key = payload.source_private_key or await load_cert_secret(
         session, cert_id, "source_private_key")
+    cfg = merge_pin(cert.source_config, payload.source_config)
     try:
-        message = await probe_source_connection(
-            payload.source_config, source_type=payload.source_type,
+        message, info = await probe_source_connection(
+            cfg, source_type=payload.source_type,
             password=password, private_key=private_key)
     except FetchError as exc:
-        return {"ok": False, "message": str(exc)}
-    return {"ok": True, "message": message}
+        # 以 200 回應但帶代碼：前端用 srvText 翻譯，句子不再由後端寫死中文
+        return {"ok": False, "message": str(exc),
+                "code": exc.code, "params": exc.params}
+    new_pin = info.get("new_pin")
+    if (new_pin and payload.source_type == "sftp" and cert.source_type == "sftp"
+            and pin_target(cfg) == pin_target(cert.source_config or {})):
+        # 測的就是已存的那台：第一次連上就記住主機金鑰（表單還沒存的新主機，等存檔後第一次連線再記）
+        cert.source_config = {**(cert.source_config or {}), **new_pin}
+        await append_audit(
+            session, actor_user_id=str(user.id),
+            actor_ip=request.client.host if request.client else None,
+            actor_user_agent=request.headers.get("user-agent"),
+            object_type="certificate", object_id=str(cert_id), action="cert_source_pin_host_key",
+            diff={"fingerprint": new_pin["host_key_fingerprint"], "host": new_pin["host_key_for"]},
+            request_id=getattr(request.state, "request_id", None),
+        )
+        await session.commit()
+    return {"ok": True, "message": message, "host_key_fingerprint": info.get("host_key_fingerprint")}
+
+
+@router.post("/{cert_id}/source/forget-host-key")
+async def forget_source_host_key(
+    cert_id: uuid.UUID,
+    user: CurrentUser,
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, object]:
+    """「重新信任主機金鑰」：SFTP 主機重灌或換了金鑰時，管理員確認新指紋後清掉記住的釘選，下一次連線重新記住。"""
+    cert = await session.get(Certificate, cert_id)
+    if cert is None:
+        raise HTTPException(404, detail="Not found")
+    old = (cert.source_config or {}).get("host_key_fingerprint")
+    cert.source_config = {k: v for k, v in (cert.source_config or {}).items() if k not in PIN_FIELDS}
+    await append_audit(
+        session, actor_user_id=str(user.id),
+        actor_ip=request.client.host if request.client else None,
+        actor_user_agent=request.headers.get("user-agent"),
+        object_type="certificate", object_id=str(cert_id), action="cert_source_forget_host_key",
+        diff={"fingerprint": old}, request_id=getattr(request.state, "request_id", None),
+    )
+    await session.commit()
+    return {"ok": True}
 
 
 @router.post("/{cert_id}/source/ssh-keypair")
@@ -470,16 +579,29 @@ async def gen_source_ssh_keypair(
     await session.commit()
     # 有密碼就直接幫忙安裝公鑰到主機（免手動貼）。失敗不影響金鑰已產生,回 installed=false + 原因。
     installed, message = False, ""
+    err_code, err_params = None, {}
     if payload.source_type == "sftp":
         password = payload.source_password or await load_cert_secret(
             session, cert_id, "source_password")
+        cfg = merge_pin(cert.source_config, payload.source_config)
         try:
-            message = await install_public_key_sftp(
-                payload.source_config, password=password or "", public_key=pub)
+            message, new_pin = await install_public_key_sftp(cfg, password=password or "", public_key=pub)
             installed = True
+            if new_pin and pin_target(cfg) == pin_target(cert.source_config or {}):
+                cert.source_config = {**(cert.source_config or {}), **new_pin}
+                await append_audit(
+                    session, actor_user_id=str(user.id),
+                    actor_ip=request.client.host if request.client else None,
+                    actor_user_agent=request.headers.get("user-agent"),
+                    object_type="certificate", object_id=str(cert_id), action="cert_source_pin_host_key",
+                    diff={"fingerprint": new_pin["host_key_fingerprint"], "host": new_pin["host_key_for"]},
+                    request_id=getattr(request.state, "request_id", None),
+                )
+                await session.commit()
         except FetchError as exc:
-            message = str(exc)
-    return {"public_key": pub, "installed": installed, "message": message}
+            message, err_code, err_params = str(exc), exc.code, exc.params
+    return {"public_key": pub, "installed": installed, "message": message,
+            "code": err_code, "params": err_params}
 
 
 @router.post("/{cert_id}/self-signed", response_model=CertVersionRead, status_code=201)
@@ -498,7 +620,7 @@ async def create_self_signed(
         cert_pem, key_pem = generate_self_signed(payload.common_name, payload.sans, payload.days)
         info = validate_bundle(cert_pem, key_pem)
     except CertError as exc:
-        raise HTTPException(400, detail=str(exc)) from exc
+        raise HTTPException(400, detail=detail_of(exc, "cert_invalid")) from exc
     v = await _store_version(
         session, cert=cert, cert_pem=cert_pem, key_pem=key_pem, chain_pem=None,
         info=info, user=user, request=request, action="cert_self_signed",

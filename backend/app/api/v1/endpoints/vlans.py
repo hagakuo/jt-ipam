@@ -9,13 +9,15 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import String, cast, func, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.api.v1.dependencies import CurrentUser, require_admin, require_global_read
 from app.core.audit import append_audit
 from app.core.db import get_session
+from app.core.sqlin import in_values
 from app.models.librenms import LibreNMSDevice
 from app.models.vlan import VLAN, DeviceVLAN, VLANDomain
 from app.schemas.base import Paginated, StrictModel
@@ -184,7 +186,7 @@ async def list_vlans(
     if vlan_ids:
         for vid, cnt in (await session.execute(
             select(DeviceVLAN.vlan_id, func.count())
-            .where(DeviceVLAN.vlan_id.in_(vlan_ids))
+            .where(in_values(DeviceVLAN.vlan_id, vlan_ids))
             .group_by(DeviceVLAN.vlan_id)
         )).all():
             count_map[vid] = cnt
@@ -199,8 +201,9 @@ async def list_vlans(
         numbers = [r.number for r in rows]
         for num, cnt in (await session.execute(
             select(FDBEntry.vlan_id_num, func.count(func.distinct(
-                func.concat(cast(FDBEntry.device_id, String), "|", FDBEntry.port_name))))
-            .where(FDBEntry.vlan_id_num.in_(numbers))
+                func.concat(cast(func.coalesce(FDBEntry.device_id, FDBEntry.switch_device_id), String),
+                            "|", FDBEntry.port_name))))
+            .where(in_values(FDBEntry.vlan_id_num, numbers))
             .group_by(FDBEntry.vlan_id_num)
         )).all():
             if num is not None:
@@ -208,7 +211,7 @@ async def list_vlans(
         for vid, cnt in (await session.execute(
             select(Subnet.vlan_id, func.count(IPAddress.id))
             .join(IPAddress, IPAddress.subnet_id == Subnet.id)
-            .where(Subnet.vlan_id.in_(vlan_ids))
+            .where(in_values(Subnet.vlan_id, vlan_ids))
             .group_by(Subnet.vlan_id)
         )).all():
             if vid is not None:
@@ -243,16 +246,20 @@ async def vlan_members(
         raise HTTPException(404, detail="VLAN not found")
 
     # FDB：依 VLAN 號碼，列出 (裝置, 連接埠, MAC) — 裝置名走 LibreNMS sysName
+    # MikroTik 回報的列（0170）沒有 LibreNMS 裝置，裝置名走 jt-ipam 裝置
+    sw_dev = aliased(Device)
     fdb_rows = list((await session.execute(
-        select(FDBEntry.port_name, FDBEntry.mac, LibreNMSDevice.sysname, LibreNMSDevice.hostname)
-        .join(LibreNMSDevice, LibreNMSDevice.id == FDBEntry.device_id)
-        .where(FDBEntry.vlan_id_num == vlan.number)
-        .order_by(LibreNMSDevice.sysname, FDBEntry.port_name)
+        select(FDBEntry.port_name, FDBEntry.mac, LibreNMSDevice.sysname, LibreNMSDevice.hostname, sw_dev.name)
+        .outerjoin(LibreNMSDevice, LibreNMSDevice.id == FDBEntry.device_id)
+        .outerjoin(sw_dev, sw_dev.id == FDBEntry.switch_device_id)
+        .where(FDBEntry.vlan_id_num == vlan.number,
+               or_(FDBEntry.device_id.is_not(None), FDBEntry.switch_device_id.is_not(None)))
+        .order_by(func.coalesce(LibreNMSDevice.sysname, sw_dev.name), FDBEntry.port_name)
         .limit(2000)
     )).all())
     ports = [
-        {"device": sn or hn or "—", "port": pn, "mac": str(m) if m else None}
-        for pn, m, sn, hn in fdb_rows
+        {"device": sn or hn or dn or "—", "port": pn, "mac": str(m) if m else None}
+        for pn, m, sn, hn, dn in fdb_rows
     ]
     # 此 VLAN 的子網路 + IP 數
     subnets = list((await session.execute(

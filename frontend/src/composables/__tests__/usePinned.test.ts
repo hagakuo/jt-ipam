@@ -94,4 +94,24 @@ describe("usePinned", () => {
 
     expect(isPinned("anything")).toBe(false);
   });
+
+  it("連續兩次 setAll：寫回依序送出、最後一次帶齊最新狀態（不會被晚到的舊請求蓋掉）", async () => {
+    // 儀表板機櫃卡片存檔時先清機房、再寫機櫃：以前兩個 PUT 同時在路上，舊的那個晚到就把設定蓋掉
+    // （e2e「重新整理後設定還在」時好時壞）
+    const usePinned = await freshUsePinned();
+    const room = usePinned("dash_rack_room");
+    const racks = usePinned("dash_racks");
+    await flush();
+    let release!: () => void;
+    updatePreferences.mockImplementationOnce(() => new Promise<void>((r) => { release = r; }));
+    room.setAll([]);
+    racks.setAll(["k1"]);
+    expect(updatePreferences).toHaveBeenCalledTimes(1);          // 第二個要等第一個回來
+    release();
+    await flush();
+    await flush();
+    expect(updatePreferences).toHaveBeenCalledTimes(2);
+    expect(updatePreferences.mock.calls[1][0]).toEqual(
+      { pinned: expect.objectContaining({ dash_rack_room: [], dash_racks: ["k1"] }) });
+  });
 });

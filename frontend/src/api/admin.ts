@@ -33,7 +33,8 @@ export interface AuditFilter {
   object_type?: string;
   object_id?: string;
   actor_user_id?: string;
-  action?: string;
+  /** 可複選：後端以重複的 action 參數接收 */
+  action?: string | string[];
   since?: string;
   until?: string;
   limit?: number;
@@ -43,7 +44,19 @@ export interface AuditFilter {
 export async function listAudit(filter: AuditFilter = {}): Promise<Paginated<AuditLog>> {
   const { data } = await apiClient.get<Paginated<AuditLog>>("/api/v1/audit", {
     params: filter,
+    paramsSerializer: { indexes: null },   // action 可複選 → 重複同一個 key
   });
+  return data;
+}
+
+export interface AuditActionCount {
+  action: string;
+  count: number;
+}
+
+/** 稽核記錄裡實際出現過的動作（給篩選下拉用；不寫死清單，否則一定會過期）。 */
+export async function listAuditActions(): Promise<AuditActionCount[]> {
+  const { data } = await apiClient.get<AuditActionCount[]>("/api/v1/audit/actions");
   return data;
 }
 

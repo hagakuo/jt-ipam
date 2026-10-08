@@ -18,9 +18,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import String, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.sqlin import in_values
 from app.models.address import IPAddress
 from app.models.dhcp import DHCPReservation
 
@@ -74,7 +75,7 @@ async def replace_reservations(
     if kept:
         for aid, host in (await session.execute(
             select(IPAddress.id, func.host(IPAddress.ip))
-            .where(func.host(IPAddress.ip).in_([r.ip for r in kept]))
+            .where(in_values(func.host(IPAddress.ip), [r.ip for r in kept], type_=String()))
         )).all():
             ip_map.setdefault(str(host), aid)
 
