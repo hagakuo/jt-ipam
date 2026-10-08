@@ -330,7 +330,8 @@ sudo -u postgres psql -d jt_ipam -tAc "select version_num from alembic_version"
 systemctl is-active jt-ipam-backend nginx redis-server postgresql jt-ipam-guacd
 curl -k -fsS https://ipam.nkust.edu.tw/healthz
 curl -k -fsS https://ipam.nkust.edu.tw/readyz
-curl -k -fsS https://ipam.nkust.edu.tw/api/v1/system/version
+curl -k -sS -o /dev/null -w '%{http_code}\n' https://ipam.nkust.edu.tw/api/v1/system/version
+sudo -u jtipam /opt/jt-ipam/backend/.venv/bin/python -c 'from app.version import __version__; print(__version__)'
 curl -k -sS -o /dev/null -w '%{http_code} %{content_type}\n' https://ipam.nkust.edu.tw/
 journalctl -u jt-ipam-backend --since '10 minutes ago' --no-pager -p warning..alert
 ```
@@ -340,8 +341,10 @@ journalctl -u jt-ipam-backend --since '10 minutes ago' --no-pager -p warning..al
 - Git commit 等於 `origin/main` 最新 commit。
 - `git status` 乾淨。
 - Alembic revision 是最新 head。
-- 四個服務都回 `active`。
+- 五個服務都回 `active`（包含 1.0.1 的 `jt-ipam-guacd`）。
 - `/healthz` 回 `ok`。
+- `/readyz` 回 `{"status":"ready"}`；`/healthz` 可能由 nginx 靜態回覆，不能單獨證明後端正常。
+- 未登入的 `/api/v1/system/version` 回 `401` 是正常的管理員權限保護。登入管理員後在版本頁核對 `1.0.1`；主機指令可核對目前環境匯入的版本。
 - 首頁回 `200 text/html`。
 - 最近 10 分鐘 backend warning/error 沒有異常。
 
@@ -378,7 +381,7 @@ sudo git -C /opt/jt-ipam config --global --add safe.directory /opt/jt-ipam
 
 ### `aardwolf==0.2.13` 找不到 wheel
 
-這是 optional RDP dependency。upgrade script 會警告並跳過；核心 IPAM、一般 API、SSH/VNC、前端仍可繼續部署。若需要 RDP console，再另外處理 Python/平台 wheel 相容性。
+這是 optional fallback dependency。upgrade script 會警告並跳過；1.0.1 的必要 RDP/VNC 引擎是 `guacd`，確認它已安裝、服務為 `active` 且只監聽 `127.0.0.1:4822`。若另選內建 `aardwolf` 引擎，才需要處理 Python/平台 wheel 相容性。
 
 ### Windows 顯示遠端 build 輸出失敗
 
