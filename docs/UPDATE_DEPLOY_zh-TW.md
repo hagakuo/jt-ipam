@@ -280,12 +280,14 @@ BACKUP="/var/backups/jt-ipam/pre-upgrade-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$BACKUP"
 sudo -u postgres pg_dump -Fc jt_ipam > "$BACKUP/jt-ipam.dump"
 cp /etc/jt-ipam/backend.env "$BACKUP/backend.env"
+cp /etc/jt-ipam-agent.env "$BACKUP/scan-agent.env"
+tar -czf "$BACKUP/tls.tar.gz" -C /etc/jt-ipam tls
 git -c safe.directory=/opt/jt-ipam -C /opt/jt-ipam bundle create "$BACKUP/repo.bundle" --all
 tar -czf "$BACKUP/uploads.tar.gz" -C /var/lib/jt-ipam uploads
 tar -czf "$BACKUP/frontend-dist.tar.gz" -C /opt/jt-ipam/frontend dist
-# 另備份實際 TLS 憑證目錄及掃描代理設定；不要輸出密鑰內容。
+# 若實際憑證或代理設定路徑不同，先核對再調整；不要輸出密鑰內容。
 cd "$BACKUP"
-sha256sum jt-ipam.dump backend.env repo.bundle uploads.tar.gz frontend-dist.tar.gz > SHA256SUMS
+sha256sum jt-ipam.dump backend.env scan-agent.env tls.tar.gz repo.bundle uploads.tar.gz frontend-dist.tar.gz > SHA256SUMS
 sha256sum -c SHA256SUMS
 pg_restore --list jt-ipam.dump >/dev/null
 exit
