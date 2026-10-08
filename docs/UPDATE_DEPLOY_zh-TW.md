@@ -297,7 +297,8 @@ exit
 部署：
 
 ```bash
-sudo git -c safe.directory=/opt/jt-ipam -C /opt/jt-ipam pull --ff-only origin main
+sudo chown -hR jtipam:jtipam /opt/jt-ipam/.git
+sudo -u jtipam bash -c 'umask 022; git -C /opt/jt-ipam pull --ff-only origin main'
 cd /opt/jt-ipam
 sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade --no-pull
 ```
@@ -309,6 +310,10 @@ sudo bash /opt/jt-ipam/scripts/jt-ipam.sh upgrade --no-pull
 - upgrade script 會自動做 DB backup、backend dependency update、Alembic migration、frontend build、nginx reload、backend restart。
 - 本次升級另會安裝 guacd、更新必要的 nginx 主控台中繼規則。不要自行開放 guacd 的外網埠。
 - 升級失敗時先檢查服務與 migration，不要立即恢復同步或反覆重跑。
+- 備份的 `umask 077` 只應作用在備份子 shell；拉取程式用 `umask 022`。
+  若已用 root 加 `umask 077` 拉取，可能產生 root-only 檔案而使 pip 讀不到
+  `backend/pyproject.toml`。核對 `/opt/jt-ipam` 真實路徑後，將該 checkout 的
+  擁有者復原為 `jtipam:jtipam`；不要放寬 `.env` 或 TLS 私鑰為全員可讀。
 
 ## 8. 部署後驗證
 
